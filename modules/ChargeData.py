@@ -86,9 +86,9 @@ class MURaM():
         self.atm_quant = np.reshape(self.atm_quant, (self.nx,self.ny,self.nz,self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         print("Created!")
-        print("self.atm_quant shape:", self.atm_quant.shape)
+        print("atm_quant shape:", self.atm_quant.shape)
 
-        print("Charging self.stokes vectors...")
+        print("Charging stokes vectors...")
         self.stokes = np.load(self.ptm / f"{self.filename}_prof.npy")
         self.I_63005 = self.stokes[:,:,0,0] ## Intensity map that is going to be used to balance intergranular and granular regions.
         print("Charged!")
@@ -171,6 +171,9 @@ class MURaM():
         self.stokes = new_stokes
         print("The new self.stokes shape is:", self.stokes.shape)
 
+        #This is the new wavlength values for the degraded resolution
+        self.new_wl = (new_resol*0.01)+6300.5
+
     def scale_quantities(self):
 
         print(f""" self.stokes:
@@ -229,13 +232,19 @@ class MURaM():
         
         self.atm_quant[:,:,:,5] = norm_func(self.atm_quant[:,:,:,5], phys_maxmin["V"])
         
-        #self.stokes parameter normalization by the continuum
+        #Stokes parameter normalization by the continuum
         scaled_stokes = np.ones_like(self.stokes)
-        for jx in range(self.nx):
+        cont_indices = [0,1,int(len(self.new_wl)/2)-1,int(len(self.new_wl)/2),int(len(self.new_wl)/2)+1,-2,-1]
+        wl_cont_values = self.new_wl[cont_indices] #corresponding wavelength values to the selected continuum indices
+        print("calculating the continuum...")
+        for jx in tqdm(range(self.nx)):
             for jz in range(self.nz):
                 for i in range(self.stokes.shape[-1]):
-                    cont_val = np.mean(self.stokes[jx, jz,:,0])
-                    scaled_stokes[jx, jz,:,i] = self.stokes[jx, jz,:,i]/cont_val
+                    cont_values = self.stokes[jx, jz,cont_indices,0] #corresponding intensity values to the selected continuum indices
+                    
+                    cont_model = interp1d(wl_cont_values, cont_values, kind="cubic") #Interpolation applied over the assumed continuum values
+        
+                    scaled_stokes[jx, jz,:,i] = self.stokes[jx, jz,:,i]/cont_model(self.new_wl)
         self.stokes = scaled_stokes
         print("Scaled!")
 
