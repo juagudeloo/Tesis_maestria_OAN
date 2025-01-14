@@ -85,7 +85,7 @@ def main():
                         batch_size = 80,
                         linear = False)
         #2. Loop through hidden units
-        for hu in hidden units:
+        for hu in hidden_units:
             #Creating the model
             if m_type == "simple_linear":
                 model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
