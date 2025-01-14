@@ -7,7 +7,7 @@ from scipy.interpolate import interp1d
 from sklearn.model_selection import train_test_split
 
 import torch
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, DataLoader
 
 import os
 
@@ -333,6 +333,7 @@ def create_dataloaders(stokes_data: np.ndarray,
                        atm_data: np.ndarray,
                        device: str,
                        batch_size: int = 80,
+                       linear = False,
                        ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
     
     # Data splitting
@@ -345,6 +346,9 @@ def create_dataloaders(stokes_data: np.ndarray,
     out_test = torch.from_numpy(out_test).to(device)
     
     #Flattening of the output external axes
+    if linear:
+        in_train = torch.reshape(in_train, (in_train.size()[0], in_train.size()[1]*in_train.size()[2]))
+        in_test = torch.reshape(in_test, (in_test.size()[0], in_test.size()[1]*in_test.size()[2]))
     out_train = torch.reshape(out_train, (out_train.size()[0], out_train.size()[1]*out_train.size()[2]))
     out_test = torch.reshape(out_test, (out_test.size()[0], out_test.size()[1]*out_test.size()[2]))
     
