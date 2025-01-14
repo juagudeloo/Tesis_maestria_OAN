@@ -1,3 +1,4 @@
+slurm_outputs
 data/
 *.pth
 *.npy
