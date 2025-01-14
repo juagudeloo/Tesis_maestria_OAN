@@ -109,11 +109,11 @@ def main():
                 epochs=epochs,
                 device=device,
                 writer=create_writer(experiment_name=str(hu)+"_hidden_units",
-                                    model_name=model_name,
+                                    model_name=model.name,
                                     extra=f"{epochs}_epochs"))
             
             #Save the model to file so we can get back the best model
-            save_filepath = f"{model_name}_{hu}_hidden_units_{epochs}_epochs.pth"
+            save_filepath = f"{model.name}_{hu}_hidden_units_{epochs}_epochs.pth"
             save_model(model=model,
                        target_dir="models",
                        model_name=save_filepath)
