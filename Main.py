@@ -69,12 +69,9 @@ def main():
     
     epochs = [10, 20]
     model_types = ["simple_linear", "simple_cnn1d"]
+    lr = 1e-3
     
-    #Loss function
-    loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
-
-    #Optimizer
-    optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+    
     
     #1. Loop through model types
     for m_type in model_types:
@@ -96,8 +93,13 @@ def main():
             if m_type == "simple_linear":
                 model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
             else:
-                models = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
-        
+                model = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
+            
+            #Loss function
+            loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
+
+            #Optimizer
+            optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
             #Train model
             train(model=model,
                 train_dataloader=train_dataloader,
