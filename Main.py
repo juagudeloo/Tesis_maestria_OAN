@@ -70,6 +70,12 @@ def main():
     epochs = [10, 20]
     model_types = ["simple_linear", "simple_cnn1d"]
     
+    #Loss function
+    loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
+
+    #Optimizer
+    optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+    
     #1. Loop through model types
     for m_type in model_types:
         if m_type == "simple_linear":
