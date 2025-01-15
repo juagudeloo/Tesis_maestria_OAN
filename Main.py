@@ -67,7 +67,7 @@ def main():
     
     ### Checking linear vs convolutional 1d models ###
     
-    epochs = [10, 20]
+    test_epochs = [10, 20]
     model_types = ["simple_linear", "simple_cnn1d"]
     lr = 1e-3
     
@@ -90,7 +90,7 @@ def main():
         #2. Loop through hidden units
         for hu in hidden_units:
             #3. Loop throuch epochs
-            for e in epochs:
+            for epochs in test_epochs:
                 #Creating the model
                 if m_type == "simple_linear":
                     model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
@@ -108,7 +108,7 @@ def main():
                     test_dataloader=test_dataloader, 
                     optimizer=optimizer,
                     loss_fn=loss_fn,
-                    epochs=e,
+                    epochs=epochs,
                     device=device,
                     writer=create_writer(experiment_name=str(hu)+"_hidden_units",
                                         model_name=model.name,
