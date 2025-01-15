@@ -89,35 +89,37 @@ def main():
                         linear = False)
         #2. Loop through hidden units
         for hu in hidden_units:
-            #Creating the model
-            if m_type == "simple_linear":
-                model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
-            else:
-                model = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
-            
-            #Loss function
-            loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
+            #3. Loop throuch epochs
+            for e in epochs:
+                #Creating the model
+                if m_type == "simple_linear":
+                    model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
+                else:
+                    model = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
+                
+                #Loss function
+                loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
 
-            #Optimizer
-            optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-            #Train model
-            train(model=model,
-                train_dataloader=train_dataloader,
-                test_dataloader=test_dataloader, 
-                optimizer=optimizer,
-                loss_fn=loss_fn,
-                epochs=epochs,
-                device=device,
-                writer=create_writer(experiment_name=str(hu)+"_hidden_units",
-                                    model_name=model.name,
-                                    extra=f"{epochs}_epochs"))
-            
-            #Save the model to file so we can get back the best model
-            save_filepath = f"{model.name}_{hu}_hidden_units_{epochs}_epochs.pth"
-            save_model(model=model,
-                       target_dir="models",
-                       model_name=save_filepath)
-            print("-"*50 + "\n")
+                #Optimizer
+                optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+                #Train model
+                train(model=model,
+                    train_dataloader=train_dataloader,
+                    test_dataloader=test_dataloader, 
+                    optimizer=optimizer,
+                    loss_fn=loss_fn,
+                    epochs=e,
+                    device=device,
+                    writer=create_writer(experiment_name=str(hu)+"_hidden_units",
+                                        model_name=model.name,
+                                        extra=f"{epochs}_epochs"))
+                
+                #Save the model to file so we can get back the best model
+                save_filepath = f"{model.name}_{hu}_hidden_units_{epochs}_epochs.pth"
+                save_model(model=model,
+                        target_dir="models",
+                        model_name=save_filepath)
+                print("-"*50 + "\n")
 
             
 
