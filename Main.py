@@ -76,14 +76,14 @@ def main():
     #1. Loop through model types
     for m_type in model_types:
         if m_type == "simple_linear":
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
+            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data.float(),
+                        atm_data = atm_data.float(),
                         device = device,
                         batch_size = 80,
                         linear = True)
         else:
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
+            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data.float(),
+                        atm_data = atm_data.float(),
                         device = device,
                         batch_size = 80,
                         linear = False)
@@ -96,7 +96,7 @@ def main():
                     model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
                 else:
                     model = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
-                
+                model = model.float()
                 #Loss function
                 loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
 
