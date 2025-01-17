@@ -76,13 +76,13 @@ def main():
     #1. Loop through model types
     for m_type in model_types:
         if m_type == "simple_linear":
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data.float(),
+            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                         atm_data = atm_data.float(),
                         device = device,
                         batch_size = 80,
                         linear = True)
         else:
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data.float(),
+            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                         atm_data = atm_data.float(),
                         device = device,
                         batch_size = 80,
