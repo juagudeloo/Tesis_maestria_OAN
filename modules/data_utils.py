@@ -340,10 +340,10 @@ def create_dataloaders(stokes_data: np.ndarray,
     in_train, in_test, out_train, out_test = train_test_split(stokes_data, atm_data, test_size=0.33, random_state=42)
 
     #Converting to tensors
-    in_train = torch.from_numpy(in_train).to(device)
-    in_test = torch.from_numpy(in_test).to(device)
-    out_train = torch.from_numpy(out_train).to(device)
-    out_test = torch.from_numpy(out_test).to(device)
+    in_train = torch.from_numpy(in_train).to(device).float()
+    in_test = torch.from_numpy(in_test).to(device).float()
+    out_train = torch.from_numpy(out_train).to(device).float()
+    out_test = torch.from_numpy(out_test).to(device).float()
     
     #Flattening of the output external axes
     if linear:
