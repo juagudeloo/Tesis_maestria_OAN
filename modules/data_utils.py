@@ -306,7 +306,6 @@ class MURaM():
             self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
             self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
         print("Done")
-    def descale
         
 def load_training_data(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     #Arrays for saving the whole dataset
@@ -346,7 +345,7 @@ def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.nd
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
     
-    return atm_data, stokes_data, muram.mags_names
+    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin
 
 
 def create_dataloaders(stokes_data: np.ndarray,
