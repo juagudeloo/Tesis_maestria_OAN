@@ -1,0 +1,26 @@
+#!/bin/bash -l
+## "%j" es el JobID, un numero asignado por el sistema a su proceso
+#SBATCH --job-name=SPIN-DL         #Nombre del Trabajo
+#SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
+#SBATCH -wmaxwell
+#SBATCH --partition=gpu.cecc            #Particion a usar(puede ser: cpu.cecc o gpu.cecc)
+##SBATCH --time=1-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
+#SBATCH --nodes=1                       #Numberode nodos a usar
+#SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
+#SBATCH --mem=40G                       #Total de memoria RAM por nodo en Gbytes
+#SBATCH --gres=gpu:1              # Numbers of needed GPU.
+#SBATCH --output=/homes/observatorio/juagudeloo/SPIN-DL_%j.out      #archivo salida estandar(seguimiento)
+#SBATCH --error=/homes/observatorio/juagudeloo/SPIN-DL_%j.err       #archivo de Errores 
+###SBATCH --mail-type=begin             #Send email when job begins
+###SBATCH --mail-type=end               #Send email when job ends
+###SBATCH --mail-user=juagudeloo@unal.edu.co
+#SBATCH --export=SCRATCH_DIR=/scratch/$SLURM_JOB_ACCOUNT/$SLURM_JOB_USER/$SLURM_JOB_ID
+
+module purge
+module load envs/anaconda3
+conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
+
+cd $SCRATCH_DIR
+
+python3 Experimetn.py
+

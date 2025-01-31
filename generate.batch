@@ -1,7 +1,8 @@
 #!/bin/bash -l
 ## "%j" es el JobID, un numero asignado por el sistema a su proceso
 #SBATCH --job-name=SPIN-DL         #Nombre del Trabajo
-#SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
+#SBATCH --cluster=fisica 
+#SBATCH -wmaxwell          #nombre de los cluster a donde envia a procesar
 #SBATCH --partition=gpu.cecc            #Particion a usar(puede ser: cpu.cecc o gpu.cecc)
 ##SBATCH --time=1-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
 #SBATCH --nodes=1                       #Numberode nodos a usar
@@ -21,5 +22,5 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
 cd $SCRATCH_DIR
 
-python3 Main.py
+python3 Generate.py
 
