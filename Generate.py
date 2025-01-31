@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 
 #MODULES IMPORT
+import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
