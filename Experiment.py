@@ -1,24 +1,9 @@
-import os
-from pathlib import Path
 import sys
 
-import time
 from timeit import default_timer as timer 
-import datetime
-
-from sklearn.model_selection import train_test_split
 
 import torch
 from torch import nn
-from torch.utils.data import TensorDataset, DataLoader
-from torchinfo import summary
-from torch.utils.tensorboard import SummaryWriter
-
-import numpy as np
-
-from tqdm import tqdm
-
-import matplotlib.pyplot as plt
 
 #MODULES IMPORT
 sys.path.append("../modules")
@@ -34,7 +19,7 @@ def main():
     filenames = ["080000", "085000", "090000"]
     
     #Load data
-    atm_data, stokes_data, mags_names = load_data(filenames)
+    atm_data, stokes_data, mags_names = load_training_data(filenames)
     
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"

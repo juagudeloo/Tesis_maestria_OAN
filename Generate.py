@@ -1,0 +1,70 @@
+
+from pathlib import Path
+import torch
+
+#MODULES IMPORT
+sys.path.append("../modules")
+from modules.data_utils import load_data_cubes
+from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
+from modules.train_test_utils import charge_weights, generate_results, plot_generated_atm
+
+
+def main():
+    
+    # Setup device agnostic code
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Tensors stored in: {device}")
+    
+    # Load models
+    nn_models = {"SimpleLinear": SimpleLinearModel(36*4,6*20,hidden_units=2048).to(device), 
+                 "SimpleCNN1D": SimpleCNN1DModel(36,6*20,hidden_units=1024).to(device)}
+    
+    # Filenames of the snapshots to be calculated
+    filenames = ["175000"]
+    
+    # Load weights
+    target_dir = Path("models")
+    model_names = ["SimpleLinear_2048_hidden_units_10_epochs.pth", 
+                   "SimpleCNN1D_1024_hidden_units_10_epochs.pth"
+                   ]
+    
+    charge_weights(model = nn_models["SimpleLinear"],
+                     target_dir = target_dir,
+                     model_name = model_names[0]
+                   )
+                   
+    charge_weights(model = nn_models["SimpleCNN1D"],
+                     target_dir = target_dir,
+                     model_name = model_names[1]
+                   )
+    
+    # Load data
+    atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
+    
+    # Generate results
+    atm_generated = {"SimpleLinear": generate_results(model = nn_models["SimpleLinear"],
+                                                      stokes_data = stokes_data,
+                                                      maxmin = phys_maxmin,
+                                                      device = device
+                                                     ),
+                     "SimpleCNN1D": generate_results(model = nn_models["SimpleCNN1D"],
+                                                      stokes_data = stokes_data,
+                                                      maxmin = phys_maxmin,
+                                                      device = device
+                                                     )
+                    }
+    
+    # Plot generated atmospheres  
+    image_out_dir = Path("images")
+    plot_generated_atm(atm_data = atm_data,
+                       atm_generated = atm_generated["SimpleLinear"],
+                       image_out_dir = image_out_dir / "atm_SimpleLinear.png"
+                      )
+
+    plot_generated_atm(atm_data = atm_data,
+                        atm_generated = atm_generated["SimpleCNN1D"],
+                        image_out_dir = image_out_dir / "atm_SimpleCNN1D.png"
+                        )
+    
+if __name__ == "__main__":
+    main()

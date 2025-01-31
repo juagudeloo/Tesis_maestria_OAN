@@ -6,6 +6,8 @@ import time
 from timeit import default_timer as timer 
 import datetime
 
+import numpy as np
+
 from sklearn.model_selection import train_test_split
 
 import torch
@@ -168,9 +170,9 @@ def create_writer(experiment_name: str,
 
     if extra:
         # Create log directory path
-        log_dir = os.path.join("runs_"+timestamp, timestamp, experiment_name, model_name, extra)
+        log_dir = os.path.join("runs", timestamp, experiment_name, model_name, extra)
     else:
-        log_dir = os.path.join("runs_"+timestamp, experiment_name, model_name)
+        log_dir = os.path.join("runs", timestamp, experiment_name, model_name)
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)
@@ -302,3 +304,49 @@ def save_model(model: torch.nn.Module,
   print(f"[INFO] Saving model to: {model_save_path}")
   torch.save(obj=model.state_dict(),
              f=model_save_path)
+
+
+### MODEL UTILITIES ###
+
+def charge_weights(model: torch.nn.Module,
+                 target_dir: str,
+                 model_name: str):
+  
+  target_dir_path = Path(target_dir)
+  model_path = target_dir_path / model_name
+  
+  print(f"[INFO] Loading model from: {model_path}")
+  
+  model.load_state_dict(torch.load(model_path))
+
+def descale_atm(atm_generated: np.ndarray,
+                maxmin: dict[str, list[float]]) -> np.ndarray:
+    def denorm_func(arr, maxmin):
+        max_val = maxmin[0]
+        min_val = maxmin[1]
+        return arr*(max_val-min_val)+min_val
+    
+    atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
+    atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
+    atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["B"])
+    atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
+    atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["B"])
+    atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["V"])
+    
+    return atm_generated
+
+def generate_results(model: torch.nn.Module,
+                     stokes_data: np.ndarray,
+                     maxmin: dict[str, list[float]],
+                     device: torch.device
+                     ) -> np.ndarray:
+  
+  stokes_data = torch.tensor(stokes_data).float()
+  stokes_data = stokes_data.to(device)
+  stokes_data = torch.unsqueeze(stokes_data, 0)
+  
+  print("stokes data shape for generation:", stokes_data.size())
+  
+  atm_generated = model(stokes_data)
+  atm_generated = atm_generated.cpu().detach().numpy()
+  atm_generated = descale_atm(atm_generated, maxmin)

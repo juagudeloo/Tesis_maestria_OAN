@@ -207,11 +207,11 @@ class MURaM():
         
         print("Scaling the quantities...")
         #Atmosphere magnitudes scale factors
-        phys_maxmin = {}
-        phys_maxmin["T"] = [2e4, 0]
-        phys_maxmin["B"] = [3e3, -3e3]
-        phys_maxmin["Rho"] = [1e-5, 1e-10]
-        phys_maxmin["V"] = [1e6, -1e6]
+        self.phys_maxmin = {}
+        self.phys_maxmin["T"] = [2e4, 0]
+        self.phys_maxmin["B"] = [3e3, -3e3]
+        self.phys_maxmin["Rho"] = [1e-5, 1e-10]
+        self.phys_maxmin["V"] = [1e6, -1e6]
 
         #maxmin normalization function
         def norm_func(arr, maxmin):
@@ -306,8 +306,9 @@ class MURaM():
             self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
             self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
         print("Done")
+    def descale
         
-def load_data(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_training_data(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     #Arrays for saving the whole dataset
     atm_data = []
     stokes_data = []
@@ -328,6 +329,25 @@ def load_data(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]
     stokes_data = np.concatenate(stokes_data, axis=0)
     
     return atm_data, stokes_data, muram.mags_names
+
+def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    #Arrays for saving the whole dataset
+    atm_data = []
+    stokes_data = []
+
+    for fln in filenames:
+        #Creation of the MURaM object for each filename for charging the data.
+        muram = MURaM(filename=fln)
+        muram.charge_quantities()
+        muram.optical_depth_stratification()
+        muram.degrade_spec_resol()
+        muram.scale_quantities()
+
+        atm_data.append(muram.atm_quant)
+        stokes_data.append(muram.stokes)
+    
+    return atm_data, stokes_data, muram.mags_names
+
 
 def create_dataloaders(stokes_data: np.ndarray,
                        atm_data: np.ndarray,
