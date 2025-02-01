@@ -45,7 +45,7 @@ def main():
     
     # Generate results
     atm_generated = {"SimpleLinear": generate_results(model = nn_models["SimpleLinear"],
-                                                      stokes_data = np.reshape(stokes_data, (stokes_data[0]*stokes_data[1], stokes_data[2], stokes_data[3])),
+                                                      stokes_data = np.reshape(stokes_data, (stokes_data.shape[0]*stokes_data.shape[1], stokes_data.shape[2], stokes_data.shape[3])),
                                                       maxmin = phys_maxmin,
                                                       device = device
                                                      ),
