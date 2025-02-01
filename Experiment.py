@@ -7,7 +7,7 @@ from torch import nn
 
 #MODULES IMPORT
 sys.path.append("../modules")
-from modules.data_utils import load_data, create_dataloaders
+from modules.data_utils import load_training_data, create_dataloaders
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
 from modules.train_test_utils import train, set_seeds, create_writer, save_model
 
