@@ -220,15 +220,15 @@ class MURaM():
             return (arr-min_val)/(max_val-min_val)
 
         #Atmosphere magnitudes normalization
-        self.atm_quant[:,:,:,0] = norm_func(self.atm_quant[:,:,:,0], phys_maxmin["T"])
+        self.atm_quant[:,:,:,0] = norm_func(self.atm_quant[:,:,:,0], self.phys_maxmin["T"])
         
-        self.atm_quant[:,:,:,1] = norm_func(self.atm_quant[:,:,:,1], phys_maxmin["Rho"])
+        self.atm_quant[:,:,:,1] = norm_func(self.atm_quant[:,:,:,1], self.phys_maxmin["Rho"])
         
-        self.atm_quant[:,:,:,2] = norm_func(self.atm_quant[:,:,:,2], phys_maxmin["B"])
-        self.atm_quant[:,:,:,3] = norm_func(self.atm_quant[:,:,:,3], phys_maxmin["B"])
-        self.atm_quant[:,:,:,4] = norm_func(self.atm_quant[:,:,:,4], phys_maxmin["B"])
+        self.atm_quant[:,:,:,2] = norm_func(self.atm_quant[:,:,:,2], self.phys_maxmin["B"])
+        self.atm_quant[:,:,:,3] = norm_func(self.atm_quant[:,:,:,3], self.phys_maxmin["B"])
+        self.atm_quant[:,:,:,4] = norm_func(self.atm_quant[:,:,:,4], self.phys_maxmin["B"])
         
-        self.atm_quant[:,:,:,5] = norm_func(self.atm_quant[:,:,:,5], phys_maxmin["V"])
+        self.atm_quant[:,:,:,5] = norm_func(self.atm_quant[:,:,:,5], self.phys_maxmin["V"])
         
         #Stokes parameter normalization by the continuum
         scaled_stokes = np.ones_like(self.stokes)
