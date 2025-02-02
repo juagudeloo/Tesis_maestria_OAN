@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
-from modules.train_test_utils import charge_weights, generate_results, plot_generated_atm, descale_atm
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_generated_atm
 
 
 def main():
@@ -60,18 +60,38 @@ def main():
                                                      )
                     }
     
+    ##################################
     # Plot generated atmospheres  
-    image_out_dir = Path("images")
-    plot_generated_atm(
+    ##################################
+    
+    #Suface plots
+    plot_surface_generated_atm(
                        atm_generated = atm_generated["SimpleLinear"],
                        atm_original = atm_data_original,
-                       images_name = "atm_SimpleLinear.png"
+                       images_name = "atm_surface_SimpleLinear.png"
                       )
 
-    plot_generated_atm(
+    plot_surface_generated_atm(
                         atm_generated = atm_generated["SimpleCNN1D"],
                         atm_original = atm_data_original,
-                        images_name = "atm_SimpleCNN1D.png"
+                        images_name = "atm_surface_SimpleCNN1D.png"
+                        )
+    
+    #OD plots
+    plot_od_generated_atm(
+                       atm_generated = atm_generated["SimpleLinear"],
+                       atm_original = atm_data_original,
+                       images_name = "atm_od_SimpleLinear.png",
+                       ix = 250,
+                       iy = 250
+                      )
+
+    plot_od_generated_atm(
+                        atm_generated = atm_generated["SimpleCNN1D"],
+                        atm_original = atm_data_original,
+                        images_name = "atm_od_SimpleCNN1D.png",
+                        ix = 250,
+                        iy = 250
                         )
     
 if __name__ == "__main__":
