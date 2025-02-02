@@ -428,3 +428,5 @@ def plot_generated_atm(atm_generated: np.ndarray,
         os.makedirs(images_dir)
     image_path = os.path.join(images_dir, images_name)
     fig.savefig(image_path)
+    
+    print(f"Saved image to: {image_path}")
