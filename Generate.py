@@ -45,7 +45,7 @@ def main():
     
     print("before everything, stokes data shape is:", stokes_data[0].shape)
     stokes_data_linear = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
-    stokes_data_cnn = np.copy(stokes_data[0])
+    stokes_data_cnn = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
     print("before everything, stokes data linear shape is:", stokes_data_linear.shape)
     print("before everything, stokes data cnn shape is:", stokes_data_cnn.shape)
     
