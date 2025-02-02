@@ -366,6 +366,8 @@ def plot_generated_atm(atm_generated: np.ndarray,
                        atm_original: np.ndarray,
                        image_path: str):
 
+    print("atm_generated shape:", atm_generated.shape)
+    print("atm_original shape:", atm_original.shape)
     fig, axs = plt.subplots(2, 6, figsize=(30, 10))
 
     # Plot generated atmosphere
