@@ -64,13 +64,13 @@ def main():
     plot_generated_atm(
                        atm_generated = atm_generated["SimpleLinear"],
                        atm_original = atm_data_original,
-                       image_path = image_out_dir / "atm_SimpleLinear.png"
+                       images_name = "atm_SimpleLinear.png"
                       )
 
     plot_generated_atm(
                         atm_generated = atm_generated["SimpleCNN1D"],
                         atm_original = atm_data_original,
-                        image_path = image_out_dir / "atm_SimpleCNN1D.png"
+                        images_name = "atm_SimpleCNN1D.png"
                         )
     
 if __name__ == "__main__":

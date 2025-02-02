@@ -364,7 +364,9 @@ def generate_results(model: torch.nn.Module,
 
 def plot_generated_atm(atm_generated: np.ndarray,
                        atm_original: np.ndarray,
-                       image_path: str):
+                       images_name: str,
+                       images_dir: str = "images",
+                       ):
 
     print("atm_generated shape:", atm_generated.shape)
     print("atm_original shape:", atm_original.shape)
@@ -420,6 +422,9 @@ def plot_generated_atm(atm_generated: np.ndarray,
     axs[1, 5].set_title('Original V')
     axs[1, 5].axis('off')
 
-    if not os.path.exists(image_path):
-        os.makedirs(image_path)
+  
+    
+    if not os.path.exists(images_dir):
+        os.makedirs(images_dir)
+    image_path = os.path.join(images_dir, images_name)
     fig.savefig(image_path)
