@@ -43,6 +43,7 @@ def main():
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
     
+    print("before everything, stokes data shape is:", stokes_data[0].shape)
     stokes_data_linear = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
     stokes_data_cnn = np.copy(stokes_data[0])
     # Generate results
