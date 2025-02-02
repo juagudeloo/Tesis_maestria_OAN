@@ -353,7 +353,7 @@ def generate_results(model: torch.nn.Module,
   atm_generated = model(stokes_data)
   atm_generated = atm_generated.cpu().detach().numpy()
   
-  print("atm generated data shape :", atm_generated.size())
+  print("atm generated data shape :", atm_generated.shape)
   
   atm_generated = descale_atm(atm_generated, maxmin)
   
