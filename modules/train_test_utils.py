@@ -404,12 +404,12 @@ def plot_generated_atm(atm_generated: np.ndarray,
     fig.colorbar(im, ax=axs[0, 5])
 
     # Plot original atmosphere
-    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='cool', interpolation='nearest')
+    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[1, 0].set_title('Original Temperature')
     axs[1, 0].axis('off')
     fig.colorbar(im, ax=axs[1, 0])
     
-    im = axs[1, 1].imshow(atm_original[:,:,10,1], cmap='hot', interpolation='nearest')
+    im = axs[1, 1].imshow(atm_original[:,:,10,1], cmap='cool', interpolation='nearest')
     axs[1, 1].set_title('Original Density')
     axs[1, 1].axis('off')
     fig.colorbar(im, ax=axs[1, 1])
