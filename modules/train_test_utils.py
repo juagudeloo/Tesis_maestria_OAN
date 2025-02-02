@@ -456,69 +456,48 @@ def plot_od_generated_atm(
 
     print("atm_generated shape:", atm_generated.shape)
     print("atm_original shape:", atm_original.shape)
-    fig, axs = plt.subplots(2, 7, figsize=(30, 10))
+    fig, axs = plt.subplots(1, 7, figsize=(30, 5))
 
-    # Plot generated atmosphere
-    im = axs[0, 0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest')
-    axs[0, 0].scatter(iy, ix, color='red', s=50, edgecolor='black')
-    axs[0, 0].set_title('Stokes I')
-    axs[0, 0].axis('off')
-    fig.colorbar(im, ax=axs[0, 0])
+    # Plot Stokes I
+    im = axs[0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest')
+    axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
+    axs[0].set_title('Stokes I')
+    axs[0].axis('off')
+    fig.colorbar(im, ax=axs[0])
 
-    axs[0, 1].plot(atm_generated[ix, iy, :, 0], color='orangered')
-    axs[0, 1].set_title('Generated Temperature')
-    axs[0, 1].axis('off')
+    # Plot generated and original atmosphere
+    axs[1].plot(atm_generated[ix, iy, :, 0], color='orangered', label='Generated')
+    axs[1].plot(atm_original[ix, iy, :, 0], color='navy', label='Original')
+    axs[1].set_title('Temperature')
+    axs[1].axis('off')
 
-    axs[0, 2].plot(atm_generated[ix, iy, :, 1], color='orangered')
-    axs[0, 2].set_title('Generated Density')
-    axs[0, 2].axis('off')
+    axs[2].plot(atm_generated[ix, iy, :, 1], color='orangered', label='Generated')
+    axs[2].plot(atm_original[ix, iy, :, 1], color='navy', label='Original')
+    axs[2].set_title('Density')
+    axs[2].axis('off')
 
-    axs[0, 3].plot(atm_generated[ix, iy, :, 2], color='orangered')
-    axs[0, 3].set_title('Generated Bq')
-    axs[0, 3].axis('off')
+    axs[3].plot(atm_generated[ix, iy, :, 2], color='orangered', label='Generated')
+    axs[3].plot(atm_original[ix, iy, :, 2], color='navy', label='Original')
+    axs[3].set_title('Bq')
+    axs[3].axis('off')
 
-    axs[0, 4].plot(atm_generated[ix, iy, :, 3], color='orangered')
-    axs[0, 4].set_title('Generated Bu')
-    axs[0, 4].axis('off')
-    
-    axs[0, 5].plot(atm_generated[ix, iy, :, 4], color='orangered')
-    axs[0, 5].set_title('Generated Bv')
-    axs[0, 5].axis('off')
+    axs[4].plot(atm_generated[ix, iy, :, 3], color='orangered', label='Generated')
+    axs[4].plot(atm_original[ix, iy, :, 3], color='navy', label='Original')
+    axs[4].set_title('Bu')
+    axs[4].axis('off')
 
-    axs[0, 6].plot(atm_generated[ix, iy, :, 5], color='orangered')
-    axs[0, 6].set_title('Generated v')
-    axs[0, 6].axis('off')
+    axs[5].plot(atm_generated[ix, iy, :, 4], color='orangered', label='Generated')
+    axs[5].plot(atm_original[ix, iy, :, 4], color='navy', label='Original')
+    axs[5].set_title('Bv')
+    axs[5].axis('off')
 
-    # Plot original atmosphere
-    im = axs[1, 0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest')
-    axs[1, 0].scatter(iy, ix, color='red', s=50, edgecolor='black')
-    axs[1, 0].set_title('Stokes I')
-    axs[1, 0].axis('off')
-    fig.colorbar(im, ax=axs[1, 0])
+    axs[6].plot(atm_generated[ix, iy, :, 5], color='orangered', label='Generated')
+    axs[6].plot(atm_original[ix, iy, :, 5], color='navy', label='Original')
+    axs[6].set_title('v')
+    axs[6].axis('off')
 
-    axs[1, 1].plot(atm_original[ix, iy, :, 0], color='navy')
-    axs[1, 1].set_title('Original Temperature')
-    axs[1, 1].axis('off')
-
-    axs[1, 2].plot(atm_original[ix, iy, :, 1], color='navy')
-    axs[1, 2].set_title('Original Density')
-    axs[1, 2].axis('off')
-
-    axs[1, 3].plot(atm_original[ix, iy, :, 2], color='navy')
-    axs[1, 3].set_title('Original Bq')
-    axs[1, 3].axis('off')
-
-    axs[1, 4].plot(atm_original[ix, iy, :, 3], color='navy')
-    axs[1, 4].set_title('Original Bu')
-    axs[1, 4].axis('off')
-
-    axs[1, 5].plot(atm_original[ix, iy, :, 4], color='navy')
-    axs[1, 5].set_title('Original Bv')
-    axs[1, 5].axis('off')
-
-    axs[1, 6].plot(atm_original[ix, iy, :, 5], color='navy')
-    axs[1, 6].set_title('Original v')
-    axs[1, 6].axis('off')
+    # Add legend
+    axs[1].legend(loc='upper right')
   
     
     if not os.path.exists(images_dir):
