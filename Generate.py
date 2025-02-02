@@ -43,14 +43,16 @@ def main():
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
     
+    stokes_data_linear = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
+    stokes_data_cnn = np.copy(stokes_data[0])
     # Generate results
     atm_generated = {"SimpleLinear": generate_results(model = nn_models["SimpleLinear"],
-                                                      stokes_data = np.reshape(stokes_data[0], (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3])),
+                                                      stokes_data = stokes_data_linear,
                                                       maxmin = phys_maxmin,
                                                       device = device
                                                      ),
                      "SimpleCNN1D": generate_results(model = nn_models["SimpleCNN1D"],
-                                                      stokes_data = stokes_data,
+                                                      stokes_data = stokes_data_cnn,
                                                       maxmin = phys_maxmin,
                                                       device = device
                                                      )
