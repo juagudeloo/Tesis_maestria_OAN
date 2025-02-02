@@ -32,28 +32,12 @@ def main():
                        batch_size = 80)
     
     ### MODEL CREATION ###
-    set_seeds()
-    simple_linear_models = {
-        "simple_linear_72": SimpleLinearModel(36*4,6*20,hidden_units=72).to(device),
-        "simple_linear_1024": SimpleLinearModel(36*4,6*20,hidden_units=1024).to(device),
-        "simple_linear_2048": SimpleLinearModel(36*4,6*20,hidden_units=2048).to(device),
-        "simple_linear_4096": SimpleLinearModel(36*4,6*20,hidden_units=4096).to(device)
-        
-    }
-    
-    simple_cnn1d_models = {
-        "simple_cnn1d_72": SimpleCNN1DModel(36,6*20,hidden_units=72).to(device),
-        "simple_cnn1d_1024": SimpleCNN1DModel(36,6*20,hidden_units=1024).to(device),
-        "simple_cnn1d_2048": SimpleCNN1DModel(36,6*20,hidden_units=2048).to(device),
-        "simple_cnn1d_4096": SimpleCNN1DModel(36,6*20,hidden_units=4096).to(device)
-    }
-    
     hidden_units = [72, 1024, 2048, 4096]
     
     ### Checking linear vs convolutional 1d models ###
     
     test_epochs = [10, 20]
-    model_types = ["simple_linear", "simple_cnn1d"]
+    model_types = ["simple_linear", "simple_cnn1d_36channels", "simple_cnn1d_4channels"]
     lr = 1e-3
     
     
@@ -67,11 +51,19 @@ def main():
                         device = device,
                         batch_size = 80,
                         linear = True)
-        else:
+        elif m_type == "simple_cnn1d_36channels":
             train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                         atm_data = atm_data,
                         device = device,
                         batch_size = 80,
+                        stokes_as_channels=False
+                        linear = False)
+        elif m_type == "simple_cnn1d_4channels":
+            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+                        atm_data = atm_data,
+                        device = device,
+                        batch_size = 80,
+                        stokes_as_channels=True
                         linear = False)
         #2. Loop through hidden units
         for hu in hidden_units:
@@ -80,8 +72,10 @@ def main():
                 #Creating the model
                 if m_type == "simple_linear":
                     model = SimpleLinearModel(36*4,6*20,hidden_units=hu).to(device)
-                else:
+                elif m_type == "simple_cnn1d_36channels":
                     model = SimpleCNN1DModel(36,6*20,hidden_units=hu).to(device)
+                elif m_type == "simple_cnn1d_4channels":
+                    model = SimpleCNN1DModel(4,6*20,hidden_units=hu).to(device)
                 model = model.float()
                 #Loss function
                 loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
@@ -97,11 +91,11 @@ def main():
                     epochs=epochs,
                     device=device,
                     writer=create_writer(experiment_name=str(hu)+"_hidden_units",
-                                        model_name=model.name,
+                                        model_name=m_type,
                                         extra=f"{epochs}_epochs"))
                 
                 #Save the model to file so we can get back the best model
-                save_filepath = f"{model.name}_{hu}_hidden_units_{epochs}_epochs.pth"
+                save_filepath = f"{m_type}_{hu}_hidden_units_{epochs}_epochs.pth"
                 save_model(model=model,
                         target_dir="models",
                         model_name=save_filepath)
