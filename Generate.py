@@ -79,11 +79,31 @@ def main():
                         )
     
     #OD plots
+    
     plot_od_generated_atm(
                         stokes_data = stokes_data_plot,
                        atm_generated = atm_generated["SimpleLinear"],
                        atm_original = atm_data_original,
-                       images_name = "atm_od_SimpleLinear.png",
+                       images_name = "atm_od_SimpleLinear_intergranular.png",
+                       ix = 130,
+                       iy = 50
+                      )
+
+    plot_od_generated_atm(
+                        stokes_data = stokes_data_plot,
+                        atm_generated = atm_generated["SimpleCNN1D"],
+                        atm_original = atm_data_original,
+                        images_name = "atm_od_SimpleCNN1D_intergranular.png",
+                        ix = 50,
+                        iy = 130
+                        )
+    
+    
+    plot_od_generated_atm(
+                        stokes_data = stokes_data_plot,
+                       atm_generated = atm_generated["SimpleLinear"],
+                       atm_original = atm_data_original,
+                       images_name = "atm_od_SimpleLinear_granular.png",
                        ix = 250,
                        iy = 250
                       )
@@ -92,7 +112,7 @@ def main():
                         stokes_data = stokes_data_plot,
                         atm_generated = atm_generated["SimpleCNN1D"],
                         atm_original = atm_data_original,
-                        images_name = "atm_od_SimpleCNN1D.png",
+                        images_name = "atm_od_SimpleCNN1D_granular.png",
                         ix = 250,
                         iy = 250
                         )
