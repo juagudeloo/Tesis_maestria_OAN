@@ -351,7 +351,9 @@ def generate_results(model: torch.nn.Module,
   print("stokes data shape for generation:", stokes_data.size())
   
   atm_generated = model(stokes_data)
+  atm_generated = torch.squeeze(atm_generated, 0)
   atm_generated = atm_generated.cpu().detach().numpy()
+  atm_generated = np.reshape(atm_generated, (480,480,20,6))
   
   print("atm generated data shape :", atm_generated.shape)
   
