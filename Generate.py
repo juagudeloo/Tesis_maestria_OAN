@@ -43,6 +43,7 @@ def main():
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
     
+    stokes_data_plot = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0],stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
     stokes_data_linear = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
     stokes_data_cnn = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
     atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
@@ -79,6 +80,7 @@ def main():
     
     #OD plots
     plot_od_generated_atm(
+                        stokes_data = stokes_data_plot,
                        atm_generated = atm_generated["SimpleLinear"],
                        atm_original = atm_data_original,
                        images_name = "atm_od_SimpleLinear.png",
@@ -87,6 +89,7 @@ def main():
                       )
 
     plot_od_generated_atm(
+                        stokes_data = stokes_data_plot,
                         atm_generated = atm_generated["SimpleCNN1D"],
                         atm_original = atm_data_original,
                         images_name = "atm_od_SimpleCNN1D.png",
