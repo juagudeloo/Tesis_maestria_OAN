@@ -56,14 +56,14 @@ def main():
                         atm_data = atm_data,
                         device = device,
                         batch_size = 80,
-                        stokes_as_channels=False
+                        stokes_as_channels=False,
                         linear = False)
         elif m_type == "simple_cnn1d_4channels":
             train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                         atm_data = atm_data,
                         device = device,
                         batch_size = 80,
-                        stokes_as_channels=True
+                        stokes_as_channels=True,
                         linear = False)
         #2. Loop through hidden units
         for hu in hidden_units:
