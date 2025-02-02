@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_generated_atm
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm
 
 
 def main():
