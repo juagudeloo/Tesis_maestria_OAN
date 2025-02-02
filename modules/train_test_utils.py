@@ -459,7 +459,7 @@ def plot_od_generated_atm(
     fig, axs = plt.subplots(1, 7, figsize=(30, 5))
 
     # Plot Stokes I
-    im = axs[0].imshow(atm_generated[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
     axs[0].set_title('Temperature Surface')
     axs[0].axis('on')
@@ -498,7 +498,6 @@ def plot_od_generated_atm(
 
     # Add legend
     axs[1].legend(loc='upper right')
-  
     
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
