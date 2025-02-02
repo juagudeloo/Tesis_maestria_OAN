@@ -459,43 +459,42 @@ def plot_od_generated_atm(
     fig, axs = plt.subplots(1, 7, figsize=(30, 5))
 
     # Plot Stokes I
-    vmin, vmax = stokes_data[:,:,0,0].min(), stokes_data[:,:,0,0].max()
-    im = axs[0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest', vmin=vmin, vmax=vmax)
+    im = axs[0].imshow(atm_generated[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
-    axs[0].set_title('Stokes I')
-    axs[0].axis('off')
+    axs[0].set_title('Temperature Surface')
+    axs[0].axis('on')
     fig.colorbar(im, ax=axs[0])
 
     # Plot generated and original atmosphere
     axs[1].plot(atm_generated[ix, iy, :, 0], color='orangered', label='Generated')
     axs[1].plot(atm_original[ix, iy, :, 0], color='navy', label='Original')
     axs[1].set_title('Temperature')
-    axs[1].axis('off')
+    axs[1].axis('on')
 
     axs[2].plot(atm_generated[ix, iy, :, 1], color='orangered', label='Generated')
     axs[2].plot(atm_original[ix, iy, :, 1], color='navy', label='Original')
     axs[2].set_title('Density')
-    axs[2].axis('off')
+    axs[2].axis('on')
 
     axs[3].plot(atm_generated[ix, iy, :, 2], color='orangered', label='Generated')
     axs[3].plot(atm_original[ix, iy, :, 2], color='navy', label='Original')
     axs[3].set_title('Bq')
-    axs[3].axis('off')
+    axs[3].axis('on')
 
     axs[4].plot(atm_generated[ix, iy, :, 3], color='orangered', label='Generated')
     axs[4].plot(atm_original[ix, iy, :, 3], color='navy', label='Original')
     axs[4].set_title('Bu')
-    axs[4].axis('off')
+    axs[4].axis('on')
 
     axs[5].plot(atm_generated[ix, iy, :, 4], color='orangered', label='Generated')
     axs[5].plot(atm_original[ix, iy, :, 4], color='navy', label='Original')
     axs[5].set_title('Bv')
-    axs[5].axis('off')
+    axs[5].axis('on')
 
     axs[6].plot(atm_generated[ix, iy, :, 5], color='orangered', label='Generated')
     axs[6].plot(atm_original[ix, iy, :, 5], color='navy', label='Original')
     axs[6].set_title('v')
-    axs[6].axis('off')
+    axs[6].axis('on')
 
     # Add legend
     axs[1].legend(loc='upper right')
