@@ -378,33 +378,33 @@ def plot_generated_atm(atm_generated: np.ndarray,
     axs[0, 0].axis('off')
     fig.colorbar(im, ax=axs[0, 0])
 
-    im = axs[0, 1].imshow(atm_generated[:,:,10,1], cmap='hot', interpolation='nearest')
+    im = axs[0, 1].imshow(atm_generated[:,:,10,1], cmap='cool', interpolation='nearest')
     axs[0, 1].set_title('Generated Density')
     axs[0, 1].axis('off')
     fig.colorbar(im, ax=axs[0, 1])
 
-    im = axs[0, 2].imshow(atm_generated[:,:,10,2], cmap='hot', interpolation='nearest')
+    im = axs[0, 2].imshow(atm_generated[:,:,10,2], cmap='seismic', interpolation='nearest')
     axs[0, 2].set_title('Generated Bq')
     axs[0, 2].axis('off')
     fig.colorbar(im, ax=axs[0, 2])
 
-    im = axs[0, 3].imshow(atm_generated[:,:,10,3], cmap='hot', interpolation='nearest')
+    im = axs[0, 3].imshow(atm_generated[:,:,10,3], cmap='seismic', interpolation='nearest')
     axs[0, 3].set_title('Generated Bu')
     axs[0, 3].axis('off')
     fig.colorbar(im, ax=axs[0, 3])
     
-    im = axs[0, 4].imshow(atm_generated[:,:,10,4], cmap='hot', interpolation='nearest')
+    im = axs[0, 4].imshow(atm_generated[:,:,10,4], cmap='seismic', interpolation='nearest')
     axs[0, 4].set_title('Generated Bv')
     axs[0, 4].axis('off')
     fig.colorbar(im, ax=axs[0, 4])
 
-    im = axs[0, 5].imshow(atm_generated[:,:,10,5], cmap='hot', interpolation='nearest')
-    axs[0, 5].set_title('Generated V')
+    im = axs[0, 5].imshow(atm_generated[:,:,10,5], cmap='seismic', interpolation='nearest')
+    axs[0, 5].set_title('Generated v')
     axs[0, 5].axis('off')
     fig.colorbar(im, ax=axs[0, 5])
 
     # Plot original atmosphere
-    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='cool', interpolation='nearest')
     axs[1, 0].set_title('Original Temperature')
     axs[1, 0].axis('off')
     fig.colorbar(im, ax=axs[1, 0])
@@ -414,23 +414,23 @@ def plot_generated_atm(atm_generated: np.ndarray,
     axs[1, 1].axis('off')
     fig.colorbar(im, ax=axs[1, 1])
 
-    im = axs[1, 2].imshow(atm_original[:,:,10,2], cmap='hot', interpolation='nearest')
+    im = axs[1, 2].imshow(atm_original[:,:,10,2], cmap='seismic', interpolation='nearest')
     axs[1, 2].set_title('Original Bq')
     axs[1, 2].axis('off')
     fig.colorbar(im, ax=axs[1, 2])
 
-    im = axs[1, 3].imshow(atm_original[:,:,10,3], cmap='hot', interpolation='nearest')
+    im = axs[1, 3].imshow(atm_original[:,:,10,3], cmap='seismic', interpolation='nearest')
     axs[1, 3].set_title('Original Bu')
     axs[1, 3].axis('off')
     fig.colorbar(im, ax=axs[1, 3])
 
-    im = axs[1, 4].imshow(atm_original[:,:,10,4], cmap='hot', interpolation='nearest')
+    im = axs[1, 4].imshow(atm_original[:,:,10,4], cmap='seismic', interpolation='nearest')
     axs[1, 4].set_title('Original Bv')
     axs[1, 4].axis('off')
     fig.colorbar(im, ax=axs[1, 4])
 
-    im = axs[1, 5].imshow(atm_original[:,:,10,5], cmap='hot', interpolation='nearest')
-    axs[1, 5].set_title('Original V')
+    im = axs[1, 5].imshow(atm_original[:,:,10,5], cmap='seismic', interpolation='nearest')
+    axs[1, 5].set_title('Original v')
     axs[1, 5].axis('off')
     fig.colorbar(im, ax=axs[1, 5])
 
