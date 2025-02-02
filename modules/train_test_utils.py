@@ -349,7 +349,7 @@ def generate_results(model: torch.nn.Module,
   stokes_data = torch.unsqueeze(stokes_data, 0)
   
   print("stokes data shape for generation:", stokes_data.size())
-  
+  print("Generating atmosphere data using {model.name}...")
   atm_generated = model(stokes_data)
   atm_generated = torch.squeeze(atm_generated, 0)
   atm_generated = atm_generated.cpu().detach().numpy()
