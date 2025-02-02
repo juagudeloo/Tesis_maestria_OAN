@@ -459,7 +459,8 @@ def plot_od_generated_atm(
     fig, axs = plt.subplots(1, 7, figsize=(30, 5))
 
     # Plot Stokes I
-    im = axs[0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest')
+    vmin, vmax = stokes_data[:,:,0,0].min(), stokes_data[:,:,0,0].max()
+    im = axs[0].imshow(stokes_data[:,:,0,0], cmap='gray', interpolation='nearest', vmin=vmin, vmax=vmax)
     axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
     axs[0].set_title('Stokes I')
     axs[0].axis('off')
