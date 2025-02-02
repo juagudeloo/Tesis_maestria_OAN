@@ -373,54 +373,66 @@ def plot_generated_atm(atm_generated: np.ndarray,
     fig, axs = plt.subplots(2, 6, figsize=(30, 10))
 
     # Plot generated atmosphere
-    axs[0, 0].imshow(atm_generated[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[0, 0].imshow(atm_generated[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[0, 0].set_title('Generated Temperature')
     axs[0, 0].axis('off')
+    fig.colorbar(im, ax=axs[0, 0])
 
-    axs[0, 1].imshow(atm_generated[:,:,10,1], cmap='hot', interpolation='nearest')
+    im = axs[0, 1].imshow(atm_generated[:,:,10,1], cmap='hot', interpolation='nearest')
     axs[0, 1].set_title('Generated Density')
     axs[0, 1].axis('off')
+    fig.colorbar(im, ax=axs[0, 1])
 
-    axs[0, 2].imshow(atm_generated[:,:,10,2], cmap='hot', interpolation='nearest')
+    im = axs[0, 2].imshow(atm_generated[:,:,10,2], cmap='hot', interpolation='nearest')
     axs[0, 2].set_title('Generated Bq')
     axs[0, 2].axis('off')
+    fig.colorbar(im, ax=axs[0, 2])
 
-    axs[0, 3].imshow(atm_generated[:,:,10,3], cmap='hot', interpolation='nearest')
+    im = axs[0, 3].imshow(atm_generated[:,:,10,3], cmap='hot', interpolation='nearest')
     axs[0, 3].set_title('Generated Bu')
     axs[0, 3].axis('off')
-
-    axs[0, 4].imshow(atm_generated[:,:,10,4], cmap='hot', interpolation='nearest')
+    fig.colorbar(im, ax=axs[0, 3])
+    
+    im = axs[0, 4].imshow(atm_generated[:,:,10,4], cmap='hot', interpolation='nearest')
     axs[0, 4].set_title('Generated Bv')
     axs[0, 4].axis('off')
+    fig.colorbar(im, ax=axs[0, 4])
 
-    axs[0, 5].imshow(atm_generated[:,:,10,5], cmap='hot', interpolation='nearest')
+    im = axs[0, 5].imshow(atm_generated[:,:,10,5], cmap='hot', interpolation='nearest')
     axs[0, 5].set_title('Generated V')
     axs[0, 5].axis('off')
+    fig.colorbar(im, ax=axs[0, 5])
 
     # Plot original atmosphere
-    axs[1, 0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[1, 0].set_title('Original Temperature')
     axs[1, 0].axis('off')
-
-    axs[1, 1].imshow(atm_original[:,:,10,1], cmap='hot', interpolation='nearest')
+    fig.colorbar(im, ax=axs[1, 0])
+    
+    im = axs[1, 1].imshow(atm_original[:,:,10,1], cmap='hot', interpolation='nearest')
     axs[1, 1].set_title('Original Density')
     axs[1, 1].axis('off')
+    fig.colorbar(im, ax=axs[1, 1])
 
-    axs[1, 2].imshow(atm_original[:,:,10,2], cmap='hot', interpolation='nearest')
+    im = axs[1, 2].imshow(atm_original[:,:,10,2], cmap='hot', interpolation='nearest')
     axs[1, 2].set_title('Original Bq')
     axs[1, 2].axis('off')
+    fig.colorbar(im, ax=axs[1, 2])
 
-    axs[1, 3].imshow(atm_original[:,:,10,3], cmap='hot', interpolation='nearest')
+    im = axs[1, 3].imshow(atm_original[:,:,10,3], cmap='hot', interpolation='nearest')
     axs[1, 3].set_title('Original Bu')
     axs[1, 3].axis('off')
+    fig.colorbar(im, ax=axs[1, 3])
 
-    axs[1, 4].imshow(atm_original[:,:,10,4], cmap='hot', interpolation='nearest')
+    im = axs[1, 4].imshow(atm_original[:,:,10,4], cmap='hot', interpolation='nearest')
     axs[1, 4].set_title('Original Bv')
     axs[1, 4].axis('off')
+    fig.colorbar(im, ax=axs[1, 4])
 
-    axs[1, 5].imshow(atm_original[:,:,10,5], cmap='hot', interpolation='nearest')
+    im = axs[1, 5].imshow(atm_original[:,:,10,5], cmap='hot', interpolation='nearest')
     axs[1, 5].set_title('Original V')
     axs[1, 5].axis('off')
+    fig.colorbar(im, ax=axs[1, 5])
 
   
     
