@@ -346,7 +346,6 @@ def generate_results(model: torch.nn.Module,
   
   stokes_data = torch.tensor(stokes_data).float()
   stokes_data = stokes_data.to(device)
-  stokes_data = torch.unsqueeze(stokes_data, 0)
   
   print(f"stokes data shape for generation:", stokes_data.size())
   print(f"Generating atmosphere data using {model.name}...")
