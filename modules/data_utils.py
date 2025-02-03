@@ -370,8 +370,8 @@ def create_dataloaders(stokes_data: np.ndarray,
         in_train = torch.reshape(in_train, (in_train.size()[0], in_train.size()[1]*in_train.size()[2]))
         in_test = torch.reshape(in_test, (in_test.size()[0], in_test.size()[1]*in_test.size()[2]))
     if stokes_as_channels:
-        in_train = torch.moveaxis(in_train, (1,2))
-        in_test = torch.moveaxis(in_test, (1,2))
+        in_train = torch.moveaxis(in_train, 1,2)
+        in_test = torch.moveaxis(in_test, 1,2)
     out_train = torch.reshape(out_train, (out_train.size()[0], out_train.size()[1]*out_train.size()[2]))
     out_test = torch.reshape(out_test, (out_test.size()[0], out_test.size()[1]*out_test.size()[2]))
     
