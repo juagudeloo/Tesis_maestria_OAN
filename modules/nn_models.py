@@ -17,10 +17,14 @@ class SimpleCNN1DModel(nn.Module):
     def __init__(self, in_shape, out_shape, hidden_units, signal_length):
         super().__init__()
         self.name = "SimpleCNN1D"
+        
+        #Hyperparameters
         padding = 1
         kernel_size = 2
         stride = 1
         conv_out_size = int((signal_length+2*padding-kernel_size)/stride + 1)
+        
+        #Model
         self.simple_conv = nn.Sequential(
         nn.Conv1d(in_channels=in_shape, out_channels=hidden_units, kernel_size = kernel_size, stride=stride, padding=padding),
         nn.ReLU(),

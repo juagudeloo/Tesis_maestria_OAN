@@ -39,9 +39,7 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     test_epochs = [10, 20]
-    model_types = [
-        #"simple_linear", "simple_cnn1d_36channels", 
-        "simple_cnn1d_4channels"]
+    model_types = ["simple_linear", "simple_cnn1d_36channels", "simple_cnn1d_4channels"]
     lr = 1e-3
     
     
@@ -79,7 +77,7 @@ def main():
                 elif m_type == "simple_cnn1d_36channels":
                     model = SimpleCNN1DModel(36,6*20,hidden_units=hu, signal_length=4).to(device)
                 elif m_type == "simple_cnn1d_4channels":
-                    model = SimpleCNN1DModel(4,6*20,hidden_units=hu,signal_length=36).to(device)
+                    model = SimpleCNN1DModel(4,6*20,hidden_units=hu, signal_length=36).to(device)
                 model = model.float()
                 #Loss function
                 loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
