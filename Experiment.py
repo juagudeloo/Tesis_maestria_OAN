@@ -17,20 +17,22 @@ def main():
     
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
-    filenames = ["080000", "085000", "090000"]
+    filenames = ["080000", 
+                 #"085000", "090000"
+                 ]
     
     #Load data
-    atm_data, stokes_data, mags_names = load_training_data(filenames)
+    #atm_data, stokes_data, mags_names = load_training_data(filenames)
     
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Tensors stored in: {device}")
     
     # Create dataset and dataloaders
-    train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                       atm_data = atm_data,
-                       device = device,
-                       batch_size = 80)
+    #train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+    #                   atm_data = atm_data,
+    #                   device = device,
+    #                  batch_size = 80)
     
     ### MODEL CREATION ###
     hidden_units = [72, 1024, 2048, 4096]
@@ -48,26 +50,27 @@ def main():
     #1. Loop through model types
     for m_type in model_types:
         print(f"Training {m_type} models")
-        if m_type == "simple_linear":
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
-                        device = device,
-                        batch_size = 80,
-                        linear = True)
-        elif m_type == "simple_cnn1d_36channels":
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
-                        device = device,
-                        batch_size = 80,
-                        stokes_as_channels=False,
-                        linear = False)
-        elif m_type == "simple_cnn1d_4channels":
-            train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
-                        device = device,
-                        batch_size = 80,
-                        stokes_as_channels=True,
-                        linear = False)
+        #if m_type == "simple_linear":
+        #    train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                atm_data = atm_data,
+        #                device = device,
+        #                batch_size = 80,
+        #                linear = True)
+        #elif m_type == "simple_cnn1d_36channels":
+        #    train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                atm_data = atm_data,
+        #                device = device,
+        #                batch_size = 80,
+        #                stokes_as_channels=False,
+        #                linear = False)
+        #elif m_type == "simple_cnn1d_4channels":
+        #    train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                atm_data = atm_data,
+        #                device = device,
+        #                batch_size = 80,
+        #                stokes_as_channels=True,
+        #                linear = False)
+    
         #2. Loop through hidden units
         for hu in hidden_units:
             #3. Loop throuch epochs
@@ -80,7 +83,7 @@ def main():
                 elif m_type == "simple_cnn1d_4channels":
                     model = SimpleCNN1DModel(4,6*20,hidden_units=hu).to(device)
                 model = model.float()
-                summary(model, (1, 4, 36))
+                summary(model, input_size = [1, 4, 36])
                 #Loss function
                 loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
 
