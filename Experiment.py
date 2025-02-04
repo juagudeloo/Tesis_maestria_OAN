@@ -4,6 +4,7 @@ from timeit import default_timer as timer
 
 import torch
 from torch import nn
+from torchinfo import summary
 
 #MODULES IMPORT
 sys.path.append("../modules")
@@ -37,7 +38,9 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     test_epochs = [10, 20]
-    model_types = ["simple_linear", "simple_cnn1d_36channels", "simple_cnn1d_4channels"]
+    model_types = [
+        #"simple_linear", "simple_cnn1d_36channels", 
+        "simple_cnn1d_4channels"]
     lr = 1e-3
     
     
@@ -77,6 +80,7 @@ def main():
                 elif m_type == "simple_cnn1d_4channels":
                     model = SimpleCNN1DModel(4,6*20,hidden_units=hu).to(device)
                 model = model.float()
+                summary(model, (1, 4, 36))
                 #Loss function
                 loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
 
