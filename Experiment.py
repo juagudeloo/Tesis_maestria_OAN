@@ -39,7 +39,9 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     test_epochs = [10, 20]
-    model_types = ["simple_linear", "simple_cnn1d_36channels", "simple_cnn1d_4channels"]
+    model_types = [
+        #"simple_linear", "simple_cnn1d_36channels", 
+                   "simple_cnn1d_4channels"]
     lr = 1e-3
     
     

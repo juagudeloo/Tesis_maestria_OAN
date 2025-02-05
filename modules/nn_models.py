@@ -2,7 +2,7 @@ import torch
 from torch import nn
 
 class SimpleLinearModel(nn.Module):
-    def __init__(self, in_shape, out_shape, hidden_units):
+    def __init__(self, in_shape: int, out_shape: int, hidden_units: int):
         super().__init__()
         self.name = "SimpleLinear"
         self.simple_model = nn.Sequential(
@@ -14,7 +14,7 @@ class SimpleLinearModel(nn.Module):
         return self.simple_model(x)
 
 class SimpleCNN1DModel(nn.Module):
-    def __init__(self, in_shape, out_shape, hidden_units, signal_length):
+    def __init__(self, in_shape: int, out_shape: int, hidden_units: int, signal_length: int):
         super().__init__()
         self.name = "SimpleCNN1D"
         

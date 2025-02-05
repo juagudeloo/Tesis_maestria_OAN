@@ -313,10 +313,10 @@ def save_model(model: torch.nn.Module,
 
 def charge_weights(model: torch.nn.Module,
                  target_dir: str,
-                 model_name: str):
+                 weights_name: str):
   
   target_dir_path = Path(target_dir)
-  model_path = target_dir_path / model_name
+  model_path = target_dir_path / weights_name
   
   print(f"[INFO] Loading model from: {model_path}")
   
@@ -364,7 +364,8 @@ def generate_results(model: torch.nn.Module,
 
 def plot_surface_generated_atm(atm_generated: np.ndarray,
                        atm_original: np.ndarray,
-                       images_name: str,
+                       model_subdir: str,
+                       image_name: str,
                        images_dir: str = "images",
                        ):
 
@@ -438,7 +439,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, images_name)
+    image_path = os.path.join(images_dir, subdir_name, )
     fig.savefig(image_path)
     
     print(f"Saved image to: {image_path}")
