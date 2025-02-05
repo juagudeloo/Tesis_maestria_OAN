@@ -87,9 +87,9 @@ def main():
                    )
       
       #Generate results
-      print(f"Generating results for {model}...")
+      print(f"Generating results for {model_name}...")
       atm_generated = generate_results(model = model,
-                                        stokes_data = stokes_data_linear,
+                                        stokes_data = stokes_data[model_name],
                                         maxmin = phys_maxmin,
                                         device = device
                                       )      
