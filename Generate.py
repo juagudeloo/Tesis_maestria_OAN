@@ -61,7 +61,7 @@ def main():
                  models_names[2]: SimpleCNN1DModel(4,6*20,hidden_units=72, signal_length=36).to(device),
                  }
     
-    models_names = nn_models[list(nn_models.keys())[i]]
+    models_names = list(nn_models.keys())
     
     # Weights paths
     target_dir = Path("models")
