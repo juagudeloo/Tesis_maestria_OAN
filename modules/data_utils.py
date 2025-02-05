@@ -244,6 +244,11 @@ class MURaM():
         
                     scaled_stokes[jx, jz,:,i] = self.stokes[jx, jz,:,i]/cont_model(self.new_wl)
         self.stokes = scaled_stokes
+        
+        scaling_importance = [1, 10, 10, 10] #Stokes parameters importance levels -> mapping Q, U and V to 0.1 of the intensity scale
+        for i in range(len(scaling_importance)):
+            self.stokes[:,:,:,i] = self.stokes[:,:,:,i]*scaling_importance[i] 
+            
         print("Scaled!")
 
         print(f""" self.stokes:
