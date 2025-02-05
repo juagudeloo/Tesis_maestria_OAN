@@ -30,8 +30,7 @@ def main():
     #----------------------------------------------
     stokes_data_cnn_36channels = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
     #----------------------------------------------
-    stokes_data_cnn_4channels = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
-    stokes_data_cnn_4channels = np.moveaxis(stokes_data_cnn_4channels, 2, 1)
+    stokes_data_cnn_4channels = np.moveaxis(stokes_data_cnn_36channels, 2, 1)
     #----------------------------------------------
     atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
     atm_data_original = descale_atm(atm_data_original, phys_maxmin)
