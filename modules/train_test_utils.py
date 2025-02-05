@@ -439,7 +439,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, subdir_name, )
+    image_path = os.path.join(images_dir, model_subdir, image_name)
     fig.savefig(image_path)
     
     print(f"Saved image to: {image_path}")
@@ -451,7 +451,8 @@ def plot_od_generated_atm(
                        atm_original: np.ndarray,
                        ix: int,
                        iy: int,
-                       images_name: str,
+                       model_subdir: str,
+                       image_name: str,
                        images_dir: str = "images",
                        ):
 
@@ -502,7 +503,7 @@ def plot_od_generated_atm(
     
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, images_name)
+    image_path = os.path.join(images_dir, model_subdir, image_name)
     fig.savefig(image_path)
     
     print(f"Saved image to: {image_path}")
