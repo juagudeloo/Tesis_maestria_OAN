@@ -102,7 +102,7 @@ def main():
       print("Plotting generated atmospheres...")
       #Suface plots
       plot_surface_generated_atm(
-                          atm_generated = atm_generated[model_name],
+                          atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           model_subdir = model_name,
                           images_name = "atm_surface.png"
@@ -112,7 +112,7 @@ def main():
       
       plot_od_generated_atm(
                           stokes_data = stokes_data_plot,
-                        atm_generated = atm_generated[model_name],
+                        atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         images_name = "OD_intergranular.png",
                         ix = 130,
@@ -120,7 +120,7 @@ def main():
                         )
       plot_od_generated_atm(
                           stokes_data = stokes_data_plot,
-                        atm_generated = atm_generated[model_name],
+                        atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         images_name = "OD_granular.png",
                         ix = 250,
