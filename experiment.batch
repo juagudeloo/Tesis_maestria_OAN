@@ -22,5 +22,5 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
 cd $SCRATCH_DIR
 
-python3 Experimetn.py
+python3 Experiment.py
 
