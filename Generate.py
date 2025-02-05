@@ -105,7 +105,7 @@ def main():
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           model_subdir = model_name,
-                          images_name = "atm_surface.png"
+                          image_name = "atm_surface.png"
                         )
     
       #OD plots
@@ -114,7 +114,8 @@ def main():
                           stokes_data = stokes_data_plot,
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
-                        images_name = "OD_intergranular.png",
+                        model_subdir = model_name,
+                        image_name = "OD_intergranular.png",
                         ix = 130,
                         iy = 50
                         )
@@ -122,7 +123,8 @@ def main():
                           stokes_data = stokes_data_plot,
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
-                        images_name = "OD_granular.png",
+                        model_subdir = model_name,
+                        image_name = "OD_granular.png",
                         ix = 250,
                         iy = 250
                         )
