@@ -17,7 +17,7 @@ def main():
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
     filenames = ["080000", 
-                 #"085000", "090000"
+                 "085000", "090000"
                  ]
     
     #Load data
@@ -40,7 +40,7 @@ def main():
     
     test_epochs = [10, 20]
     model_types = [
-        #"simple_linear", "simple_cnn1d_36channels", 
+        "simple_linear", "simple_cnn1d_36channels", 
                    "simple_cnn1d_4channels"]
     lr = 1e-3
     
