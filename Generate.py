@@ -135,7 +135,7 @@ def main():
                 image_name = "OD_density.png",
                 tau_index = itau,
                 titles = mags_names,
-                num_bars = 10)
+                num_bars = 50)
         
         print("Done!")
     
