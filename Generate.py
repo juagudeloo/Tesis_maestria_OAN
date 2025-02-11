@@ -110,7 +110,6 @@ def main():
       #OD plots
       
       plot_od_generated_atm(
-                          stokes_data = stokes_data_plot,
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         model_subdir = model_name,
@@ -119,7 +118,6 @@ def main():
                         iy = 50
                         )
       plot_od_generated_atm(
-                          stokes_data = stokes_data_plot,
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         model_subdir = model_name,
