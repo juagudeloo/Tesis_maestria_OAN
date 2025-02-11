@@ -366,70 +366,84 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
                        model_subdir: str,
                        image_name: str,
                        images_dir: str = "images",
+                       iod: int = 10
                        ):
 
     print("atm_generated shape:", atm_generated.shape)
     print("atm_original shape:", atm_original.shape)
     fig, axs = plt.subplots(2, 6, figsize=(30, 10))
+    tau = np.linspace(1, -3, 20)
+
+    iod = 10  # Variable for selecting the value of the third axis
+    tau_value = tau[iod]
+    fig.suptitle(f'Atmospheric Parameters at tau = {tau_value:.2f}', fontsize=16)
+
+    # Define colorbar limits based on atm_original
+    vmin_T, vmax_T = atm_original[:, :, iod, 0].min(), atm_original[:, :, iod, 0].max()
+    vmin_Rho, vmax_Rho = atm_original[:, :, iod, 1].min(), atm_original[:, :, iod, 1].max()
+    vmin_Bq, vmax_Bq = atm_original[:, :, iod, 2].min(), atm_original[:, :, iod, 2].max()
+    vmin_Bu, vmax_Bu = atm_original[:, :, iod, 3].min(), atm_original[:, :, iod, 3].max()
+    vmin_Bv, vmax_Bv = atm_original[:, :, iod, 4].min(), atm_original[:, :, iod, 4].max()
+    vmin_v, vmax_v = atm_original[:, :, iod, 5].min(), atm_original[:, :, iod, 5].max()
 
     # Plot generated atmosphere
-    im = axs[0, 0].imshow(atm_generated[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[0, 0].imshow(atm_generated[:, :, iod, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
     axs[0, 0].set_title('Generated Temperature')
     axs[0, 0].axis('off')
     fig.colorbar(im, ax=axs[0, 0])
 
-    im = axs[0, 1].imshow(atm_generated[:,:,10,1], cmap='cool', interpolation='nearest')
+    im = axs[0, 1].imshow(atm_generated[:, :, iod, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
     axs[0, 1].set_title('Generated Density')
     axs[0, 1].axis('off')
     fig.colorbar(im, ax=axs[0, 1])
 
-    im = axs[0, 2].imshow(atm_generated[:,:,10,2], cmap='seismic', interpolation='nearest')
+    im = axs[0, 2].imshow(atm_generated[:, :, iod, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
     axs[0, 2].set_title('Generated Bq')
     axs[0, 2].axis('off')
     fig.colorbar(im, ax=axs[0, 2])
 
-    im = axs[0, 3].imshow(atm_generated[:,:,10,3], cmap='seismic', interpolation='nearest')
+    im = axs[0, 3].imshow(atm_generated[:, :, iod, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
     axs[0, 3].set_title('Generated Bu')
     axs[0, 3].axis('off')
     fig.colorbar(im, ax=axs[0, 3])
     
-    im = axs[0, 4].imshow(atm_generated[:,:,10,4], cmap='seismic', interpolation='nearest')
+    im = axs[0, 4].imshow(atm_generated[:, :, iod, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
     axs[0, 4].set_title('Generated Bv')
     axs[0, 4].axis('off')
     fig.colorbar(im, ax=axs[0, 4])
 
-    im = axs[0, 5].imshow(atm_generated[:,:,10,5], cmap='seismic', interpolation='nearest')
+    im = axs[0, 5].imshow(atm_generated[:, :, iod, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
     axs[0, 5].set_title('Generated v')
     axs[0, 5].axis('off')
     fig.colorbar(im, ax=axs[0, 5])
 
     # Plot original atmosphere
-    im = axs[1, 0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
+    im = axs[1, 0].imshow(atm_original[:, :, iod, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
     axs[1, 0].set_title('Original Temperature')
     axs[1, 0].axis('off')
     fig.colorbar(im, ax=axs[1, 0])
     
-    im = axs[1, 1].imshow(atm_original[:,:,10,1], cmap='cool', interpolation='nearest')
+    im = axs[1, 1].imshow(atm_original[:, :, iod, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
     axs[1, 1].set_title('Original Density')
     axs[1, 1].axis('off')
     fig.colorbar(im, ax=axs[1, 1])
 
-    im = axs[1, 2].imshow(atm_original[:,:,10,2], cmap='seismic', interpolation='nearest')
+    im = axs[1, 2].imshow(atm_original[:, :, iod, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
     axs[1, 2].set_title('Original Bq')
     axs[1, 2].axis('off')
     fig.colorbar(im, ax=axs[1, 2])
 
-    im = axs[1, 3].imshow(atm_original[:,:,10,3], cmap='seismic', interpolation='nearest')
+    im = axs[1, 3].imshow(atm_original[:, :, iod, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
     axs[1, 3].set_title('Original Bu')
     axs[1, 3].axis('off')
     fig.colorbar(im, ax=axs[1, 3])
 
-    im = axs[1, 4].imshow(atm_original[:,:,10,4], cmap='seismic', interpolation='nearest')
+    im = axs[1, 4].imshow(atm_original[:, :, iod, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
     axs[1, 4].set_title('Original Bv')
     axs[1, 4].axis('off')
     fig.colorbar(im, ax=axs[1, 4])
 
-    im = axs[1, 5].imshow(atm_original[:,:,10,5], cmap='seismic', interpolation='nearest')
+    im = axs[1, 5].imshow(atm_original[:, :, iod, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
     axs[1, 5].set_title('Original v')
     axs[1, 5].axis('off')
     fig.colorbar(im, ax=axs[1, 5])
@@ -443,24 +457,23 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     fig.savefig(image_path)
     
     print(f"Saved image to: {image_path}")
-    
-  
+     
 def plot_od_generated_atm(
-                       stokes_data: np.ndarray,
                        atm_generated: np.ndarray,
                        atm_original: np.ndarray,
                        ix: int,
                        iy: int,
                        model_subdir: str,
                        image_name: str,
-                       images_dir: str = "images",
+                       images_dir: str = "images"
                        ):
 
     print("atm_generated shape:", atm_generated.shape)
     print("atm_original shape:", atm_original.shape)
     fig, axs = plt.subplots(1, 7, figsize=(30, 5))
-
-    # Plot Stokes I
+    tau = np.linspace(-3, 1, atm_generated.shape[2])
+    
+    # Plot Temperature Surface
     im = axs[0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
     axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
     axs[0].set_title('Temperature Surface')
@@ -468,34 +481,40 @@ def plot_od_generated_atm(
     fig.colorbar(im, ax=axs[0])
 
     # Plot generated and original atmosphere
-    axs[1].plot(atm_generated[ix, iy, :, 0], color='orangered', label='Generated')
-    axs[1].plot(atm_original[ix, iy, :, 0], color='navy', label='Original')
+    axs[1].plot(tau, atm_generated[ix, iy, :, 0], color='orangered', label='Generated')
+    axs[1].plot(tau, atm_original[ix, iy, :, 0], color='navy', label='Original')
     axs[1].set_title('Temperature')
+    axs[1].set_xlabel('Tau')
     axs[1].axis('on')
 
-    axs[2].plot(atm_generated[ix, iy, :, 1], color='orangered', label='Generated')
-    axs[2].plot(atm_original[ix, iy, :, 1], color='navy', label='Original')
+    axs[2].plot(tau, atm_generated[ix, iy, :, 1], color='orangered', label='Generated')
+    axs[2].plot(tau, atm_original[ix, iy, :, 1], color='navy', label='Original')
     axs[2].set_title('Density')
+    axs[2].set_xlabel('Tau')
     axs[2].axis('on')
 
-    axs[3].plot(atm_generated[ix, iy, :, 2], color='orangered', label='Generated')
-    axs[3].plot(atm_original[ix, iy, :, 2], color='navy', label='Original')
+    axs[3].plot(tau, atm_generated[ix, iy, :, 2], color='orangered', label='Generated')
+    axs[3].plot(tau, atm_original[ix, iy, :, 2], color='navy', label='Original')
     axs[3].set_title('Bq')
+    axs[3].set_xlabel('Tau')
     axs[3].axis('on')
 
-    axs[4].plot(atm_generated[ix, iy, :, 3], color='orangered', label='Generated')
-    axs[4].plot(atm_original[ix, iy, :, 3], color='navy', label='Original')
+    axs[4].plot(tau, atm_generated[ix, iy, :, 3], color='orangered', label='Generated')
+    axs[4].plot(tau, atm_original[ix, iy, :, 3], color='navy', label='Original')
     axs[4].set_title('Bu')
+    axs[4].set_xlabel('Tau')
     axs[4].axis('on')
 
-    axs[5].plot(atm_generated[ix, iy, :, 4], color='orangered', label='Generated')
-    axs[5].plot(atm_original[ix, iy, :, 4], color='navy', label='Original')
+    axs[5].plot(tau, atm_generated[ix, iy, :, 4], color='orangered', label='Generated')
+    axs[5].plot(tau, atm_original[ix, iy, :, 4], color='navy', label='Original')
     axs[5].set_title('Bv')
+    axs[5].set_xlabel('Tau')
     axs[5].axis('on')
 
-    axs[6].plot(atm_generated[ix, iy, :, 5], color='orangered', label='Generated')
-    axs[6].plot(atm_original[ix, iy, :, 5], color='navy', label='Original')
+    axs[6].plot(tau, atm_generated[ix, iy, :, 5], color='orangered', label='Generated')
+    axs[6].plot(tau, atm_original[ix, iy, :, 5], color='navy', label='Original')
     axs[6].set_title('v')
+    axs[6].set_xlabel('Tau')
     axs[6].axis('on')
 
     # Add legend
@@ -508,3 +527,57 @@ def plot_od_generated_atm(
     fig.savefig(image_path)
     
     print(f"Saved image to: {image_path}")
+    
+
+def plot_density_bars(atm_generated: np.ndarray,
+            atm_original: np.ndarray,
+            model_subdir: str,
+            image_name: str,
+            titles: list,
+            tau_index: int,
+            images_dir: str = "images",
+            num_bars: int = 10):
+  """
+  Plots the density of values of the atm_generated and atm_original for a specific optical depth index.
+  The plot is composed of bars.
+
+  Args:
+  atm_generated (np.ndarray): Generated atmospheric data.
+  atm_original (np.ndarray): Original atmospheric data.
+  model_subdir (str): Subdirectory for saving the plot.
+  image_name (str): Name of the image file.
+  titles (list): List of titles for each subplot.
+  tau_index (int): Index of the optical depth to plot.
+  images_dir (str, optional): Directory to save the images. Defaults to "images".
+  num_bars (int, optional): Number of bars in the plot. Defaults to 10.
+  """
+  tau = np.linspace(-3, 1, atm_generated.shape[2])
+  fig, axs = plt.subplots(1, atm_generated.shape[3], figsize=(5 * atm_generated.shape[3], 5))
+
+  for j in range(atm_generated.shape[3]):
+    gen_values = atm_generated[:, :, tau_index, j].flatten()
+    orig_values = atm_original[:, :, tau_index, j].flatten()
+
+    # Create histogram bins
+    bins = np.linspace(min(gen_values.min(), orig_values.min()), 
+               max(gen_values.max(), orig_values.max()), 
+               num_bars + 1)
+
+    # Plot histograms
+    axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
+    axs[j].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
+    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f})")
+    axs[j].set_xlabel('Value')
+    axs[j].set_ylabel('Density')
+    axs[j].legend(loc='upper right')
+
+  images_dir = os.path.join(images_dir, model_subdir)
+  if not os.path.exists(images_dir):
+    os.makedirs(images_dir)
+  image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
+  fig.savefig(image_path)
+
+  print(f"Saved image to: {image_path}")
+
+# Example usage:
+# plot_density_bars(atm_generated, atm_original, "model_subdir", "density_bars.png", ["Title1", "Title2", "Title3", "Title4", "Title5", "Title6"])
