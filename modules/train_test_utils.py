@@ -530,13 +530,13 @@ def plot_od_generated_atm(
     
 
 def plot_density_bars(atm_generated: np.ndarray,
-      atm_original: np.ndarray,
-      model_subdir: str,
-      image_name: str,
-      titles: list,
-      tau_index: int,
-      images_dir: str = "images",
-      num_bars: int = 10):
+  atm_original: np.ndarray,
+  model_subdir: str,
+  image_name: str,
+  titles: list,
+  tau_index: int,
+  images_dir: str = "images",
+  num_bars: int = 10):
   """
   Plots the density of values of the atm_generated and atm_original for a specific optical depth index.
   The plot is composed of bars.
@@ -558,10 +558,14 @@ def plot_density_bars(atm_generated: np.ndarray,
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
 
+    # Calculate quantiles for xlim
+    gen_q5, gen_q95 = np.quantile(gen_values, [0.05, 0.95])
+    orig_q5, orig_q95 = np.quantile(orig_values, [0.05, 0.95])
+    xlim_min = min(gen_q5, orig_q5)
+    xlim_max = max(gen_q95, orig_q95)
+
     # Create histogram bins
-    bins = np.linspace(min(gen_values.min(), orig_values.min()), 
-           max(gen_values.max(), orig_values.max()), 
-           num_bars + 1)
+    bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
 
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
@@ -570,7 +574,8 @@ def plot_density_bars(atm_generated: np.ndarray,
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
-    axs[j].set_xlim([bins[0], bins[-1]])  # Set xlim based on bins
+    axs[j].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
+    axs[j].text(0.5, -0.1, 'xlim based on 5th and 95th quantiles', ha='center', va='center', transform=axs[j].transAxes)
 
   images_dir = os.path.join(images_dir, model_subdir)
   if not os.path.exists(images_dir):
