@@ -530,13 +530,13 @@ def plot_od_generated_atm(
     
 
 def plot_density_bars(atm_generated: np.ndarray,
-            atm_original: np.ndarray,
-            model_subdir: str,
-            image_name: str,
-            titles: list,
-            tau_index: int,
-            images_dir: str = "images",
-            num_bars: int = 10):
+      atm_original: np.ndarray,
+      model_subdir: str,
+      image_name: str,
+      titles: list,
+      tau_index: int,
+      images_dir: str = "images",
+      num_bars: int = 10):
   """
   Plots the density of values of the atm_generated and atm_original for a specific optical depth index.
   The plot is composed of bars.
@@ -560,8 +560,8 @@ def plot_density_bars(atm_generated: np.ndarray,
 
     # Create histogram bins
     bins = np.linspace(min(gen_values.min(), orig_values.min()), 
-               max(gen_values.max(), orig_values.max()), 
-               num_bars + 1)
+           max(gen_values.max(), orig_values.max()), 
+           num_bars + 1)
 
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
@@ -570,6 +570,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
+    axs[j].set_xlim([bins[0], bins[-1]])  # Set xlim based on bins
 
   images_dir = os.path.join(images_dir, model_subdir)
   if not os.path.exists(images_dir):
