@@ -127,17 +127,18 @@ def main():
                         )
       
       #Density bars
-      for itau in range(20):
-        plot_density_bars(
-                atm_generated = atm_generated,
-                atm_original = atm_data_original,
-                model_subdir = model_name,
-                image_name = "OD_density.png",
-                tau_index = itau,
-                titles = mags_names,
-                num_bars = 100)
+      #for itau in range(20):
+      itau = 10
+      plot_density_bars(
+              atm_generated = atm_generated,
+              atm_original = atm_data_original,
+              model_subdir = model_name,
+              image_name = "OD_density.png",
+              tau_index = itau,
+              titles = mags_names,
+              num_bars = 100)
         
-        print("Done!")
+      print("Done!")
     
 if __name__ == "__main__":
     main()
