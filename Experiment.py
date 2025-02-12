@@ -7,7 +7,7 @@ from torch import nn
 
 #MODULES IMPORT
 sys.path.append("../modules")
-from modules.data_utils import load_training_data, create_dataloaders
+from modules.data_utils import load_training_data, create_dataloaders, plot_stokes
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
 from modules.train_test_utils import train, set_seeds, create_writer, save_model
 
@@ -41,8 +41,12 @@ def main():
     
     
     #1. Loop through model types
-    for spec_points in test_spectral_res:
-        atm_data, stokes_data, _ = load_training_data(filenames, n_spectral_points=spec_points)
+    for n_spec_points in test_spectral_res:
+        atm_data, stokes_data, _, wl_points = load_training_data(filenames, n_spectral_points=n_spec_points)
+        plot_stokes(stokes=stokes_data[0], 
+                    new_wl = wl_points,
+                    images_name = "example_stokes",)
+        
         # Create dataset and dataloaders
         train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                         atm_data = atm_data,
@@ -73,13 +77,13 @@ def main():
             #Creating the model
             if m_type == "simple_linear":
                 hu = 2048
-                model = SimpleLinearModel(spec_points*4,6*20,hidden_units=hu).to(device)
+                model = SimpleLinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
             elif m_type == "simple_cnn1d_36channels":
                 hu = 1024
-                model = SimpleCNN1DModel(spec_points,6*20,hidden_units=hu, signal_length=4).to(device)
+                model = SimpleCNN1DModel(n_spec_points,6*20,hidden_units=hu, signal_length=4).to(device)
             elif m_type == "simple_cnn1d_4channels":
                 hu = 72
-                model = SimpleCNN1DModel(4,6*20,hidden_units=hu, signal_length=spec_points).to(device)
+                model = SimpleCNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
             model = model.float()
             #Loss function
             loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
@@ -94,12 +98,12 @@ def main():
                 loss_fn=loss_fn,
                 epochs=epochs,
                 device=device,
-                writer=create_writer(experiment_name=str(spec_points)+"_spectral_points",
+                writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
                                     model_name=m_type,
                                     extra=f""))
             
             #Save the model to file so we can get back the best model
-            save_filepath = f"{m_type}_{spec_points}_spectral_points.pth"
+            save_filepath = f"{m_type}_{n_spec_points}_spectral_points.pth"
             save_model(model=model,
                     target_dir="models",
                     model_name=save_filepath)

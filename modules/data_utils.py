@@ -351,7 +351,54 @@ class MURaM:
         len_gran = atm_quant_gran.shape[0]
 
         # Leveraging the quantity of data
-        
+
+
+##############################################################
+# Plot utils
+##############################################################
+
+def plot_stokes(stokes: np.ndarray, 
+                wl_points: np.ndarray, 
+                image_name: str,
+                images_dir: str = "images",
+                stokes_subdir: str = "stokes") -> None:
+    """
+    Plots the Stokes parameters (I, Q, U, V) and saves the plot as an image file.
+    Parameters:
+        stokes (np.ndarray): A 2D array where each column represents a Stokes parameter (I, Q, U, V) and each row represents a wavelength point.
+        new_wl (np.ndarray): A 1D array of wavelength points corresponding to the Stokes parameters.
+        image_name (str): The name of the image file to save.
+        images_dir (str, optional): The directory where the image will be saved. Default is "images".
+        stokes_subdir (str, optional): The subdirectory within images_dir where the image will be saved. Default is "stokes".
+    Returns:
+    None
+    Saves:
+    A plot of the Stokes parameters as an image file in the specified directory.
+    """
+    
+    fig, ax = plt.subplots(1, 4, figsize=(20, 5))
+    step_value = new_wl[1] - new_wl[0]
+    fig.suptitle(f'Stokes Parameters (Step: {step_value:.2f} nm)', fontsize=16)
+    ax[0].plot(new_wl, stokes[:, 0])
+    ax[0].set_title("I")
+    ax[1].plot(new_wl, stokes[:, 1])
+    ax[1].set_title("Q")
+    ax[2].plot(new_wl, stokes[:, 2])
+    ax[2].set_title("U")
+    ax[3].plot(new_wl, stokes[:, 3])
+    ax[3].set_title("V")
+    
+    images_dir = os.path.join(images_dir, stokes_subdir)
+    if not os.path.exists(images_dir):
+        os.makedirs(images_dir)
+    image_path = os.path.join(images_dir, stokes_subdir, f"_{len(new_wl)}_wl_points_{image_name}")
+    fig.savefig(image_path)
+
+    print(f"Saved image to: {image_path}")
+
+##############################################################
+# loading utils
+##############################################################
 def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and preprocess training data from a list of filenames.
@@ -384,9 +431,20 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
     atm_data = np.concatenate(atm_data, axis=0)
     stokes_data = np.concatenate(stokes_data, axis=0)
     
-    return atm_data, stokes_data, muram.mags_names
+    return atm_data, stokes_data, muram.mags_names, muram.new_wl
 
 def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Loads data cubes from a list of filenames and processes them using the MURaM class.
+    Args:
+        filenames (list[str]): List of file paths to load data from.
+    Returns:
+        tuple: A tuple containing:
+            - atm_data (list[np.ndarray]): List of atmospheric data arrays.
+            - stokes_data (list[np.ndarray]): List of Stokes parameter data arrays.
+            - mags_names (np.ndarray): Array of magnetic field names.
+            - phys_maxmin (np.ndarray): Array of physical maximum and minimum values.
+    """
     #Arrays for saving the whole dataset
     atm_data = []
     stokes_data = []
@@ -408,9 +466,37 @@ def create_dataloaders(stokes_data: np.ndarray,
                        atm_data: np.ndarray,
                        device: str,
                        batch_size: int = 80,
-                       linear = False,
-                       stokes_as_channels = False
-                       ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+                       linear: bool = False,
+                       stokes_as_channels: bool = False) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+    """
+    Creates PyTorch DataLoaders for training and testing datasets.
+    Parameters:
+    -----------
+    stokes_data : np.ndarray
+        Input data representing Stokes parameters.
+    atm_data : np.ndarray
+        Output data representing atmospheric parameters.
+    device : str
+        Device to which tensors will be moved (e.g., 'cpu' or 'cuda').
+    batch_size : int, optional
+        Number of samples per batch (default is 80).
+    linear : bool, optional
+        If True, flattens the input data along the external axes (default is False).
+    stokes_as_channels : bool, optional
+        If True, moves the Stokes parameter axis to the channel dimension (default is False).
+    Returns:
+    --------
+    tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]
+        A tuple containing the training DataLoader and the testing DataLoader.
+    Notes:
+    ------
+    - The function splits the input and output data into training and testing sets.
+    - Converts the numpy arrays to PyTorch tensors and moves them to the specified device.
+    - Optionally reshapes the input data based on the `linear` and `stokes_as_channels` flags.
+    - Creates TensorDataset objects for training and testing data.
+    - Initializes DataLoader objects for both training and testing datasets.
+    - Prints the shapes of the datasets and the lengths of the DataLoaders.
+    """
     
     # Data splitting
     in_train, in_test, out_train, out_test = train_test_split(stokes_data, atm_data, test_size=0.33, random_state=42)
@@ -427,7 +513,34 @@ def create_dataloaders(stokes_data: np.ndarray,
         in_test = torch.reshape(in_test, (in_test.size()[0], in_test.size()[1]*in_test.size()[2]))
     if stokes_as_channels:
         in_train = torch.moveaxis(in_train, 1,2)
-        in_test = torch.moveaxis(in_test, 1,2)
+        in_test = torch.moveaxis(in_test, 1,2)def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Loads data cubes from a list of filenames and processes them using the MURaM class.
+    Args:
+        filenames (list[str]): List of file paths to load data from.
+    Returns:
+        tuple: A tuple containing:
+            - atm_data (list[np.ndarray]): List of atmospheric data arrays.
+            - stokes_data (list[np.ndarray]): List of Stokes parameter data arrays.
+            - mags_names (np.ndarray): Array of magnetic field names.
+            - phys_maxmin (np.ndarray): Array of physical maximum and minimum values.
+    """
+    #Arrays for saving the whole dataset
+    atm_data = []
+    stokes_data = []
+
+    for fln in filenames:
+        #Creation of the MURaM object for each filename for charging the data.
+        muram = MURaM(filename=fln)
+        muram.charge_quantities()
+        muram.optical_depth_stratification()
+        muram.degrade_spec_resol()
+        muram.scale_quantities()
+
+        atm_data.append(muram.atm_quant)
+        stokes_data.append(muram.stokes)
+    
+    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin
     out_train = torch.reshape(out_train, (out_train.size()[0], out_train.size()[1]*out_train.size()[2]))
     out_test = torch.reshape(out_test, (out_test.size()[0], out_test.size()[1]*out_test.size()[2]))
     
