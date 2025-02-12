@@ -38,13 +38,11 @@ def main():
     lr = 1e-3
     test_spectral_res = [36, 58, 90, 114]
     
-    
-    
-    #1. Loop through model types
+    #1. Loop through spectral resolutions
     for n_spec_points in test_spectral_res:
         atm_data, stokes_data, _, wl_points = load_training_data(filenames, n_spectral_points=n_spec_points)
         plot_stokes(stokes=stokes_data[0], 
-                    new_wl = wl_points,
+                    wl_points = wl_points,
                     images_name = "example_stokes",)
         
         # Create dataset and dataloaders
@@ -52,6 +50,8 @@ def main():
                         atm_data = atm_data,
                         device = device,
                         batch_size = 80)
+        
+        #2. Loop through model types
         for m_type in model_types:
             print(f"Training {m_type} models")
             if m_type == "simple_linear":
