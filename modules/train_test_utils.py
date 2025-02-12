@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import root_mean_squared_error
+import numpy as np
 
 import torch
 from torch import nn
@@ -553,6 +554,18 @@ def plot_density_bars(atm_generated: np.ndarray,
   images_dir (str, optional): Directory to save the images. Defaults to "images".
   num_bars (int, optional): Number of bars in the plot. Defaults to 10.
   """
+  
+  def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Calculates the Symmetric Mean Absolute Percentage Error (SMAPE) between two arrays.
+
+    Args:
+      y_true (np.ndarray): Array of true values.
+      y_pred (np.ndarray): Array of predicted values.
+
+    Returns:
+      float: The SMAPE value as a percentage.
+    """
+    return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
   tau = np.linspace(-3, 1, atm_generated.shape[2])
   fig, axs = plt.subplots(1, atm_generated.shape[3], figsize=(5 * atm_generated.shape[3], 5))
   fig.suptitle('xlim based on 5th and 95th quantiles', fontsize=16)
@@ -569,11 +582,11 @@ def plot_density_bars(atm_generated: np.ndarray,
 
     # Create histogram bins
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
-    rmse = root_mean_squared_error(gen_values, orig_values)
+    smape_res = smape(gen_values, orig_values)
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[j].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) ({rmse:.4f})")
+    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) (smape = {smape_res:.4f})")
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
