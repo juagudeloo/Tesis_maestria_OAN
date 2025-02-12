@@ -566,6 +566,7 @@ def plot_density_bars(atm_generated: np.ndarray,
       float: The SMAPE value as a percentage.
     """
     return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
+  
   tau = np.linspace(-3, 1, atm_generated.shape[2])
   fig, axs = plt.subplots(1, atm_generated.shape[3], figsize=(5 * atm_generated.shape[3], 5))
   fig.suptitle('xlim based on 5th and 95th quantiles', fontsize=16)

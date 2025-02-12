@@ -377,21 +377,21 @@ def plot_stokes(stokes: np.ndarray,
     """
     
     fig, ax = plt.subplots(1, 4, figsize=(20, 5))
-    step_value = new_wl[1] - new_wl[0]
+    step_value = wl_points[1] - wl_points[0]
     fig.suptitle(f'Stokes Parameters (Step: {step_value:.2f} nm)', fontsize=16)
-    ax[0].plot(new_wl, stokes[:, 0])
+    ax[0].plot(wl_points, stokes[:, 0])
     ax[0].set_title("I")
-    ax[1].plot(new_wl, stokes[:, 1])
+    ax[1].plot(wl_points, stokes[:, 1])
     ax[1].set_title("Q")
-    ax[2].plot(new_wl, stokes[:, 2])
+    ax[2].plot(wl_points, stokes[:, 2])
     ax[2].set_title("U")
-    ax[3].plot(new_wl, stokes[:, 3])
+    ax[3].plot(wl_points, stokes[:, 3])
     ax[3].set_title("V")
     
     images_dir = os.path.join(images_dir, stokes_subdir)
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, stokes_subdir, f"_{len(new_wl)}_wl_points_{image_name}")
+    image_path = os.path.join(images_dir, stokes_subdir, f"_{len(wl_points)}_wl_points_{image_name}")
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
@@ -513,34 +513,7 @@ def create_dataloaders(stokes_data: np.ndarray,
         in_test = torch.reshape(in_test, (in_test.size()[0], in_test.size()[1]*in_test.size()[2]))
     if stokes_as_channels:
         in_train = torch.moveaxis(in_train, 1,2)
-        in_test = torch.moveaxis(in_test, 1,2)def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Loads data cubes from a list of filenames and processes them using the MURaM class.
-    Args:
-        filenames (list[str]): List of file paths to load data from.
-    Returns:
-        tuple: A tuple containing:
-            - atm_data (list[np.ndarray]): List of atmospheric data arrays.
-            - stokes_data (list[np.ndarray]): List of Stokes parameter data arrays.
-            - mags_names (np.ndarray): Array of magnetic field names.
-            - phys_maxmin (np.ndarray): Array of physical maximum and minimum values.
-    """
-    #Arrays for saving the whole dataset
-    atm_data = []
-    stokes_data = []
-
-    for fln in filenames:
-        #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln)
-        muram.charge_quantities()
-        muram.optical_depth_stratification()
-        muram.degrade_spec_resol()
-        muram.scale_quantities()
-
-        atm_data.append(muram.atm_quant)
-        stokes_data.append(muram.stokes)
-    
-    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin
+        in_test = torch.moveaxis(in_test, 1,2)
     out_train = torch.reshape(out_train, (out_train.size()[0], out_train.size()[1]*out_train.size()[2]))
     out_test = torch.reshape(out_test, (out_test.size()[0], out_test.size()[1]*out_test.size()[2]))
     
