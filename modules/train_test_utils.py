@@ -555,6 +555,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   """
   tau = np.linspace(-3, 1, atm_generated.shape[2])
   fig, axs = plt.subplots(1, atm_generated.shape[3], figsize=(5 * atm_generated.shape[3], 5))
+  fig.suptitle('xlim based on 5th and 95th quantiles', fontsize=16)
 
   for j in range(atm_generated.shape[3]):
     gen_values = atm_generated[:, :, tau_index, j].flatten()
@@ -577,7 +578,6 @@ def plot_density_bars(atm_generated: np.ndarray,
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
     axs[j].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
-    axs[j].text(0.5, -0.1, 'xlim based on 5th and 95th quantiles', ha='center', va='center', transform=axs[j].transAxes)
 
   images_dir = os.path.join(images_dir, model_subdir, dense_diag_subdir)
   if not os.path.exists(images_dir):
