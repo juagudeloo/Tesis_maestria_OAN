@@ -43,7 +43,7 @@ def main():
         atm_data, stokes_data, _, wl_points = load_training_data(filenames, n_spectral_points=n_spec_points)
         plot_stokes(stokes=stokes_data[0], 
                     wl_points = wl_points,
-                    images_name = "example_stokes",)
+                    image_name = "example_stokes",)
         
         # Create dataset and dataloaders
         train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
