@@ -363,95 +363,101 @@ def generate_results(model: torch.nn.Module,
 ### VISUALIZATION UTILITIES ###
 
 def plot_surface_generated_atm(atm_generated: np.ndarray,
-                       atm_original: np.ndarray,
-                       model_subdir: str,
-                       image_name: str,
-                       images_dir: str = "images",
-                       itau: int = 10
-                       ):
+             atm_original: np.ndarray,
+             model_subdir: str,
+             image_name: str,
+             images_dir: str = "images",
+             itau: int = 10
+             ):
 
-    print("atm_generated shape:", atm_generated.shape)
-    print("atm_original shape:", atm_original.shape)
-    fig, axs = plt.subplots(2, 6, figsize=(30, 10))
-    tau = np.linspace(1, -3, 20)
+  print("atm_generated shape:", atm_generated.shape)
+  print("atm_original shape:", atm_original.shape)
+  fig, axs = plt.subplots(2, 6, figsize=(30, 10))
+  tau = np.linspace(1, -3, 20)
 
-    iod = 10  # Variable for selecting the value of the third axis
-    tau_value = tau[iod]
-    fig.suptitle(f'Atmospheric Parameters at tau = {tau_value:.2f}', fontsize=16)
+  itau = 10  # Variable for selecting the value of the third axis
+  tau_value = tau[itau]
+  fig.suptitle(f'Atmospheric Parameters at tau = {tau_value:.2f}', fontsize=16)
 
-    # Define colorbar limits based on atm_original
-    vmin_T, vmax_T = atm_original[:, :, iod, 0].min(), atm_original[:, :, iod, 0].max()
-    vmin_Rho, vmax_Rho = atm_original[:, :, iod, 1].min(), atm_original[:, :, iod, 1].max()
-    vmin_Bq, vmax_Bq = atm_original[:, :, iod, 2].min(), atm_original[:, :, iod, 2].max()
-    vmin_Bu, vmax_Bu = atm_original[:, :, iod, 3].min(), atm_original[:, :, iod, 3].max()
-    vmin_Bv, vmax_Bv = atm_original[:, :, iod, 4].min(), atm_original[:, :, iod, 4].max()
-    vmin_v, vmax_v = atm_original[:, :, iod, 5].min(), atm_original[:, :, iod, 5].max()
+  # Define colorbar limits based on atm_original
+  vmin_T, vmax_T = atm_original[:, :, itau, 0].min(), atm_original[:, :, itau, 0].max()
+  vmin_Rho, vmax_Rho = atm_original[:, :, itau, 1].min(), atm_original[:, :, itau, 1].max()
+  vmin_Bq, vmax_Bq = atm_original[:, :, itau, 2].min(), atm_original[:, :, itau, 2].max()
+  vmin_Bu, vmax_Bu = atm_original[:, :, itau, 3].min(), atm_original[:, :, itau, 3].max()
+  vmin_Bv, vmax_Bv = atm_original[:, :, itau, 4].min(), atm_original[:, :, itau, 4].max()
+  vmin_v, vmax_v = atm_original[:, :, itau, 5].min(), atm_original[:, :, itau, 5].max()
 
-    # Plot generated atmosphere
-    im = axs[0, 0].imshow(atm_generated[:, :, iod, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
-    axs[0, 0].set_title('Generated Temperature')
-    axs[0, 0].axis('off')iod
+  # Plot generated atmosphere
+  im = axs[0, 0].imshow(atm_generated[:, :, itau, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
+  axs[0, 0].set_title('Generated Temperature')
+  axs[0, 0].axis('off')
+  fig.colorbar(im, ax=axs[0, 0])
 
-    im = axs[0, 2].imshow(atm_generated[:, :, iod, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
-    axs[0, 2].set_title('Generated Bq')
-    axs[0, 2].axis('off')
-    fig.colorbar(im, ax=axs[0, 2])
+  im = axs[0, 1].imshow(atm_generated[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  axs[0, 1].set_title('Generated Density')
+  axs[0, 1].axis('off')
+  fig.colorbar(im, ax=axs[0, 1])
 
-    im = axs[0, 3].imshow(atm_generated[:, :, iod, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
-    axs[0, 3].set_title('Generated Bu')
-    axs[0, 3].axis('off')
-    fig.colorbar(im, ax=axs[0, 3])
-    
-    im = axs[0, 4].imshow(atm_generated[:, :, iod, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
-    axs[0, 4].set_title('Generated Bv')
-    axs[0, 4].axis('off')
-    fig.colorbar(im, ax=axs[0, 4])
+  im = axs[0, 2].imshow(atm_generated[:, :, itau, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  axs[0, 2].set_title('Generated Bq')
+  axs[0, 2].axis('off')
+  fig.colorbar(im, ax=axs[0, 2])
 
-    im = axs[0, 5].imshow(atm_generated[:, :, iod, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
-    axs[0, 5].set_title('Generated v')
-    axs[0, 5].axis('off')
-    fig.colorbar(im, ax=axs[0, 5])
+  im = axs[0, 3].imshow(atm_generated[:, :, itau, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  axs[0, 3].set_title('Generated Bu')
+  axs[0, 3].axis('off')
+  fig.colorbar(im, ax=axs[0, 3])
+  
+  im = axs[0, 4].imshow(atm_generated[:, :, itau, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  axs[0, 4].set_title('Generated Bv')
+  axs[0, 4].axis('off')
+  fig.colorbar(im, ax=axs[0, 4])
 
-    # Plot original atmosphere
-    im = axs[1, 0].imshow(atm_original[:, :, iod, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
-    axs[1, 0].set_title('Original Temperature')
-    axs[1, 0].axis('off')
-    fig.colorbar(im, ax=axs[1, 0])
-    
-    im = axs[1, 1].imshow(atm_original[:, :, iod, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
-    axs[1, 1].set_title('Original Density')
-    axs[1, 1].axis('off')
-    fig.colorbar(im, ax=axs[1, 1])
+  im = axs[0, 5].imshow(atm_generated[:, :, itau, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
+  axs[0, 5].set_title('Generated v')
+  axs[0, 5].axis('off')
+  fig.colorbar(im, ax=axs[0, 5])
 
-    im = axs[1, 2].imshow(atm_original[:, :, iod, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
-    axs[1, 2].set_title('Original Bq')
-    axs[1, 2].axis('off')
-    fig.colorbar(im, ax=axs[1, 2])
+  # Plot original atmosphere
+  im = axs[1, 0].imshow(atm_original[:, :, itau, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
+  axs[1, 0].set_title('Original Temperature')
+  axs[1, 0].axis('off')
+  fig.colorbar(im, ax=axs[1, 0])
+  
+  im = axs[1, 1].imshow(atm_original[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  axs[1, 1].set_title('Original Density')
+  axs[1, 1].axis('off')
+  fig.colorbar(im, ax=axs[1, 1])
 
-    im = axs[1, 3].imshow(atm_original[:, :, iod, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
-    axs[1, 3].set_title('Original Bu')
-    axs[1, 3].axis('off')
-    fig.colorbar(im, ax=axs[1, 3])
+  im = axs[1, 2].imshow(atm_original[:, :, itau, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  axs[1, 2].set_title('Original Bq')
+  axs[1, 2].axis('off')
+  fig.colorbar(im, ax=axs[1, 2])
 
-    im = axs[1, 4].imshow(atm_original[:, :, iod, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
-    axs[1, 4].set_title('Original Bv')
-    axs[1, 4].axis('off')
-    fig.colorbar(im, ax=axs[1, 4])
+  im = axs[1, 3].imshow(atm_original[:, :, itau, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  axs[1, 3].set_title('Original Bu')
+  axs[1, 3].axis('off')
+  fig.colorbar(im, ax=axs[1, 3])
 
-    im = axs[1, 5].imshow(atm_original[:, :, iod, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
-    axs[1, 5].set_title('Original v')
-    axs[1, 5].axis('off')
-    fig.colorbar(im, ax=axs[1, 5])
+  im = axs[1, 4].imshow(atm_original[:, :, itau, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  axs[1, 4].set_title('Original Bv')
+  axs[1, 4].axis('off')
+  fig.colorbar(im, ax=axs[1, 4])
+
+  im = axs[1, 5].imshow(atm_original[:, :, itau, 5], cmap='seismic_r', interpolation='nearest', vmin=vmin_v, vmax=vmax_v)
+  axs[1, 5].set_title('Original v')
+  axs[1, 5].axis('off')
+  fig.colorbar(im, ax=axs[1, 5])
 
   
-    
-    images_dir = os.path.join(images_dir, model_subdir)
-    if not os.path.exists(images_dir):
-        os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, image_name)
-    fig.savefig(image_path)
-    
-    print(f"Saved image to: {image_path}")
+  
+  images_dir = os.path.join(images_dir, model_subdir)
+  if not os.path.exists(images_dir):
+    os.makedirs(images_dir)
+  image_path = os.path.join(images_dir, image_name)
+  fig.savefig(image_path)
+  
+  print(f"Saved image to: {image_path}")
      
 def plot_od_generated_atm(
                        atm_generated: np.ndarray,
