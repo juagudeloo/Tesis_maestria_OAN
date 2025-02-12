@@ -104,7 +104,8 @@ def main():
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           model_subdir = model_name,
-                          image_name = "atm_surface.png"
+                          image_name = "atm_surface.png",
+                          itau = 6
                         )
     
       #OD plots
@@ -127,10 +128,12 @@ def main():
                         )
       
       #Density bars
-      for itau in range(20):
+      tau_indices = range(6,16)
+      for itau in tau_indices:
         plot_density_bars(
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
+                dense_diag_subdir= "density_plots",
                 model_subdir = model_name,
                 image_name = "OD_density.png",
                 tau_index = itau,

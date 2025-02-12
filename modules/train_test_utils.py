@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 
 
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import root_mean_squared_error
 
 import torch
 from torch import nn
@@ -366,7 +367,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
                        model_subdir: str,
                        image_name: str,
                        images_dir: str = "images",
-                       iod: int = 10
+                       itau: int = 10
                        ):
 
     print("atm_generated shape:", atm_generated.shape)
@@ -389,13 +390,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     # Plot generated atmosphere
     im = axs[0, 0].imshow(atm_generated[:, :, iod, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
     axs[0, 0].set_title('Generated Temperature')
-    axs[0, 0].axis('off')
-    fig.colorbar(im, ax=axs[0, 0])
-
-    im = axs[0, 1].imshow(atm_generated[:, :, iod, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
-    axs[0, 1].set_title('Generated Density')
-    axs[0, 1].axis('off')
-    fig.colorbar(im, ax=axs[0, 1])
+    axs[0, 0].axis('off')iod
 
     im = axs[0, 2].imshow(atm_generated[:, :, iod, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
     axs[0, 2].set_title('Generated Bq')
@@ -532,6 +527,7 @@ def plot_od_generated_atm(
 def plot_density_bars(atm_generated: np.ndarray,
   atm_original: np.ndarray,
   model_subdir: str,
+  dense_diag_subdir: str,
   image_name: str,
   titles: list,
   tau_index: int,
@@ -566,18 +562,18 @@ def plot_density_bars(atm_generated: np.ndarray,
 
     # Create histogram bins
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
-
+    rmse = root_mean_squared_error(gen_values, orig_values)
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[j].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f})")
+    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) ({rmse:.4f})")
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
     axs[j].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
     axs[j].text(0.5, -0.1, 'xlim based on 5th and 95th quantiles', ha='center', va='center', transform=axs[j].transAxes)
 
-  images_dir = os.path.join(images_dir, model_subdir)
+  images_dir = os.path.join(images_dir, model_subdir, dense_diag_subdir)
   if not os.path.exists(images_dir):
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
