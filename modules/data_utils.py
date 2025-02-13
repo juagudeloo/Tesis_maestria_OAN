@@ -362,6 +362,10 @@ class MURaM:
             index_select = np.random.choice(range(len_inter), size = (len_gran,), replace = False)
             self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
             self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
+            
+        print(f"Shape after granular and intergranular balance:")
+        print(f"atm_quant shape: {self.atm_quant.shape}")
+        print(f"stokes shape: {self.stokes.shape}")
         print("Done")
 
 
