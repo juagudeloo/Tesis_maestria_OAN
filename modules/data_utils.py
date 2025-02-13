@@ -317,7 +317,7 @@ class MURaM:
         mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
         mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
         mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-        mvyy class MURaM:max = {np.max(self.atm_quant[:, :, :, 5])}
+        mvyy max = {np.max(self.atm_quant[:, :, :, 5])}
             """)
         
         print(f"""
@@ -350,7 +350,19 @@ class MURaM:
         len_inter = atm_quant_inter.shape[0]
         len_gran = atm_quant_gran.shape[0]
 
-        # Leveraging the quantity of data
+        #Leveraging the quantity of data from the granular and intergranular zones by a random dropping of elements of the greater zone.
+        print("leveraging...")
+        index_select  = []
+        np.random.seed(50)
+        if len_inter < len_gran:
+            index_select = np.random.choice(range(len_gran), size = (len_inter,), replace = False)
+            self.atm_quant = np.concatenate((atm_quant_gran[index_select], atm_quant_inter), axis = 0)
+            self.stokes = np.concatenate((stokes_gran[index_select], stokes_inter), axis = 0)
+        elif len_inter > len_gran:
+            index_select = np.random.choice(range(len_inter), size = (len_gran,), replace = False)
+            self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
+            self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
+        print("Done")
 
 
 ##############################################################
