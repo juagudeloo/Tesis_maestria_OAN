@@ -407,7 +407,7 @@ def plot_stokes(stokes: np.ndarray,
     images_dir = os.path.join(images_dir, stokes_subdir)
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, f"_{len(wl_points)}_wl_points_{image_name}")
+    image_path = os.path.join(images_dir, f"{image_name}_{len(wl_points)}_wl_points.pdf")
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
