@@ -41,6 +41,7 @@ def main():
     #1. Loop through spectral resolutions
     for n_spec_points in test_spectral_res:
         atm_data, stokes_data, _, wl_points = load_training_data(filenames, n_spectral_points=n_spec_points)
+        
         plot_stokes(stokes=stokes_data[0], 
                     wl_points = wl_points,
                     image_name = "example_stokes",)
