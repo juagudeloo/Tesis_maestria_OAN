@@ -125,7 +125,7 @@ class MURaM:
         print("Creating atmosphere quantities array...")
         self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvyy])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
-        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.ny, self.nz, self.atm_quant.shape[-1]))
+        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.nz, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         print("Created!")
         print("atm_quant shape:", self.atm_quant.shape)
@@ -380,6 +380,40 @@ def plot_stokes(stokes: np.ndarray,
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
     image_path = os.path.join(images_dir, f"{image_name}_{len(wl_points)}_wl_points.pdf")
+    fig.savefig(image_path)
+
+    print(f"Saved image to: {image_path}")
+
+def plot_atmosphere_quantities(atm_quant: np.ndarray, image_name: str, images_dir: str = "images", atm_subdir: str = "atmosphere") -> None:
+    """
+    Plots the atmospheric quantities and saves the plot as an image file.
+    
+    Parameters:
+        atm_quant (np.ndarray): A 4D array where the last dimension represents different atmospheric quantities.
+        image_name (str): The name of the image file to save.
+        images_dir (str, optional): The directory where the image will be saved. Default is "images".
+        atm_subdir (str, optional): The subdirectory within images_dir where the image will be saved. Default is "atmosphere".
+    
+    Returns:
+    None
+    Saves:
+    A plot of the atmospheric quantities as an image file in the specified directory.
+    """
+    
+    fig, ax = plt.subplots(2, 3, figsize=(20, 10))
+    fig.suptitle('Atmospheric Quantities', fontsize=16)
+    
+    titles = ["Temperature", "Density", "Magnetic Field QQ", "Magnetic Field UU", "Magnetic Field VV", "Velocity YY"]
+    
+    for i in range(6):
+        ax[i // 3, i % 3].imshow(atm_quant[:, atm_quant.shape[2] // 2, : , i], cmap='viridis')
+        ax[i // 3, i % 3].set_title(titles[i])
+        ax[i // 3, i % 3].axis('off')
+    
+    images_dir = os.path.join(images_dir, atm_subdir)
+    if not os.path.exists(images_dir):
+        os.makedirs(images_dir)
+    image_path = os.path.join(images_dir, f"{image_name}_atm_quantities.pdf")
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")

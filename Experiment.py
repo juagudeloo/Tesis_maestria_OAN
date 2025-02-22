@@ -17,7 +17,7 @@ def main():
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
     filenames = ["080000", 
-                 "085000", "090000"
+                 #"085000", "090000"
                  ]
     
     #Load data
@@ -32,8 +32,8 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     model_types = [
-        "simple_linear", "simple_cnn1d_36channels", 
-                   "simple_cnn1d_4channels"]
+        "linear",
+        "cnn1d_4channels"]
     epochs = 10
     lr = 1e-3
     test_spectral_res = [36, 58, 90, 114]
@@ -55,20 +55,13 @@ def main():
         #2. Loop through model types
         for m_type in model_types:
             print(f"Training {m_type} models")
-            if m_type == "simple_linear":
+            if m_type == "linear":
                 train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                             atm_data = atm_data,
                             device = device,
                             batch_size = 80,
                             linear = True)
-            elif m_type == "simple_cnn1d_36channels":
-                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                            atm_data = atm_data,
-                            device = device,
-                            batch_size = 80,
-                            stokes_as_channels=False,
-                            linear = False)
-            elif m_type == "simple_cnn1d_4channels":
+            elif m_type == "cnn1d_4channels":
                 train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                             atm_data = atm_data,
                             device = device,
@@ -76,13 +69,10 @@ def main():
                             stokes_as_channels=True,
                             linear = False)
             #Creating the model
-            if m_type == "simple_linear":
+            if m_type == "linear":
                 hu = 2048
                 model = SimpleLinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
-            elif m_type == "simple_cnn1d_36channels":
-                hu = 1024
-                model = SimpleCNN1DModel(n_spec_points,6*20,hidden_units=hu, signal_length=4).to(device)
-            elif m_type == "simple_cnn1d_4channels":
+            elif m_type == "cnn1d_4channels":
                 hu = 72
                 model = SimpleCNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
             model = model.float()
