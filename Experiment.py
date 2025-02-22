@@ -8,7 +8,7 @@ from torch import nn
 #MODULES IMPORT
 sys.path.append("../modules")
 from modules.data_utils import load_training_data, create_dataloaders, plot_stokes
-from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
+from modules.nn_models import LinearModel, CNN1DModel
 from modules.train_test_utils import train, set_seeds, create_writer, save_model
 
 #
@@ -71,10 +71,10 @@ def main():
             #Creating the model
             if m_type == "linear":
                 hu = 2048
-                model = SimpleLinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
+                model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
             elif m_type == "cnn1d_4channels":
                 hu = 72
-                model = SimpleCNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
+                model = CNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
             model = model.float()
             #Loss function
             loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
