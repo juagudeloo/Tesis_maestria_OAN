@@ -60,9 +60,10 @@ class MURaM:
         self.ptm = Path("/scratchsan/observatorio/juagudeloo/data")
         self.filename = filename
         
-        nlam = 300  # this parameter is useful when managing the self.stokes parameters
+        self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
-        self.ny = 256  # height axis
+        self.ny = 256
+        self.od = 20  # height axis
         self.nz = 480
 
     def charge_quantities(self) -> None:
@@ -76,13 +77,13 @@ class MURaM:
                       """)
         
         print("Charging temperature ...")
-        mtpr = np.load(self.ptm / "atm_mags" / f"mtpr_{self.filename}.npy").flatten()
+        mtpr = np.load(self.ptm / "opt_depth" / f"mtpr_logtau_{self.filename}.npy").flatten()
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
-        mbxx = np.load(self.ptm / "atm_mags" / f"mbxx_{self.filename}.npy")
-        mbyy = np.load(self.ptm / "atm_mags" / f"mbyy_{self.filename}.npy")
-        mbzz = np.load(self.ptm / "atm_mags" / f"mbzz_{self.filename}.npy")
+        mbxx = np.load(self.ptm / "opt_depth" / f"mbxx_logtau_{self.filename}.npy")
+        mbyy = np.load(self.ptm / "opt_depth" / f"mbyy_logtau_{self.filename}.npy")
+        mbzz = np.load(self.ptm / "opt_depth" / f"mbzz_logtau_{self.filename}.npy")
         
         coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
         
@@ -94,13 +95,13 @@ class MURaM:
         print("mbzz shape:", mbzz.shape)
         
         print("Charging density...")
-        mrho = np.load(self.ptm / "atm_mags" / f"mrho_{self.filename}.npy")
+        mrho = np.load(self.ptm / "opt_depth" / f"mrho_logtau_{self.filename}.npy")
         print("mrho shape:", mrho.shape)
         
         print("Charge velocity...")
-        mvxx = np.load(self.ptm / "atm_mags" / f"mvxx_{self.filename}.npy")
-        mvyy = np.load(self.ptm / "atm_mags" / f"mvyy_{self.filename}.npy")
-        mvzz = np.load(self.ptm / "atm_mags" / f"mvzz_{self.filename}.npy")
+        mvxx = np.load(self.ptm / "opt_depth" / f"mvxx_logtau_{self.filename}.npy")
+        mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_{self.filename}.npy")
+        mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_{self.filename}.npy")
         print("mvxx shape:", mvxx.shape)
         print("mvyy shape:", mvyy.shape)
         print("mvzz shape:", mbzz.shape)
@@ -134,35 +135,6 @@ class MURaM:
         self.I_63005 = self.stokes[:, :, 0, 0]  # Intensity map that is going to be used to balance intergranular and granular regions.
         print("Charged!")
         print("self.stokes shape", self.stokes.shape)
-
-    def optical_depth_stratification(self) -> None:
-        """
-        Apply optical depth stratification to the atmospheric quantities.
-        """
-        opt_len = 20  # Number of optical depth nodes
-        self.mags_names = ["T", "rho", "Bq", "Bu", "Bv", "vy"]  # atm quantities
-        print("Applying optical depth stratification...")
-        opt_depth = np.load(self.ptm / "opt_depths" / f"optical_depth_{self.filename}.npy")
-        # optical depth points
-        tau_out = self.ptm / "tau_arrays" / f"array_of_tau_{self.filename}_{opt_len}_depth_points.npy"
-        tau = np.linspace(-3, 1, opt_len)
-        np.save(tau_out, tau)
-        
-        # optical stratification
-        opt_mags_interp = {}
-        opt_mags = np.zeros((self.nx, self.nz, opt_len, self.atm_quant.shape[-1]))
-        opt_mags_out = self.ptm / "stratified_atm" / f"optical_stratified_atm_modified_mbvuq_{self.filename}_{opt_len}_depth_points_{self.atm_quant.shape[-1]}_components.npy"
-        if not os.path.exists(opt_mags_out):
-            for jx in tqdm(range(self.nx)):
-                for jz in range(self.nz):
-                    for i in range(len(self.mags_names)):
-                        opt_mags_interp[self.mags_names[i]] = interp1d(opt_depth[jx, :, jz], self.atm_quant[jx, jz, :, i])
-                        opt_mags[jx, jz, :, i] = opt_mags_interp[self.mags_names[i]](tau)
-            np.save(opt_mags_out, opt_mags)
-        else:
-            opt_mags = np.load(opt_mags_out)
-        self.atm_quant = opt_mags
-        print(opt_mags.shape)
 
     def degrade_spec_resol(self, new_points: int) -> None:
         """
@@ -436,7 +408,6 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln)
         muram.charge_quantities()
-        muram.optical_depth_stratification()
         muram.degrade_spec_resol(new_points=n_spectral_points)
         muram.scale_quantities()
         muram.gran_intergran_balance()
@@ -469,7 +440,6 @@ def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.nd
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln)
         muram.charge_quantities()
-        muram.optical_depth_stratification()
         muram.degrade_spec_resol()
         muram.scale_quantities()
 
