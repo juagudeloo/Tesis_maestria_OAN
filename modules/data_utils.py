@@ -453,7 +453,7 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
     atm_data = np.concatenate(atm_data, axis=0)
     stokes_data = np.concatenate(stokes_data, axis=0)
     
-    return atm_data, stokes_data, muram.mags_names, muram.new_wl
+    return atm_data, stokes_data, muram.new_wl
 
 def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
