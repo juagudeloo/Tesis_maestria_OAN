@@ -127,6 +127,9 @@ class MURaM:
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.nz, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
+        
+        plot_atmosphere_quantities(atm_quant=self.atm_quant, 
+                                   image_name=f"{self.filename}_atm_quantities.pdf")
         print("Created!")
         print("atm_quant shape:", self.atm_quant.shape)
 
@@ -193,7 +196,6 @@ class MURaM:
 
         # These are the new wavelength values for the degraded resolution
         self.new_wl = (new_resol * 0.01) + 6300.5
-
     def scale_quantities(self) -> None:
         """
         Scale the atmospheric and Stokes quantities.
@@ -301,7 +303,6 @@ class MURaM:
         mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
         mvyy min = {np.min(self.atm_quant[:, :, :, 5])}
             """)
-
     def gran_intergran_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
