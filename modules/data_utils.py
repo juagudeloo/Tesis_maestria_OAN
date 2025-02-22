@@ -407,7 +407,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, image_name: str, images_di
     titles = ["Temperature", "Density", "Magnetic Field QQ", "Magnetic Field UU", "Magnetic Field VV", "Velocity YY"]
     
     for i in range(6):
-        ax[i // 3, i % 3].imshow(atm_quant[:, atm_quant.shape[2] // 2, : , i], cmap='viridis')
+        ax[i // 3, i % 3].imshow(atm_quant[:, :, atm_quant.shape[2] // 2 , i], cmap='viridis')
         ax[i // 3, i % 3].set_title(titles[i])
         ax[i // 3, i % 3].axis('off')
     
