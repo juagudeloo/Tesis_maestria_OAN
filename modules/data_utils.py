@@ -368,13 +368,13 @@ def plot_stokes(stokes: np.ndarray,
     fig, ax = plt.subplots(1, 4, figsize=(20, 5))
     step_value = wl_points[1] - wl_points[0]
     fig.suptitle(f'Stokes Parameters (Step: {step_value:.2f} nm)', fontsize=16)
-    ax[0].plot(wl_points, stokes[:, 0])
+    ax[0].scatter(wl_points, stokes[:, 0])
     ax[0].set_title("I")
-    ax[1].plot(wl_points, stokes[:, 1])
+    ax[1].scatter(wl_points, stokes[:, 1])
     ax[1].set_title("Q")
-    ax[2].plot(wl_points, stokes[:, 2])
+    ax[2].scatter(wl_points, stokes[:, 2])
     ax[2].set_title("U")
-    ax[3].plot(wl_points, stokes[:, 3])
+    ax[3].scatter(wl_points, stokes[:, 3])
     ax[3].set_title("V")
     
     images_dir = os.path.join(images_dir, stokes_subdir)
