@@ -26,17 +26,8 @@ def main():
     
     stokes_data_dic = {}
     
-    for n_spec_points in test_spectral_res:
-      atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, n_spectral_points=n_spec_points)
-
-      stokes_data_dic["linear_"+str(n_spec_points)] =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
-      
-      stokes_data_cnn =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
-      stokes_data_dic["cnn1d_4channels_" + str(n_spec_points)] =  np.moveaxis(stokes_data_cnn, 2, 1)
-    
     #----------------------------------------------
-    atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
-    atm_data_original = descale_atm(atm_data_original, phys_maxmin)
+    
     #----------------------------------------------
     
     
@@ -62,10 +53,22 @@ def main():
     
     for model_type in models_types:
       for n_spec_points in test_spectral_res:
+        # Load data
+        atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, n_spectral_points=n_spec_points)
+        
+        # Descale atm data
+        atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
+        atm_data_original = descale_atm(atm_data_original, phys_maxmin)
+        
+        # Load model and charge corresponding stokes data
+        stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
         if model_type == "linear":
           model = LinearModel(n_spec_points*4,6*20,hidden_units=2048).to(device)
         if model_type == "cnn1d_4channels":
+          stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
+          stokes_data =  np.moveaxis(stokes_data, 2, 1)
           model = CNN1DModel(4,6*20,hidden_units=72, signal_length=n_spec_points).to(device)
+        
         model_name = model_type+"_"+str(n_spec_points)
         weights_name = model_name + "_spectral_points.pth"
                 
@@ -79,7 +82,7 @@ def main():
         #Generate results
         print(f"Generating results for {model_name}...")
         atm_generated = generate_results(model = model,
-                                          stokes_data = stokes_data_dic[model_name],
+                                          stokes_data = stokes_data,
                                           maxmin = phys_maxmin,
                                           device = device
                                         )      
