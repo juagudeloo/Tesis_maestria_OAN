@@ -61,8 +61,8 @@ def main():
         atm_data_original = descale_atm(atm_data_original, phys_maxmin)
         
         # Load model and charge corresponding stokes data
-        stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
         if model_type == "linear":
+          stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
           model = LinearModel(n_spec_points*4,6*20,hidden_units=2048).to(device)
         if model_type == "cnn1d_4channels":
           stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
