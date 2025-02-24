@@ -123,6 +123,7 @@ class MURaM:
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
+        self.mags_names = ["Temperature", "Density", "Magnetic Field QQ", "Magnetic Field UU", "Magnetic Field VV", "Velocity YY"]
         self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvyy])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.nz, self.atm_quant.shape[-1]))
@@ -455,7 +456,7 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
     
     return atm_data, stokes_data, muram.new_wl
 
-def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_data_cubes(filenames: list[str], n_spectral_points: int = 36) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Loads data cubes from a list of filenames and processes them using the MURaM class.
     Args:
@@ -475,7 +476,7 @@ def load_data_cubes(filenames: list[str]) -> tuple[np.ndarray, np.ndarray, np.nd
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln)
         muram.charge_quantities()
-        muram.degrade_spec_resol()
+        muram.degrade_spec_resol(new_points=n_spectral_points)
         muram.scale_quantities()
 
         atm_data.append(muram.atm_quant)
