@@ -24,15 +24,15 @@ def main():
     # Load data
     test_spectral_res = [36, 58, 90, 114]
     
-    stokes_data = {}
+    stokes_data_dic = {}
     
     for n_spec_points in test_spectral_res:
       atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, n_spectral_points=n_spec_points)
 
-      stokes_data["linear_"+str(n_spec_points)] =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
+      stokes_data_dic["linear_"+str(n_spec_points)] =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
       
       stokes_data_cnn =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
-      stokes_data["cnn1d_4channels_" + str(n_spec_points)] =  np.moveaxis(stokes_data_cnn, 2, 1)
+      stokes_data_dic["cnn1d_4channels_" + str(n_spec_points)] =  np.moveaxis(stokes_data_cnn, 2, 1)
     
     #----------------------------------------------
     atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
@@ -80,7 +80,7 @@ def main():
         #Generate results
         print(f"Generating results for {model_name}...")
         atm_generated = generate_results(model = model,
-                                          stokes_data = stokes_data[model_name],
+                                          stokes_data = stokes_data_dic[model_name],
                                           maxmin = phys_maxmin,
                                           device = device
                                         )      
