@@ -74,6 +74,8 @@ def main():
                     )
         
         #Generate results
+        stokes_data = 0
+        phys_maxmin = 0
         print(f"Generating results for {model_name}...")
         atm_generated = generate_results(model = model,
                                           stokes_data = stokes_data,
