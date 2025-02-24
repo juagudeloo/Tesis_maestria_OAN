@@ -361,9 +361,7 @@ def generate_results(model: torch.nn.Module,
       torch.cuda.empty_cache()  # Clear cache to free up memory
   
   atm_generated = torch.cat(atm_generated, dim=0)
-  atm_generated = model(stokes_data)
-  atm_generated = torch.squeeze(atm_generated, 0)
-  atm_generated = atm_generated.cpu().detach().numpy()
+  atm_generated = atm_generated.numpy()
   atm_generated = np.reshape(atm_generated, (480,480,20,6))
   
   print("atm generated data shape :", atm_generated.shape)
