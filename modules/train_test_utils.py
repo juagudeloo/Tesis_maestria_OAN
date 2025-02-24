@@ -347,7 +347,6 @@ def generate_results(model: torch.nn.Module,
                      ) -> np.ndarray:
   
   stokes_data = torch.tensor(stokes_data).float()
-  stokes_data = stokes_data.to(device)
   
   print(f"stokes data shape for generation:", stokes_data.size())
   

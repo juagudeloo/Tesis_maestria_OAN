@@ -75,17 +75,11 @@ def main():
         
         #Generate results
         print(f"Generating results for {model_name}...")
-        # Reduce batch size
-        batch_size = 1024  # Adjust this value based on your GPU memory
-        atm_generated = []
-        for i in range(0, stokes_data.shape[0], batch_size):
-            batch_data = stokes_data[i:i+batch_size].to(device)
-            with torch.no_grad():
-                atm_generated_batch = model(batch_data)
-            atm_generated.append(atm_generated_batch.cpu())
-            torch.cuda.empty_cache()  # Clear cache to free up memory
-        
-        atm_generated = torch.cat(atm_generated, dim=0)
+        atm_generated = generate_results(model = model,
+                                          stokes_data = stokes_data,
+                                          maxmin = phys_maxmin,
+                                          device = device
+                                        )      
       
         ##################################
         # Plot generated atmospheres  
