@@ -53,10 +53,6 @@ def main():
     nn_models = {}
 
     # Linear model
-    for n_spec_points in test_spectral_res:
-      nn_models["linear_" + str(n_spec_points)] = LinearModel(n_spec_points*4,6*20,hidden_units=2048).to(device)
-      nn_models["cnn1d_4channels_" + str(n_spec_points)] = CNN1DModel(4,6*20,hidden_units=72, signal_length=n_spec_points).to(device)
-        
     # Weights paths
     target_dir = Path("models")      
     #########################################################################################
@@ -66,8 +62,11 @@ def main():
     
     for model_type in models_types:
       for n_spec_points in test_spectral_res:
+        if model_type == "linear":
+          model = LinearModel(n_spec_points*4,6*20,hidden_units=2048).to(device)
+        if model_type == "cnn1d_4channels":
+          model = CNN1DModel(4,6*20,hidden_units=72, signal_length=n_spec_points).to(device)
         model_name = model_type+"_"+str(n_spec_points)
-        model = nn_models[model_name]
         weights_name = model_name + "_spectral_points.pth"
                 
         #Charge weights
@@ -131,7 +130,7 @@ def main():
                   titles = mags_names,
                   num_bars = 100)
         
-      print("Done!")
+    print("Done!")
     
 if __name__ == "__main__":
     main()
