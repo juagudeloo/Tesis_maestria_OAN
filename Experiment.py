@@ -46,60 +46,60 @@ def main():
                     wl_points = wl_points,
                     image_name = "example_stokes",)
         
-        # Create dataset and dataloaders
-        train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
-                        device = device,
-                        batch_size = 80)
-        
-        #2. Loop through model types
-        for m_type in model_types:
-            print(f"Training {m_type} models")
-            if m_type == "linear":
-                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                            atm_data = atm_data,
-                            device = device,
-                            batch_size = 80,
-                            linear = True)
-            elif m_type == "cnn1d_4channels":
-                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                            atm_data = atm_data,
-                            device = device,
-                            batch_size = 80,
-                            stokes_as_channels=True,
-                            linear = False)
-            #Creating the model
-            if m_type == "linear":
-                hu = 2048
-                model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
-            elif m_type == "cnn1d_4channels":
-                hu = 72
-                model = CNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
-            model = model.float()
-            #Loss function
-            loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
-
-            #Optimizer
-            optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-            #Train model
-            train(model=model,
-                train_dataloader=train_dataloader,
-                test_dataloader=test_dataloader, 
-                optimizer=optimizer,
-                loss_fn=loss_fn,
-                epochs=epochs,
-                device=device,
-                writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
-                                    model_name=m_type,
-                                    extra=f""))
-            
-            #Save the model to file so we can get back the best model
-            save_filepath = f"{m_type}_{n_spec_points}_spectral_points.pth"
-            save_model(model=model,
-                    target_dir="models",
-                    model_name=save_filepath)
-            print("-"*50 + "\n")
-
+        ## Create dataset and dataloaders
+        #train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                atm_data = atm_data,
+        #                device = device,
+        #                batch_size = 80)
+        #
+        ##2. Loop through model types
+        #for m_type in model_types:
+        #    print(f"Training {m_type} models")
+        #    if m_type == "linear":
+        #        train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                    atm_data = atm_data,
+        #                    device = device,
+        #                    batch_size = 80,
+        #                    linear = True)
+        #    elif m_type == "cnn1d_4channels":
+        #        train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+        #                    atm_data = atm_data,
+        #                    device = device,
+        #                    batch_size = 80,
+        #                    stokes_as_channels=True,
+        #                    linear = False)
+        #    #Creating the model
+        #    if m_type == "linear":
+        #        hu = 2048
+        #        model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
+        #    elif m_type == "cnn1d_4channels":
+        #        hu = 72
+        #        model = CNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
+        #    model = model.float()
+        #    #Loss function
+        #    loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
+#
+        #    #Optimizer
+        #    optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+        #    #Train model
+        #    train(model=model,
+        #        train_dataloader=train_dataloader,
+        #        test_dataloader=test_dataloader, 
+        #        optimizer=optimizer,
+        #        loss_fn=loss_fn,
+        #        epochs=epochs,
+        #        device=device,
+        #        writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
+        #                            model_name=m_type,
+        #                            extra=f""))
+        #    
+        #    #Save the model to file so we can get back the best model
+        #    save_filepath = f"{m_type}_{n_spec_points}_spectral_points.pth"
+        #    save_model(model=model,
+        #            target_dir="models",
+        #            model_name=save_filepath)
+        #    print("-"*50 + "\n")
+#
             
 
 
