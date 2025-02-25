@@ -322,7 +322,7 @@ def charge_weights(model: torch.nn.Module,
   
   print(f"[INFO] Loading model from: {model_path}")
   
-  model.load_state_dict(torch.load(model_path))
+  model.load_state_dict(torch.load(model_path, weights_only=True))
 
 def descale_atm(atm_generated: np.ndarray,
                 maxmin: dict[str, list[float]]) -> np.ndarray:
