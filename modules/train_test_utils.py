@@ -372,6 +372,8 @@ def generate_results(model: torch.nn.Module,
 
 ### VISUALIZATION UTILITIES ###
 
+tau = np.linspace(-2.5, 0, 20)
+
 def plot_surface_generated_atm(atm_generated: np.ndarray,
              atm_original: np.ndarray,
              model_subdir: str,
@@ -383,9 +385,9 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
   fig, axs = plt.subplots(2, 6, figsize=(30, 10))
-  tau = np.linspace(1, -3, 20)
+  
 
-  itau = 10  # Variable for selecting the value of the third axis
+  itau = 17  # Variable for selecting the value of the tau axis
   tau_value = tau[itau]
   fig.suptitle(f'Atmospheric Parameters at tau = {tau_value:.2f}', fontsize=16)
 
@@ -398,7 +400,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   vmin_v, vmax_v = atm_original[:, :, itau, 5].min(), atm_original[:, :, itau, 5].max()
 
   # Plot generated atmosphere
-  im = axs[0, 0].imshow(atm_generated[:, :, itau, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
+  im = axs[0, 0].imshow(atm_generated[:, :, itau, 0], cmap='inferno', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
   axs[0, 0].set_title('Generated Temperature')
   axs[0, 0].axis('off')
   fig.colorbar(im, ax=axs[0, 0])
@@ -429,7 +431,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   fig.colorbar(im, ax=axs[0, 5])
 
   # Plot original atmosphere
-  im = axs[1, 0].imshow(atm_original[:, :, itau, 0], cmap='hot', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
+  im = axs[1, 0].imshow(atm_original[:, :, itau, 0], cmap='inferno', interpolation='nearest', vmin=vmin_T, vmax=vmax_T)
   axs[1, 0].set_title('Original Temperature')
   axs[1, 0].axis('off')
   fig.colorbar(im, ax=axs[1, 0])
@@ -482,48 +484,47 @@ def plot_od_generated_atm(
     print("atm_generated shape:", atm_generated.shape)
     print("atm_original shape:", atm_original.shape)
     fig, axs = plt.subplots(1, 7, figsize=(30, 5))
-    tau = np.linspace(-3, 1, atm_generated.shape[2])
     
     # Plot Temperature Surface
-    im = axs[0].imshow(atm_original[:,:,10,0], cmap='hot', interpolation='nearest')
-    axs[0].scatter(iy, ix, color='red', s=50, edgecolor='black')
+    im = axs[0].imshow(atm_original[:,:,10,0], cmap='inferno', interpolation='nearest')
+    axs[0].scatter(iy, ix, color='green', s=50, edgecolor='black')
     axs[0].set_title('Temperature Surface')
     axs[0].axis('on')
     fig.colorbar(im, ax=axs[0])
 
     # Plot generated and original atmosphere
-    axs[1].plot(tau, atm_generated[ix, iy, :, 0], color='orangered', label='Generated')
-    axs[1].plot(tau, atm_original[ix, iy, :, 0], color='navy', label='Original')
+    axs[1].plot(tau, atm_generated[:,:, :, 0].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[1].plot(tau, atm_original[:,:, :, 0].mean(axis=(0,2)), color='navy', label='Original')
     axs[1].set_title('Temperature')
     axs[1].set_xlabel('Tau')
     axs[1].axis('on')
 
-    axs[2].plot(tau, atm_generated[ix, iy, :, 1], color='orangered', label='Generated')
-    axs[2].plot(tau, atm_original[ix, iy, :, 1], color='navy', label='Original')
+    axs[2].plot(tau, atm_generated[:,:, :, 1].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[2].plot(tau, atm_original[:,:, :, 1].mean(axis=(0,2)), color='navy', label='Original')
     axs[2].set_title('Density')
     axs[2].set_xlabel('Tau')
     axs[2].axis('on')
 
-    axs[3].plot(tau, atm_generated[ix, iy, :, 2], color='orangered', label='Generated')
-    axs[3].plot(tau, atm_original[ix, iy, :, 2], color='navy', label='Original')
+    axs[3].plot(tau, atm_generated[:,:, :, 2].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[3].plot(tau, atm_original[:,:, :, 2].mean(axis=(0,2)), color='navy', label='Original')
     axs[3].set_title('Bq')
     axs[3].set_xlabel('Tau')
     axs[3].axis('on')
 
-    axs[4].plot(tau, atm_generated[ix, iy, :, 3], color='orangered', label='Generated')
-    axs[4].plot(tau, atm_original[ix, iy, :, 3], color='navy', label='Original')
+    axs[4].plot(tau, atm_generated[:,:, :, 3].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[4].plot(tau, atm_original[:,:, :, 3].mean(axis=(0,2)), color='navy', label='Original')
     axs[4].set_title('Bu')
     axs[4].set_xlabel('Tau')
     axs[4].axis('on')
 
-    axs[5].plot(tau, atm_generated[ix, iy, :, 4], color='orangered', label='Generated')
-    axs[5].plot(tau, atm_original[ix, iy, :, 4], color='navy', label='Original')
+    axs[5].plot(tau, atm_generated[:,:, :, 4].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[5].plot(tau, atm_original[:,:, :, 4].mean(axis=(0,2)), color='navy', label='Original')
     axs[5].set_title('Bv')
     axs[5].set_xlabel('Tau')
     axs[5].axis('on')
 
-    axs[6].plot(tau, atm_generated[ix, iy, :, 5], color='orangered', label='Generated')
-    axs[6].plot(tau, atm_original[ix, iy, :, 5], color='navy', label='Original')
+    axs[6].plot(tau, atm_generated[:,:, :, 5].mean(axis=(0,2)), color='orangered', label='Generated')
+    axs[6].plot(tau, atm_original[:,:, :, 5].mean(axis=(0,2)), color='navy', label='Original')
     axs[6].set_title('v')
     axs[6].set_xlabel('Tau')
     axs[6].axis('on')
@@ -576,7 +577,6 @@ def plot_density_bars(atm_generated: np.ndarray,
     """
     return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
   
-  tau = np.linspace(-3, 1, atm_generated.shape[2])
   fig, axs = plt.subplots(1, atm_generated.shape[3], figsize=(5 * atm_generated.shape[3], 5))
   fig.suptitle('xlim based on 5th and 95th quantiles', fontsize=16)
 
