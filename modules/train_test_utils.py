@@ -322,7 +322,7 @@ def charge_weights(model: torch.nn.Module,
   
   print(f"[INFO] Loading model from: {model_path}")
   
-  model.load_state_dict(torch.load(model_path))
+  model.load_state_dict(torch.load(model_path, weights_only=True))
 
 def descale_atm(atm_generated: np.ndarray,
                 maxmin: dict[str, list[float]]) -> np.ndarray:
@@ -403,22 +403,22 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[0, 0].axis('off')
   fig.colorbar(im, ax=axs[0, 0])
 
-  im = axs[0, 1].imshow(atm_generated[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  im = axs[0, 1].imshow(atm_generated[:, :, itau, 1], cmap='spring', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
   axs[0, 1].set_title('Generated Density')
   axs[0, 1].axis('off')
   fig.colorbar(im, ax=axs[0, 1])
 
-  im = axs[0, 2].imshow(atm_generated[:, :, itau, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  im = axs[0, 2].imshow(atm_generated[:, :, itau, 2], cmap='PuOr', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
   axs[0, 2].set_title('Generated Bq')
   axs[0, 2].axis('off')
   fig.colorbar(im, ax=axs[0, 2])
 
-  im = axs[0, 3].imshow(atm_generated[:, :, itau, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  im = axs[0, 3].imshow(atm_generated[:, :, itau, 3], cmap='PuOr', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
   axs[0, 3].set_title('Generated Bu')
   axs[0, 3].axis('off')
   fig.colorbar(im, ax=axs[0, 3])
   
-  im = axs[0, 4].imshow(atm_generated[:, :, itau, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  im = axs[0, 4].imshow(atm_generated[:, :, itau, 4], cmap='PuOr', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
   axs[0, 4].set_title('Generated Bv')
   axs[0, 4].axis('off')
   fig.colorbar(im, ax=axs[0, 4])
@@ -434,22 +434,22 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[1, 0].axis('off')
   fig.colorbar(im, ax=axs[1, 0])
   
-  im = axs[1, 1].imshow(atm_original[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  im = axs[1, 1].imshow(atm_original[:, :, itau, 1], cmap='spring', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
   axs[1, 1].set_title('Original Density')
   axs[1, 1].axis('off')
   fig.colorbar(im, ax=axs[1, 1])
 
-  im = axs[1, 2].imshow(atm_original[:, :, itau, 2], cmap='seismic', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  im = axs[1, 2].imshow(atm_original[:, :, itau, 2], cmap='PuOr', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
   axs[1, 2].set_title('Original Bq')
   axs[1, 2].axis('off')
   fig.colorbar(im, ax=axs[1, 2])
 
-  im = axs[1, 3].imshow(atm_original[:, :, itau, 3], cmap='seismic', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  im = axs[1, 3].imshow(atm_original[:, :, itau, 3], cmap='PuOr', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
   axs[1, 3].set_title('Original Bu')
   axs[1, 3].axis('off')
   fig.colorbar(im, ax=axs[1, 3])
 
-  im = axs[1, 4].imshow(atm_original[:, :, itau, 4], cmap='seismic', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  im = axs[1, 4].imshow(atm_original[:, :, itau, 4], cmap='PuOr', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
   axs[1, 4].set_title('Original Bv')
   axs[1, 4].axis('off')
   fig.colorbar(im, ax=axs[1, 4])
@@ -596,7 +596,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[j].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) (smape = {smape_res:.4f})")
+    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) (smape = {smape_res:.2f})")
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
