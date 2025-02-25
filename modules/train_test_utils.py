@@ -403,7 +403,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[0, 0].axis('off')
   fig.colorbar(im, ax=axs[0, 0])
 
-  im = axs[0, 1].imshow(atm_generated[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  im = axs[0, 1].imshow(atm_generated[:, :, itau, 1], cmap='spring', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
   axs[0, 1].set_title('Generated Density')
   axs[0, 1].axis('off')
   fig.colorbar(im, ax=axs[0, 1])
@@ -434,7 +434,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[1, 0].axis('off')
   fig.colorbar(im, ax=axs[1, 0])
   
-  im = axs[1, 1].imshow(atm_original[:, :, itau, 1], cmap='cool', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
+  im = axs[1, 1].imshow(atm_original[:, :, itau, 1], cmap='spring', interpolation='nearest', vmin=vmin_Rho, vmax=vmax_Rho)
   axs[1, 1].set_title('Original Density')
   axs[1, 1].axis('off')
   fig.colorbar(im, ax=axs[1, 1])
