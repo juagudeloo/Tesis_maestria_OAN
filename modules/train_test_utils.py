@@ -408,17 +408,17 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[0, 1].axis('off')
   fig.colorbar(im, ax=axs[0, 1])
 
-  im = axs[0, 2].imshow(atm_generated[:, :, itau, 2], cmap='PiYG', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  im = axs[0, 2].imshow(atm_generated[:, :, itau, 2], cmap='managua', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
   axs[0, 2].set_title('Generated Bq')
   axs[0, 2].axis('off')
   fig.colorbar(im, ax=axs[0, 2])
 
-  im = axs[0, 3].imshow(atm_generated[:, :, itau, 3], cmap='PiYG', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  im = axs[0, 3].imshow(atm_generated[:, :, itau, 3], cmap='managua', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
   axs[0, 3].set_title('Generated Bu')
   axs[0, 3].axis('off')
   fig.colorbar(im, ax=axs[0, 3])
   
-  im = axs[0, 4].imshow(atm_generated[:, :, itau, 4], cmap='PiYG', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  im = axs[0, 4].imshow(atm_generated[:, :, itau, 4], cmap='managua', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
   axs[0, 4].set_title('Generated Bv')
   axs[0, 4].axis('off')
   fig.colorbar(im, ax=axs[0, 4])
@@ -439,17 +439,17 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   axs[1, 1].axis('off')
   fig.colorbar(im, ax=axs[1, 1])
 
-  im = axs[1, 2].imshow(atm_original[:, :, itau, 2], cmap='PiYG', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
+  im = axs[1, 2].imshow(atm_original[:, :, itau, 2], cmap='managua', interpolation='nearest', vmin=vmin_Bq, vmax=vmax_Bq)
   axs[1, 2].set_title('Original Bq')
   axs[1, 2].axis('off')
   fig.colorbar(im, ax=axs[1, 2])
 
-  im = axs[1, 3].imshow(atm_original[:, :, itau, 3], cmap='PiYG', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
+  im = axs[1, 3].imshow(atm_original[:, :, itau, 3], cmap='managua', interpolation='nearest', vmin=vmin_Bu, vmax=vmax_Bu)
   axs[1, 3].set_title('Original Bu')
   axs[1, 3].axis('off')
   fig.colorbar(im, ax=axs[1, 3])
 
-  im = axs[1, 4].imshow(atm_original[:, :, itau, 4], cmap='PiYG', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
+  im = axs[1, 4].imshow(atm_original[:, :, itau, 4], cmap='managua', interpolation='nearest', vmin=vmin_Bv, vmax=vmax_Bv)
   axs[1, 4].set_title('Original Bv')
   axs[1, 4].axis('off')
   fig.colorbar(im, ax=axs[1, 4])
