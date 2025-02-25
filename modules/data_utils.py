@@ -123,7 +123,7 @@ class MURaM:
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = ["Temperature", "Density", "Magnetic Field QQ", "Magnetic Field UU", "Magnetic Field VV", "Velocity YY"]
+        self.mags_names = [r"$T$", r"$\rho$", r"$B_{Q}$", r"$B_{U}$", r"$B_{V}$", r"$v_{y}$"]
         self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvyy])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.nz, self.atm_quant.shape[-1]))
