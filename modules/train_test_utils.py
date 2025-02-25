@@ -596,7 +596,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     # Plot histograms
     axs[j].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[j].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) (smape = {smape_res:.4f})")
+    axs[j].set_title(f"{titles[j]} (tau={tau[tau_index]:.2f}) (smape = {smape_res:.2f})")
     axs[j].set_xlabel('Value')
     axs[j].set_ylabel('Density')
     axs[j].legend(loc='upper right')
