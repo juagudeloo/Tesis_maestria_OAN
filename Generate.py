@@ -34,10 +34,6 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Tensors stored in: {device}")
     
-    # Load models
-    nn_models = {}
-
-    # Linear model
     # Weights paths
     target_dir = Path("models")      
     #########################################################################################
