@@ -465,7 +465,7 @@ def plot_od_generated_atm(
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(4, 2, figsize=(5*2, 4*4))
+  fig, axs = plt.subplots(3, 2, figsize=(5*2, 4*4))
   
   # Define the parameters for the plots
   params = [
