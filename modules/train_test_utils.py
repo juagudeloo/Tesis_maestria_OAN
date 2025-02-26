@@ -486,8 +486,8 @@ def plot_od_generated_atm(
 
   # Plot generated and original atmosphere
   for i, (param_idx, title, unit) in enumerate(params):
-    row = (i % 3)
-    col = i // 3
+    row = (i // 3)
+    col = i % 3
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
     axs[row, col].set_title(f"{titles[i]} ({unit})")
@@ -550,8 +550,8 @@ def plot_density_bars(atm_generated: np.ndarray,
   fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
-    row = j % 3
-    col = j // 3
+    row = j // 3
+    col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
 
