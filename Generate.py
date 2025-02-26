@@ -22,8 +22,7 @@ def main():
     filenames = ["175000"]
     
     # Load data
-    test_spectral_res = [36, 
-                         #58, 90, 114
+    test_spectral_res = [36, 58, 90, 114
                          ]
     
     #########################################################################################
@@ -44,7 +43,7 @@ def main():
     # Generation
     #########################################################################################
     models_types = [
-      #"linear", 
+      "linear", 
       "cnn1d_4channels"
       ]
     
@@ -98,9 +97,17 @@ def main():
                             atm_generated = atm_generated,
                             atm_original = atm_data_original,
                             model_subdir = model_name,
-                            image_name = "atm_surface.png",
+                            image_name = "low_atm_surface.png",
                             titles = mags_names,
-                            itau = 6
+                            itau = 19
+                          )19
+        plot_surface_generated_atm(
+                            atm_generated = atm_generated,
+                            atm_original = atm_data_original,
+                            model_subdir = model_name,
+                            image_name = "high_atm_surface.png",
+                            titles = mags_names,
+                            itau = 8
                           )
       
         #OD plots

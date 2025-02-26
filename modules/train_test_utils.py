@@ -433,6 +433,15 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     vmin = orig_q5
     vmax = orig_q95
 
+    if param_idx in [2, 3, 4]:  # Magnetic field components
+      orig_q5, orig_q95 = np.quantile(np.abs(atm_original[:, :, itau, param_idx]), [0.05, 0.95])
+      vmin = -orig_q95 if np.abs(orig_q95) > np.abs(orig_q5) else orig_q5
+      vmax = orig_q95 if np.abs(orig_q95) > np.abs(orig_q5) else -orig_q5
+    else:
+      orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
+      vmin = orig_q5
+      vmax = orig_q95
+
     im = axs[0, i].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
     axs[0, i].set_title(f'Generated {titles[i]}')
     axs[0, i].axis('off')
