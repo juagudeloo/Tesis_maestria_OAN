@@ -405,10 +405,10 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(2, 6, figsize=(4*6, 3*2))
+  fig, axs = plt.subplots(2, 6, figsize=(3.5*6, 3*2))
   
   tau_value = tau[itau]
-  fig.suptitle(r'$\tau$'+f' = {tau_value:.2f}')
+  fig.suptitle(r'$\log \tau$'+f' = {tau_value:.2f}')
 
   # Define colorbar limits based on atm_original
   vmin = [atm_original[:, :, itau, i].min() for i in range(6)]
@@ -466,7 +466,7 @@ def plot_od_generated_atm(
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(3, 2, figsize=(4*2, 3*3))
+  fig, axs = plt.subplots(3, 2, figsize=(3.5*2, 3*3))
   
   # Define the parameters for the plots
   params = [
@@ -485,7 +485,7 @@ def plot_od_generated_atm(
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
     axs[row, col].set_title(f"{titles[i]} ({unit})")
-    axs[row, col].set_xlabel(r'$\tau$')
+    axs[row, col].set_xlabel(r'$\log \tau$')
     axs[row, col].axis('on')
 
   # Add legend
@@ -540,8 +540,8 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
-  fig, axs = plt.subplots(num_rows, 2, figsize=(4 * 2, 3 * num_rows))
-  fig.suptitle(r'$\tau$'+f' = {tau[tau_index]:.2f}')
+  fig, axs = plt.subplots(num_rows, 2, figsize=(3.5 * 2, 3 * num_rows))
+  fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
     row = j // 2
