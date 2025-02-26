@@ -92,6 +92,7 @@ def main():
                             atm_original = atm_data_original,
                             model_subdir = model_name,
                             image_name = "atm_surface.png",
+                            titles = mags_names,
                             itau = 6
                           )
       
@@ -102,6 +103,7 @@ def main():
                           atm_original = atm_data_original,
                           model_subdir = model_name,
                           image_name = "OD_intergranular.png",
+                          titles = mags_names,
                           ix = 130,
                           iy = 50
                           )
@@ -110,12 +112,13 @@ def main():
                           atm_original = atm_data_original,
                           model_subdir = model_name,
                           image_name = "OD_granular.png",
+                          titles = mags_names,
                           ix = 250,
                           iy = 250
                           )
         
         #Density bars
-        tau_indices = range(6,16)
+        tau_indices = range(0,20)
         for itau in tau_indices:
           plot_density_bars(
                   atm_generated = atm_generated,
