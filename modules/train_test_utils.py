@@ -40,12 +40,6 @@ plt.rcParams.update({
   'axes.formatter.limits': (-3, 3)  # Use scientific notation for values over 10^2
 })
 
-# Ensure tight layout for all plots
-plt.tight_layout()
-
-
-
-
 ### TRAINING AND TESTING UTILITIES ###
 def set_seeds(seed: int=42):
     """Sets random sets for torch operations.
@@ -438,16 +432,18 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     vmax = orig_q95
 
     im = axs[0, i].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[0, i].set_title(f'Generated {title}')
+    axs[0, i].set_title(f'Generated {titles[i]}')
     axs[0, i].axis('off')
     cbar = fig.colorbar(im, ax=axs[0, i])
     cbar.set_label(unit)
 
     im = axs[1, i].imshow(atm_original[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[1, i].set_title(f'Original {title}')
+    axs[1, i].set_title(f'Original {titles[i]}')
     axs[1, i].axis('off')
     cbar = fig.colorbar(im, ax=axs[1, i])
     cbar.set_label(unit)
+  
+  fig.tight_layout()
   
   images_dir = os.path.join(images_dir, model_subdir)
   if not os.path.exists(images_dir):
@@ -504,6 +500,7 @@ def plot_od_generated_atm(
 
   # Add legend
   axs[1, 0].legend(loc='upper right')
+  fig.tight_layout()
   
   images_dir = os.path.join(images_dir, model_subdir)
   if not os.path.exists(images_dir):
@@ -587,6 +584,8 @@ def plot_density_bars(atm_generated: np.ndarray,
   if num_params % 2 != 0:
     fig.delaxes(axs[-1, -1])
 
+  fig.tight_layout()
+  
   images_dir = os.path.join(images_dir, model_subdir, dense_diag_subdir)
   if not os.path.exists(images_dir):
     os.makedirs(images_dir)
