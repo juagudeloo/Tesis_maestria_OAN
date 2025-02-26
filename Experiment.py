@@ -19,9 +19,7 @@ def main():
     filenames = ["080000", 
                  #"085000", "090000"
                  ]
-    
-    #Load data
-    
+        
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Tensors stored in: {device}")

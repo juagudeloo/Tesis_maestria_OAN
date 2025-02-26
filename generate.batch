@@ -16,11 +16,10 @@
 ###SBATCH --mail-user=juagudeloo@unal.edu.co
 #SBATCH --export=SCRATCH_DIR=/scratch/$SLURM_JOB_ACCOUNT/$SLURM_JOB_USER/$SLURM_JOB_ID
 
-module purge
 module load envs/anaconda3
-conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
+conda activate pytorch_jupyter
 
 cd $SCRATCH_DIR
 
-python3 Generate.py
+python3 -c "import torch; device = 'cuda' if torch.cuda.is_available() else 'cpu'; print(device)"
 
