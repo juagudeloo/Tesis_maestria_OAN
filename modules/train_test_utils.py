@@ -38,7 +38,7 @@ plt.rcParams.update({
   'axes.formatter.useoffset': False,  # Disable offset
   'axes.formatter.use_mathtext': True,  # Use scientific notation
   'axes.formatter.limits': (-3, 3),  # Use scientific notation for values over 10^2
-  'colorbar.labelsize': 'large'  # Font size for colorbar labels
+  'axes.labelsize': 'large'  # Font size for axes labels
 })
 
 ### TRAINING AND TESTING UTILITIES ###
