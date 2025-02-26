@@ -22,10 +22,9 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 import matplotlib as mpl
-
 plt.rcParams.update({
-  'axes.titlesize': 'xx-large',  # heading 1
-  'axes.labelsize': 'x-large',   # heading 2
+  'axes.titlesize': 'x-large',  # heading 1
+  'axes.labelsize': 'large',   # heading 2
   'xtick.labelsize': 16,         # fontsize of the ticks
   'ytick.labelsize': 16,         # fontsize of the ticks
   'font.family': 'serif',        # Font family
@@ -35,8 +34,16 @@ plt.rcParams.update({
   'savefig.format': 'png',       # Default format for saving figures
   'legend.fontsize': 'large',    # Font size for legends
   'lines.linewidth': 2,          # Line width for plots
-  'lines.markersize': 8          # Marker size for plots
+  'lines.markersize': 8,         # Marker size for plots,
+  'axes.formatter.useoffset': False,  # Disable offset
+  'axes.formatter.use_mathtext': True,  # Use scientific notation
+  'axes.formatter.limits': (-3, 3)  # Use scientific notation for values over 10^2
 })
+
+# Ensure tight layout for all plots
+plt.tight_layout()
+
+
 
 
 ### TRAINING AND TESTING UTILITIES ###
@@ -441,7 +448,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     axs[1, i].axis('off')
     cbar = fig.colorbar(im, ax=axs[1, i])
     cbar.set_label(unit)
-
+  
   images_dir = os.path.join(images_dir, model_subdir)
   if not os.path.exists(images_dir):
     os.makedirs(images_dir)
@@ -547,7 +554,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
   fig, axs = plt.subplots(num_rows, 2, figsize=(10, 5 * num_rows))
-  fig.suptitle('Density plots'+r'$\tau$'+f'{tau[tau_index]:.2f})', fontsize=16)
+  fig.suptitle('Distribution plots'+r'$\tau$'+f'{tau[tau_index]:.2f})', fontsize=16)
 
   for j in range(num_params):
     row = j // 2
@@ -573,7 +580,6 @@ def plot_density_bars(atm_generated: np.ndarray,
     axs[row, col].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
     axs[row, col].set_title(f"{titles[j]}  (smape = {smape_res:.2f})")
     axs[row, col].set_xlabel(f'Value ({units[j]})')
-    axs[row, col].set_ylabel('Density')
     axs[row, col].legend(loc='upper right')
     axs[row, col].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
 

@@ -42,8 +42,9 @@ def main():
     # Generation
     #########################################################################################
     models_types = [
-      "linear", 
-      "cnn1d_4channels"]
+      #"linear", 
+      "cnn1d_4channels"
+      ]
     
     for model_type in models_types:
       for n_spec_points in test_spectral_res:
