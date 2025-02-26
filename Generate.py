@@ -80,6 +80,10 @@ def main():
                                           maxmin = phys_maxmin,
                                           device = device
                                         )      
+        
+        # Convert velocity component from cm/s to km/s
+        atm_generated[..., 5] /= 1e5
+        atm_data_original[..., 5] /= 1e5
       
         ##################################
         # Plot generated atmospheres  
