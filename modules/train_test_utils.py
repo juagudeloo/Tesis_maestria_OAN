@@ -541,7 +541,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
   fig, axs = plt.subplots(num_rows, 2, figsize=(2*5, 4 * num_rows))
-  fig.suptitle(r'$\tau$'+f'{tau[tau_index]:.2f}')
+  fig.suptitle(r'$\tau$'+f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
     row = j // 2
