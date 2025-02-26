@@ -22,7 +22,9 @@ def main():
     filenames = ["175000"]
     
     # Load data
-    test_spectral_res = [36, 58, 90, 114]
+    test_spectral_res = [36, 
+                         #58, 90, 114
+                         ]
     
     #########################################################################################
     # Models and weights paths
