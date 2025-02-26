@@ -23,8 +23,8 @@ from tqdm import tqdm
 
 import matplotlib as mpl
 plt.rcParams.update({
-  'axes.titlesize': 'x-large',  # heading 1
-  'axes.labelsize': 'large',   # heading 2
+  'axes.titlesize': 'xx-large',  # heading 1
+  'axes.labelsize': 'x-large',   # heading 2
   'xtick.labelsize': 16,         # fontsize of the ticks
   'ytick.labelsize': 16,         # fontsize of the ticks
   'font.family': 'serif',        # Font family
@@ -409,7 +409,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(2, 6, figsize=(18, 6))
+  fig, axs = plt.subplots(2, 6, figsize=(10*6, 8*2))
   
   tau_value = tau[itau]
   fig.suptitle(f'Atmospheric Parameters at tau = {tau_value:.2f}', fontsize=16)
@@ -470,7 +470,7 @@ def plot_od_generated_atm(
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(4, 2, figsize=(12, 16))
+  fig, axs = plt.subplots(4, 2, figsize=(10*2, 8*4))
   
   # Plot Temperature Surface
   im = axs[0, 0].imshow(atm_original[:,:,19,0], cmap='inferno', interpolation='nearest')
@@ -553,7 +553,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
-  fig, axs = plt.subplots(num_rows, 2, figsize=(10, 5 * num_rows))
+  fig, axs = plt.subplots(num_rows, 2, figsize=(10*2, 8 * num_rows))
   fig.suptitle('Distribution plots'+r'$\tau$'+f'{tau[tau_index]:.2f})', fontsize=16)
 
   for j in range(num_params):
