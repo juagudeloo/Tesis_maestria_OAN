@@ -24,8 +24,6 @@ def main():
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
     
-    stokes_data_plot = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0],stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
-    #----------------------------------------------
     stokes_data_linear = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
     #----------------------------------------------
     stokes_data_cnn_36channels = np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
@@ -104,8 +102,17 @@ def main():
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           model_subdir = model_name,
-                          image_name = "atm_surface.png",
-                          itau = 6
+                          image_name = "low_atm_surface.png",
+                          titles = mags_names,
+                          itau = 19
+                        )
+      plot_surface_generated_atm(
+                          atm_generated = atm_generated,
+                          atm_original = atm_data_original,
+                          model_subdir = model_name,
+                          image_name = "high_atm_surface.png",
+                          titles = mags_names,
+                          itau = 8
                         )
     
       #OD plots
@@ -114,21 +121,12 @@ def main():
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         model_subdir = model_name,
-                        image_name = "OD_intergranular.png",
-                        ix = 130,
-                        iy = 50
-                        )
-      plot_od_generated_atm(
-                        atm_generated = atm_generated,
-                        atm_original = atm_data_original,
-                        model_subdir = model_name,
-                        image_name = "OD_granular.png",
-                        ix = 250,
-                        iy = 250
+                        image_name = "mean_OD.png",
+                        titles = mags_names
                         )
       
       #Density bars
-      tau_indices = range(6,16)
+      tau_indices = range(0,20)
       for itau in tau_indices:
         plot_density_bars(
                 atm_generated = atm_generated,
@@ -139,6 +137,7 @@ def main():
                 tau_index = itau,
                 titles = mags_names,
                 num_bars = 100)
+        
         
       print("Done!")
     

@@ -21,7 +21,7 @@ def main():
                  ]
     
     #Load data
-    atm_data, stokes_data, mags_names = load_training_data(filenames)
+    atm_data, stokes_data, _ = load_training_data(filenames)
     
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"
