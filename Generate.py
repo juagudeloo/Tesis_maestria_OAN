@@ -100,7 +100,7 @@ def main():
                             image_name = "low_atm_surface.png",
                             titles = mags_names,
                             itau = 19
-                          )19
+                          )
         plot_surface_generated_atm(
                             atm_generated = atm_generated,
                             atm_original = atm_data_original,
