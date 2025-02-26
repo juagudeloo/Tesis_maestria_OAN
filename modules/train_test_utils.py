@@ -487,8 +487,8 @@ def plot_od_generated_atm(
 
   # Plot generated and original atmosphere
   for i, (param_idx, title, unit) in enumerate(params):
-    row = (i + 1) // 2 + 1
-    col = (i + 1) % 2
+    row = (i // 2) + 1
+    col = i % 2
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
     axs[row, col].set_title(f"{title} ({unit})")
