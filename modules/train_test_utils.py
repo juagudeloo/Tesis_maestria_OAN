@@ -32,12 +32,13 @@ plt.rcParams.update({
   'figure.figsize': (10, 8),     # Default figure size
   'savefig.dpi': 300,            # High resolution for saving figures
   'savefig.format': 'png',       # Default format for saving figures
-  'legend.fontsize': 'x-large',    # Font size for legends
+  'legend.fontsize': 'x-large',  # Font size for legends
   'lines.linewidth': 2,          # Line width for plots
   'lines.markersize': 8,         # Marker size for plots,
   'axes.formatter.useoffset': False,  # Disable offset
   'axes.formatter.use_mathtext': True,  # Use scientific notation
-  'axes.formatter.limits': (-3, 3)  # Use scientific notation for values over 10^2
+  'axes.formatter.limits': (-3, 3),  # Use scientific notation for values over 10^2
+  'colorbar.labelsize': 'large'  # Font size for colorbar labels
 })
 
 ### TRAINING AND TESTING UTILITIES ###
