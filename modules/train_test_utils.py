@@ -32,7 +32,7 @@ plt.rcParams.update({
   'figure.figsize': (10, 8),     # Default figure size
   'savefig.dpi': 300,            # High resolution for saving figures
   'savefig.format': 'png',       # Default format for saving figures
-  'legend.fontsize': 'large',    # Font size for legends
+  'legend.fontsize': 'x-large',    # Font size for legends
   'lines.linewidth': 2,          # Line width for plots
   'lines.markersize': 8,         # Marker size for plots,
   'axes.formatter.useoffset': False,  # Disable offset
@@ -494,8 +494,8 @@ def plot_od_generated_atm(
     col = i % 2
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
-    axs[row, col].set_title(f"{title} ({unit})")
-    axs[row, col].set_xlabel('Tau')
+    axs[row, col].set_title(f"{titles[i]} ({unit})")
+    axs[row, col].set_xlabel(r'$\tau$')
     axs[row, col].axis('on')
 
   # Add legend
@@ -575,8 +575,8 @@ def plot_density_bars(atm_generated: np.ndarray,
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[row, col].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[row, col].set_title(f"{titles[j]}  (smape = {smape_res:.2f})")
-    axs[row, col].set_xlabel(f'Value ({units[j]})')
+    axs[row, col].set_title(f"smape = {smape_res:.2f}")
+    axs[row, col].set_xlabel(f'{titles[j]} ({units[j]})')
     axs[row, col].legend(loc='upper right')
     axs[row, col].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
 
