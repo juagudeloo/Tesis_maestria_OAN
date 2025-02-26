@@ -23,22 +23,22 @@ from tqdm import tqdm
 
 import matplotlib as mpl
 plt.rcParams.update({
-  'axes.titlesize': 'xx-large',  # heading 1
-  'axes.labelsize': 'x-large',   # heading 2
-  'xtick.labelsize': 16,         # fontsize of the ticks
-  'ytick.labelsize': 16,         # fontsize of the ticks
+  'axes.titlesize': 'x-large',  # heading 1
+  'axes.labelsize': 'large',   # heading 2
+  'xtick.labelsize': 'large',         # fontsize of the ticks
+  'ytick.labelsize': 'large',         # fontsize of the ticks
   'font.family': 'serif',        # Font family
   'text.usetex': False,          # Do not use LaTeX for text rendering
   'figure.figsize': (10, 8),     # Default figure size
   'savefig.dpi': 300,            # High resolution for saving figures
   'savefig.format': 'png',       # Default format for saving figures
-  'legend.fontsize': 'x-large',  # Font size for legends
+  'legend.fontsize': 'large',  # Font size for legends
   'lines.linewidth': 2,          # Line width for plots
   'lines.markersize': 8,         # Marker size for plots,
   'axes.formatter.useoffset': False,  # Disable offset
   'axes.formatter.use_mathtext': True,  # Use scientific notation
   'axes.formatter.limits': (-3, 3),  # Use scientific notation for values over 10^2
-  'axes.labelsize': 'large',     # Font size for axes labels
+  'axes.labelsize': 'x-large',     # Font size for axes labels
   'figure.titlesize': 'xx-large' # Font size for suptitles (heading 1)
 })
 
@@ -405,7 +405,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(2, 6, figsize=(5*6, 4*2))
+  fig, axs = plt.subplots(2, 6, figsize=(4*6, 3*2))
   
   tau_value = tau[itau]
   fig.suptitle(r'$\tau$'+f' = {tau_value:.2f}')
@@ -466,7 +466,7 @@ def plot_od_generated_atm(
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(3, 2, figsize=(5*2, 4*3))
+  fig, axs = plt.subplots(3, 2, figsize=(4*2, 3*3))
   
   # Define the parameters for the plots
   params = [
@@ -540,7 +540,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
-  fig, axs = plt.subplots(num_rows, 2, figsize=(2*5, 4 * num_rows))
+  fig, axs = plt.subplots(num_rows, 2, figsize=(4 * 2, 3 * num_rows))
   fig.suptitle(r'$\tau$'+f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
