@@ -428,16 +428,13 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
-    # Calculate quantiles for colorbar limits based on original data
-    orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
-    vmin = orig_q5
-    vmax = orig_q95
 
-    if param_idx in [2, 3, 4]:  # Magnetic field components
+    if param_idx in [2, 3, 4, 5]:  # Magnetic field components and velocity need symmetric colorbars
       orig_q5, orig_q95 = np.quantile(np.abs(atm_original[:, :, itau, param_idx]), [0.05, 0.95])
       vmin = -orig_q95 if np.abs(orig_q95) > np.abs(orig_q5) else orig_q5
       vmax = orig_q95 if np.abs(orig_q95) > np.abs(orig_q5) else -orig_q5
     else:
+      # Calculate quantiles for colorbar limits based on original data
       orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
       vmin = orig_q5
       vmax = orig_q95
