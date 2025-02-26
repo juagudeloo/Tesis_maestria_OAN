@@ -38,7 +38,8 @@ plt.rcParams.update({
   'axes.formatter.useoffset': False,  # Disable offset
   'axes.formatter.use_mathtext': True,  # Use scientific notation
   'axes.formatter.limits': (-3, 3),  # Use scientific notation for values over 10^2
-  'axes.labelsize': 'large'  # Font size for axes labels
+  'axes.labelsize': 'large',     # Font size for axes labels
+  'figure.titlesize': 'xx-large' # Font size for suptitles (heading 1)
 })
 
 ### TRAINING AND TESTING UTILITIES ###
@@ -407,7 +408,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   fig, axs = plt.subplots(2, 6, figsize=(5*6, 4*2))
   
   tau_value = tau[itau]
-  fig.suptitle(r' $\tau$ = {tau_value:.2f}')
+  fig.suptitle(r'$\tau$'+f' = {tau_value:.2f}')
 
   # Define colorbar limits based on atm_original
   vmin = [atm_original[:, :, itau, i].min() for i in range(6)]
