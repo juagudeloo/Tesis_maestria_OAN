@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from tqdm import tqdm
 
-import matplotlib as plt
+import matplotlib as mpl
 
 plt.rcParams.update({
   'axes.titlesize': 'xx-large',  # heading 1
