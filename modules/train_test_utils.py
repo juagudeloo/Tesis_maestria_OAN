@@ -472,7 +472,7 @@ def plot_od_generated_atm(
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(3, 2, figsize=(3.5*2, 3*3))
+  fig, axs = plt.subplots(2, 3, figsize=(3.5*3, 3*2))
   
   # Define the parameters for the plots
   params = [
@@ -486,8 +486,8 @@ def plot_od_generated_atm(
 
   # Plot generated and original atmosphere
   for i, (param_idx, title, unit) in enumerate(params):
-    row = (i // 2)
-    col = i % 2
+    row = (i % 3)
+    col = i // 3
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
     axs[row, col].set_title(f"{titles[i]} ({unit})")
@@ -495,7 +495,7 @@ def plot_od_generated_atm(
     axs[row, col].axis('on')
 
   # Add legend
-  axs[1, 0].legend(loc='upper right')
+  axs[0, 0].legend(loc='upper right')
   fig.tight_layout()
   
   images_dir = os.path.join(images_dir, model_subdir)
@@ -546,12 +546,12 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
-  fig, axs = plt.subplots(num_rows, 2, figsize=(3.5 * 2, 3 * num_rows))
+  fig, axs = plt.subplots(2, num_rows, figsize=(3.5 * num_rows, 3 * 2))
   fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
-    row = j // 2
-    col = j % 2
+    row = j % 3
+    col = j // 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
 
