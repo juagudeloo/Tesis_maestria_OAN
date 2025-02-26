@@ -468,16 +468,6 @@ def plot_od_generated_atm(
   print("atm_original shape:", atm_original.shape)
   fig, axs = plt.subplots(4, 2, figsize=(5*2, 4*4))
   
-  # Plot Temperature Surface
-  im = axs[0, 0].imshow(atm_original[:,:,19,0], cmap='inferno', interpolation='nearest')
-  axs[0, 0].scatter(iy, ix, color='green', s=50, edgecolor='black')
-  axs[0, 0].set_title('Temperature Surface')
-  axs[0, 0].axis('on')
-  fig.colorbar(im, ax=axs[0, 0])
-  
-  # Remove the empty subplot in the first row
-  fig.delaxes(axs[0, 1])
-
   # Define the parameters for the plots
   params = [
   (0, 'Temperature', 'K'),
@@ -490,7 +480,7 @@ def plot_od_generated_atm(
 
   # Plot generated and original atmosphere
   for i, (param_idx, title, unit) in enumerate(params):
-    row = (i // 2) + 1
+    row = (i // 2)
     col = i % 2
     axs[row, col].plot(tau, atm_generated[:, :, :, param_idx].mean(axis=(0, 1)), color='orangered', label='Generated')
     axs[row, col].plot(tau, atm_original[:, :, :, param_idx].mean(axis=(0, 1)), color='navy', label='Original')
