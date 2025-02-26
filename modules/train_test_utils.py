@@ -28,8 +28,8 @@ plt.rcParams.update({
   'axes.labelsize': 'x-large',   # heading 2
   'xtick.labelsize': 16,         # fontsize of the ticks
   'ytick.labelsize': 16,         # fontsize of the ticks
-  'font.family': 'serif',        # LaTeX font
-  'text.usetex': True,           # Use LaTeX for text rendering
+  'font.family': 'serif',        # Font family
+  'text.usetex': False,          # Do not use LaTeX for text rendering
   'figure.figsize': (10, 8),     # Default figure size
   'savefig.dpi': 300,            # High resolution for saving figures
   'savefig.format': 'png',       # Default format for saving figures
