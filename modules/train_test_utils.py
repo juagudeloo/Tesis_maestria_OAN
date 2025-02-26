@@ -457,8 +457,6 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 def plot_od_generated_atm(
        atm_generated: np.ndarray,
        atm_original: np.ndarray,
-       ix: int,
-       iy: int,
        model_subdir: str,
        image_name: str,
        titles: list,

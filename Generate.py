@@ -109,19 +109,8 @@ def main():
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           model_subdir = model_name,
-                          image_name = "OD_intergranular.png",
-                          titles = mags_names,
-                          ix = 130,
-                          iy = 50
-                          )
-        plot_od_generated_atm(
-                          atm_generated = atm_generated,
-                          atm_original = atm_data_original,
-                          model_subdir = model_name,
-                          image_name = "OD_granular.png",
-                          titles = mags_names,
-                          ix = 250,
-                          iy = 250
+                          image_name = "mean_OD.png",
+                          titles = mags_names
                           )
         
         #Density bars
