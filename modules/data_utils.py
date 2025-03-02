@@ -550,7 +550,7 @@ def create_dataloaders(stokes_data: np.ndarray,
 
     #Train and test dataloaders
     train_dataloader = DataLoader(train_dataset,
-            batch_size=batch_size, # how many samples per batch? 
+            batch_size=batch_size, # how manz samples per batch? 
             shuffle=True # shuffle data every epoch?
     )
 
