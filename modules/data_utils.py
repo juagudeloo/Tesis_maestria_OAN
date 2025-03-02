@@ -30,9 +30,9 @@ class MURaM:
         Name of the file to be processed.
     nx : int
         Number of grid points in the x-direction.
-    ny : int
-        Number of grid points in the y-direction.
     nz : int
+        Number of grid points in the y-direction.
+    ny : int
         Number of grid points in the z-direction.
     atm_quant : np.ndarray
         Array to store atmospheric quantities.
@@ -62,9 +62,9 @@ class MURaM:
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
-        self.ny = 256
+        self.nz = 256
         self.od = 20  # height axis
-        self.nz = 480
+        self.ny = 480
 
     def charge_quantities(self) -> None:
         """
@@ -91,8 +91,8 @@ class MURaM:
         mbyy = mbyy * coef
         mbzz = mbzz * coef
         print("mbxx shape:", mbxx.shape)
-        print("mbyy shape:", mbyy.shape)
         print("mbzz shape:", mbzz.shape)
+        print("mbyy shape:", mbyy.shape)
         
         print("Charging density...")
         mrho = np.load(self.ptm / "opt_depth" / f"mrho_logtau_{self.filename}.npy")
@@ -103,8 +103,8 @@ class MURaM:
         mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_{self.filename}.npy")
         mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_{self.filename}.npy")
         print("mvxx shape:", mvxx.shape)
-        print("mvyy shape:", mvyy.shape)
-        print("mvzz shape:", mbzz.shape)
+        print("mvzz shape:", mvzz.shape)
+        print("mvyy shape:", mbyy.shape)
         
         mvxx = mvxx / mrho
         mvyy = mvyy / mrho
@@ -117,16 +117,16 @@ class MURaM:
                       """)
 
         print("Modifying magnetic field components to fight azimuth ambiguity...")
-        mbqq = np.sign(mbxx**2 - mbzz**2) * np.sqrt(np.abs(mbxx**2 - mbzz**2))
-        mbuu = np.sign(mbxx * mbzz) * np.sqrt(np.abs(mbxx * mbzz))
-        mbvv = mbyy
+        mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
+        mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
+        mbvv = mbzz
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$B_{Q}$", r"$B_{U}$", r"$B_{V}$", r"$v_{y}$"]
-        self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvyy])
+        self.mags_names = [r"$T$", r"$\rho$", r"$B_{Q}$", r"$B_{U}$", r"$B_{V}$", r"$v_{z}$"]
+        self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
-        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.nz, self.atm_quant.shape[-1]))
+        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.ny, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
@@ -166,11 +166,11 @@ class MURaM:
             
             # Convolution
             print("Degrading...")
-            new_stokes = np.zeros((self.nx, self.nz, new_points, self.stokes.shape[-1]))
+            new_stokes = np.zeros((self.nx, self.ny, new_points, self.stokes.shape[-1]))
             
             for s in range(self.stokes.shape[-1]):
                 for jx in tqdm(range(self.nx)):
-                    for jz in range(self.nz):
+                    for jz in range(self.ny):
                         spectrum = self.stokes[jx, jz, :, s]
                         resampled_spectrum = np.zeros(new_points)
                         i = 0
@@ -219,7 +219,7 @@ class MURaM:
         mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
         mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
         mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-        mvyy max = {np.max(self.atm_quant[:, :, :, 5])}
+        mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
             """)
         
         print(f"""
@@ -229,7 +229,7 @@ class MURaM:
         mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
         mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
         mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-        mvyy min = {np.min(self.atm_quant[:, :, :, 5])}
+        mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
             """) 
         
         print("Scaling the quantities...")
@@ -261,7 +261,7 @@ class MURaM:
         wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
         print("calculating the continuum...")
         for jx in tqdm(range(self.nx)):
-            for jz in range(self.nz):
+            for jz in range(self.ny):
                 for i in range(self.stokes.shape[-1]):
                     cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
                     cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
@@ -292,7 +292,7 @@ class MURaM:
         mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
         mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
         mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-        mvyy max = {np.max(self.atm_quant[:, :, :, 5])}
+        mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
             """)
         
         print(f"""
@@ -302,7 +302,7 @@ class MURaM:
         mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
         mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
         mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-        mvyy min = {np.min(self.atm_quant[:, :, :, 5])}
+        mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
             """)
     def gran_intergran_balance(self) -> None:
         """
@@ -550,7 +550,7 @@ def create_dataloaders(stokes_data: np.ndarray,
 
     #Train and test dataloaders
     train_dataloader = DataLoader(train_dataset,
-            batch_size=batch_size, # how many samples per batch? 
+            batch_size=batch_size, # how manz samples per batch? 
             shuffle=True # shuffle data every epoch?
     )
 
