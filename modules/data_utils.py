@@ -57,7 +57,7 @@ class MURaM:
         filename : str
             Name of the file to be processed.
         """
-        self.ptm = Path("/scratchsan/observatorio/juagudeloo/data")
+        self.ptm = Path("./data")
         self.filename = filename
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
