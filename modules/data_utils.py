@@ -57,7 +57,7 @@ class MURaM:
         filename : str
             Name of the file to be processed.
         """
-        self.ptm = Path("./data")
+        self.ptm = Path("/scratchsan/observatorio/juagudeloo/data")
         self.filename = filename
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
@@ -77,37 +77,37 @@ class MURaM:
                       """)
         
         print("Charging temperature ...")
-        mtpr = np.load(self.ptm / "opt_depth" / f"mtpr_logtau_20_heights_{self.filename}.npy").flatten()
+        mtpr = np.load(self.ptm / "opt_depth" / f"mtpr_logtau_{self.filename}.npy").flatten()
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
-        #mbxx = np.load(self.ptm / "opt_depth" / f"mbxx_logtau_20_heights_{self.filename}.npy")
-        #mbyy = np.load(self.ptm / "opt_depth" / f"mbyy_logtau_20_heights_{self.filename}.npy")
-        #mbzz = np.load(self.ptm / "opt_depth" / f"mbzz_logtau_20_heights_{self.filename}.npy")
-        #
-        #coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
-        #
-        #mbxx = mbxx * coef
-        #mbyy = mbyy * coef
-        #mbzz = mbzz * coef
-        #print("mbxx shape:", mbxx.shape)
-        #print("mbzz shape:", mbzz.shape)
-        #print("mbyy shape:", mbyy.shape)
+        mbxx = np.load(self.ptm / "opt_depth" / f"mbxx_logtau_{self.filename}.npy")
+        mbyy = np.load(self.ptm / "opt_depth" / f"mbyy_logtau_{self.filename}.npy")
+        mbzz = np.load(self.ptm / "opt_depth" / f"mbzz_logtau_{self.filename}.npy")
+        
+        coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
+        
+        mbxx = mbxx * coef
+        mbyy = mbyy * coef
+        mbzz = mbzz * coef
+        print("mbxx shape:", mbxx.shape)
+        print("mbzz shape:", mbzz.shape)
+        print("mbyy shape:", mbyy.shape)
         
         print("Charging density...")
-        mrho = np.load(self.ptm / "opt_depth" / f"mrho_logtau_20_heights_{self.filename}.npy")
+        mrho = np.load(self.ptm / "opt_depth" / f"mrho_logtau_{self.filename}.npy")
         print("mrho shape:", mrho.shape)
         
         print("Charge velocity...")
-        #mvxx = np.load(self.ptm / "opt_depth" / f"mvxx_logtau_20_heights_{self.filename}.npy")
-        #mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_20_heights_{self.filename}.npy")
-        mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_20_heights_{self.filename}.npy")
-        #print("mvxx shape:", mvxx.shape)
-        #print("mvzz shape:", mvyy.shape)
-        print("mvyy shape:", mvzz.shape)
+        mvxx = np.load(self.ptm / "opt_depth" / f"mvxx_logtau_{self.filename}.npy")
+        mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_{self.filename}.npy")
+        mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_{self.filename}.npy")
+        print("mvxx shape:", mvxx.shape)
+        print("mvzz shape:", mvzz.shape)
+        print("mvyy shape:", mbyy.shape)
         
-        #mvxx = mvxx / mrho
-        #mvyy = mvyy / mrho
+        mvxx = mvxx / mrho
+        mvyy = mvyy / mrho
         mvzz = mvzz / mrho
         
         print(f"""
@@ -117,12 +117,9 @@ class MURaM:
                       """)
 
         print("Modifying magnetic field components to fight azimuth ambiguity...")
-        #mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
-        #mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
-        #mbvv = mbzz
-        mbqq = np.load(self.ptm / "opt_depth" / f"mbqq_logtau_20_heights_{self.filename}.npy")
-        mbuu = np.load(self.ptm / "opt_depth" / f"mbuu_logtau_20_heights_{self.filename}.npy")
-        mbvv = np.load(self.ptm / "opt_depth" / f"mbvv_logtau_20_heights_{self.filename}.npy")
+        mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
+        mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
+        mbvv = mbzz
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
