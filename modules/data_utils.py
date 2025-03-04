@@ -103,8 +103,8 @@ class MURaM:
         #mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_20_heights_{self.filename}.npy")
         mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_20_heights_{self.filename}.npy")
         #print("mvxx shape:", mvxx.shape)
-        #print("mvzz shape:", mvzz.shape)
-        print("mvyy shape:", mvyy.shape)
+        #print("mvzz shape:", mvyy.shape)
+        print("mvyy shape:", mvzz.shape)
         
         #mvxx = mvxx / mrho
         #mvyy = mvyy / mrho
