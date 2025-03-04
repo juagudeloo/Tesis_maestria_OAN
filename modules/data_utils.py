@@ -147,18 +147,55 @@ class MURaM:
         
         if not os.path.exists(geom_path / logtau_name):
             print("Calculating optical depth stratification...")
-            logtau = calculate_logtau(muram = self, 
+            muram_logtau = calculate_logtau(muram = self, 
                                     save_path = geom_path,
                                     save_name=logtau_name)
         else:
-            logtau = np.load(geom_path / logtau_name)
+            muram_logtau = np.load(geom_path / logtau_name)
         print("Done!")
         
-        fig, ax = plt.subplots(1,2,figsize=(10,5))
-        ax[0].imshow(logtau[:,:,180], cmap = "gist_gray")
-        ax[1].plot(logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
-        fig.savefig("images/atmosphere/optical_depth.png")
+        def logtau_mapper(orig_arr: np.ndarray, 
+           corresp_logtau: np.ndarray,
+           new_logtau: np.ndarray) -> np.ndarray:
+            """
+            Function for mapping the quantities distribution from geometrical height to optical depth.
+            Args:
+                orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
+                corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
+                new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
+            Returns:
+                (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
+            """
             
+            logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
+            new_arr = logtau_mapper(new_logtau)
+            return new_arr
+        
+        # New optical depth stratification array.
+        new_logtau_height = np.linspace(-2.5, 0, 20)
+        n_logtau = new_logtau_height.shape[0]
+
+        # Mapping to the new optical depth stratification
+        quantity_tau = np.zeros((self.nx,self.ny,n_logtau))
+        for imur in range(self.atm_quant.shape[-1]):
+            muram_quantity = self.atm_quant[..., imur]
+            for ix in tqdm(range(self.nx)):
+                for iy in range(self.ny):
+                    quantity_tau[ix,:,iy] = logtau_mapper(orig_arr = muram_quantity[ix,:,iy], 
+                                                corresp_logtau = muram_logtau[ix,iy,:], 
+                                                new_logtau = new_logtau_height)
+            self.atm_quant[..., imur] = quantity_tau
+            
+        fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
+        i = 0
+        i_logt = 19
+        for imur in range(self.atm_quant.shape[-1]):
+            ax[0,i].imshow(self.atm_quant[:,:,i_logt,imur], cmap="inferno")
+            ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau_height[i_logt]:0.2f}")
+            ax[1,i].plot(new_logtau_height, self.atm_quant[...,imur].mean(axis=(0,1)))
+            i += 1
+        fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
+                
         
         
     def modified_components(self) -> None:
@@ -398,79 +435,80 @@ class MURaM:
 ##############################################################
 def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     # Data path
-        geom_path = muram.ptm / "geom_height"
-        
-        # Load the pressure
-        eos = np.fromfile(os.path.join(geom_path,  "eos.080000"), dtype=np.float32)
-        eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order = "C")
-        mpre = eos[1]
-        del eos
-        
-        #######################################
-        #Calculate optical depth
-        #######################################
-        
-        # Upload the opacity data
-        tab_T = np.array([3.32, 3.34, 3.36, 3.38, 3.40, 3.42, 3.44, 3.46, 3.48, 3.50,
-                        3.52, 3.54, 3.56, 3.58, 3.60, 3.62, 3.64, 3.66, 3.68, 3.70,
-                        3.73, 3.76, 3.79, 3.82, 3.85, 3.88, 3.91, 3.94, 3.97, 4.00,
-                        4.05, 4.10, 4.15, 4.20, 4.25, 4.30, 4.35, 4.40, 4.45, 4.50,
-                        4.55, 4.60, 4.65, 4.70, 4.75, 4.80, 4.85, 4.90, 4.95, 5.00,
-                        5.05, 5.10, 5.15, 5.20, 5.25, 5.30])
+    geom_path = muram.ptm / "geom_height"
+    
+    # Load the pressure
+    eos = np.fromfile(os.path.join(geom_path,  "eos.080000"), dtype=np.float32)
+    eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order = "C")
+    mpre = eos[1]
+    del eos
+    
+    #######################################
+    #Calculate optical depth
+    #######################################
+    
+    # Upload the opacity data
+    tab_T = np.array([3.32, 3.34, 3.36, 3.38, 3.40, 3.42, 3.44, 3.46, 3.48, 3.50,
+                    3.52, 3.54, 3.56, 3.58, 3.60, 3.62, 3.64, 3.66, 3.68, 3.70,
+                    3.73, 3.76, 3.79, 3.82, 3.85, 3.88, 3.91, 3.94, 3.97, 4.00,
+                    4.05, 4.10, 4.15, 4.20, 4.25, 4.30, 4.35, 4.40, 4.45, 4.50,
+                    4.55, 4.60, 4.65, 4.70, 4.75, 4.80, 4.85, 4.90, 4.95, 5.00,
+                    5.05, 5.10, 5.15, 5.20, 5.25, 5.30])
 
-        tab_p = np.array([-2., -1.5, -1., -0.5, 0., 0.5, 1., 1.5, 2., 2.5,
-                        3., 3.5, 4., 4.5, 5., 5.5, 6., 6.5, 7., 7.5, 8.])
-        
-        df_kappa = pd.read_csv('./csv/kappa.0.dat', delim_whitespace=True, header=None)
-        df_kappa.columns = ["Temperature index", "Pressure index", "Opacity value"]
-        temp_indices = df_kappa["Temperature index" ].unique()
-        press_indices = df_kappa["Pressure index"].unique()
-        opacity_values = df_kappa.pivot(index = "Pressure index", columns = "Temperature index", values = "Opacity value").values
+    tab_p = np.array([-2., -1.5, -1., -0.5, 0., 0.5, 1., 1.5, 2., 2.5,
+                    3., 3.5, 4., 4.5, 5., 5.5, 6., 6.5, 7., 7.5, 8.])
+    
+    df_kappa = pd.read_csv('./csv/kappa.0.dat', delim_whitespace=True, header=None)
+    df_kappa.columns = ["Temperature index", "Pressure index", "Opacity value"]
+    temp_indices = df_kappa["Temperature index" ].unique()
+    press_indices = df_kappa["Pressure index"].unique()
+    opacity_values = df_kappa.pivot(index = "Pressure index", columns = "Temperature index", values = "Opacity value").values
 
-        Tk = tab_T[temp_indices]
-        Pk = tab_p[press_indices]
-        K = opacity_values
-        
-        # Interpolation of the opacity values
-        kappa_interp = RegularGridInterpolator((Pk,Tk), K, method="linear")
-        
-        def limit_values(data, min_val, max_val):
-            new_data = data.copy()
-            new_data[new_data >= max_val] = max_val
-            new_data[new_data <= min_val] = min_val
-            print(new_data.min(), new_data.max())
-            return new_data
+    Tk = tab_T[temp_indices]
+    Pk = tab_p[press_indices]
+    K = opacity_values
+    
+    # Interpolation of the opacity values
+    kappa_interp = RegularGridInterpolator((Pk,Tk), K, method="linear")
+    
+    def limit_values(data, min_val, max_val):
+        new_data = data.copy()
+        new_data[new_data >= max_val] = max_val
+        new_data[new_data <= min_val] = min_val
+        print(new_data.min(), new_data.max())
+        return new_data
+            
+    T_log = np.log10(muram.atm_quant[..., 0]) 
+    T_log = limit_values(T_log, Tk.min(), Tk.max())
+    P_log = np.log10(mpre) 
+    P_log = limit_values(P_log, Pk.min(), Pk.max())
+    PT_log = np.array(list(zip(P_log.flatten(), T_log.flatten())))
+    
+    kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
+    kappa_rho = kappa_interp(PT_log)
+    kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
+    kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
+    
+    #Optical depth calculation
+    tau = np.zeros_like(kappa_rho)
+    dz = 1e6 # 10 km -> 1e6 cm
+    tau[:,:,muram.nz-1] = 1e-5
+
+    print("Calculating optical depth...")
+    for iz in tqdm(range(1,muram.nz)):
+        for ix in range(muram.nx):
+            for iy in range(muram.ny):
+                kpz = kappa_rho[ix,iy,muram.nz-1-iz:]
+                tau[ix,iy,muram.nz-1-iz] = simpson(y = kpz, 
+                                    dx = dz)
                 
-        T_log = np.log10(muram.atm_quant[..., 0]) 
-        T_log = limit_values(T_log, Tk.min(), Tk.max())
-        P_log = np.log10(mpre) 
-        P_log = limit_values(P_log, Pk.min(), Pk.max())
-        PT_log = np.array(list(zip(P_log.flatten(), T_log.flatten())))
-        
-        kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
-        kappa_rho = kappa_interp(PT_log)
-        kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
-        kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
-        
-        #Optical depth calculation
-        tau = np.zeros_like(kappa_rho)
-        dz = 1e6 # 10 km -> 1e6 cm
-        tau[:,:,muram.nz-1] = 1e-5
-
-        print("Calculating optical depth...")
-        for iz in tqdm(range(1,muram.nz)):
-            for ix in range(muram.nx):
-                for iy in range(muram.ny):
-                    kpz = kappa_rho[ix,iy,muram.nz-1-iz:]
-                    tau[ix,iy,muram.nz-1-iz] = simpson(y = kpz, 
-                                        dx = dz)
-                    
-        logtau = np.log10(tau)
-        
-        np.save(save_path / save_name, logtau)
-        print("Done!")
-        return logtau
-
+    logtau = np.log10(tau)
+    
+    np.save(save_path / save_name, logtau)
+    print("Done!")
+    return logtau
+def map_to_logtau(muram: MURaM):
+    return None
 
 ##############################################################
 # Plot utils
