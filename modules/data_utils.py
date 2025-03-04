@@ -163,7 +163,7 @@ class MURaM:
         tab_p = np.array([-2., -1.5, -1., -0.5, 0., 0.5, 1., 1.5, 2., 2.5,
                         3., 3.5, 4., 4.5, 5., 5.5, 6., 6.5, 7., 7.5, 8.])
         
-        df_kappa = pd.read_csv('../csv/kappa.0.dat', delim_whitespace=True, header=None)
+        df_kappa = pd.read_csv('./csv/kappa.0.dat', delim_whitespace=True, header=None)
         df_kappa.columns = ["Temperature index", "Pressure index", "Opacity value"]
         temp_indices = df_kappa["Temperature index" ].unique()
         press_indices = df_kappa["Pressure index"].unique()
