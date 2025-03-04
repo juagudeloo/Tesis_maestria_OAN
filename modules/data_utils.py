@@ -467,7 +467,7 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
                     
         logtau = np.log10(tau)
         
-        np.savefig(save_path / save_name, logtau)
+        np.save(save_path / save_name, logtau)
         print("Done!")
         return logtau
 
