@@ -81,18 +81,18 @@ class MURaM:
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
-        mbxx = np.load(self.ptm / "opt_depth" / f"mbxx_logtau_20_heights_{self.filename}.npy")
-        mbyy = np.load(self.ptm / "opt_depth" / f"mbyy_logtau_20_heights_{self.filename}.npy")
-        mbzz = np.load(self.ptm / "opt_depth" / f"mbzz_logtau_20_heights_{self.filename}.npy")
-        
-        coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
-        
-        mbxx = mbxx * coef
-        mbyy = mbyy * coef
-        mbzz = mbzz * coef
-        print("mbxx shape:", mbxx.shape)
-        print("mbzz shape:", mbzz.shape)
-        print("mbyy shape:", mbyy.shape)
+        #mbxx = np.load(self.ptm / "opt_depth" / f"mbxx_logtau_20_heights_{self.filename}.npy")
+        #mbyy = np.load(self.ptm / "opt_depth" / f"mbyy_logtau_20_heights_{self.filename}.npy")
+        #mbzz = np.load(self.ptm / "opt_depth" / f"mbzz_logtau_20_heights_{self.filename}.npy")
+        #
+        #coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
+        #
+        #mbxx = mbxx * coef
+        #mbyy = mbyy * coef
+        #mbzz = mbzz * coef
+        #print("mbxx shape:", mbxx.shape)
+        #print("mbzz shape:", mbzz.shape)
+        #print("mbyy shape:", mbyy.shape)
         
         print("Charging density...")
         mrho = np.load(self.ptm / "opt_depth" / f"mrho_logtau_20_heights_{self.filename}.npy")
@@ -104,7 +104,7 @@ class MURaM:
         mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_20_heights_{self.filename}.npy")
         print("mvxx shape:", mvxx.shape)
         print("mvzz shape:", mvzz.shape)
-        print("mvyy shape:", mbyy.shape)
+        print("mvyy shape:", mvyy.shape)
         
         mvxx = mvxx / mrho
         mvyy = mvyy / mrho
@@ -117,9 +117,12 @@ class MURaM:
                       """)
 
         print("Modifying magnetic field components to fight azimuth ambiguity...")
-        mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
-        mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
-        mbvv = mbzz
+        #mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
+        #mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
+        #mbvv = mbzz
+        mbqq = np.load(self.ptm / "opt_depth" / f"mbqq_logtau_20_heights_{self.filename}.npy")
+        mbuu = np.load(self.ptm / "opt_depth" / f"mbuu_logtau_20_heights_{self.filename}.npy")
+        mbvv = np.load(self.ptm / "opt_depth" / f"mbvv_logtau_20_heights_{self.filename}.npy")
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
