@@ -202,9 +202,9 @@ class MURaM:
         tau[:,:,self.nz-1] = 1e-3
 
         print("Calculating optical depth...")
-        for iz in range(1,self.nz):
+        for iz in tqdm(range(1,self.nz)):
             for ix in range(self.nx):
-                for iy in range(self.gran_intergran_balanceny):
+                for iy in range(self.ny):
                     kpz = kappa_rho[ix,iy,self.nz-1-iz:]
                     tau[ix,iy,self.nz-1-iz] = simpson(y = kpz, 
                                         dx = dz)
