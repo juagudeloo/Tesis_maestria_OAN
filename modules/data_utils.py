@@ -125,7 +125,7 @@ class MURaM:
         self.mags_names = [r"$T$", r"$\rho$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$", r"$v_{z}$"]
         self.atm_quant = np.array([mtpr, mrho, mbxx, mbyy, mbzz, mvzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
-        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.ny, self.atm_quant.shape[-1]))
+        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.nz, self.ny, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
