@@ -82,7 +82,7 @@ class MURaM:
         quantities_path = "geom_height"
         
         print("Charging temperature ...")
-        mtpr = np.load(self.ptm / "opt_depth" / f"mtpr_{self.filename}.npy").flatten()
+        mtpr = np.load(self.ptm / quantities_path / f"mtpr_{self.filename}.npy").flatten()
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
