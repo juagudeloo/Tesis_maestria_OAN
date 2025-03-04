@@ -5,7 +5,7 @@ import pandas as pd
 from skimage import filters
 
 from scipy.interpolate import interp1d, RegularGridInterpolator
-from scipy.integrate import simps
+from scipy.integrate import simpson
 
 from sklearn.model_selection import train_test_split
 
@@ -204,7 +204,7 @@ class MURaM:
             for ix in range(self.nx):
                 for iy in range(self.gran_intergran_balanceny):
                     kpz = kappa_rho[ix,iy,self.nz-1-iz:]
-                    tau[ix,iy,self.nz-1-iz] = simps(y = kpz, 
+                    tau[ix,iy,self.nz-1-iz] = simpson(y = kpz, 
                                         dx = dz)
                     
         logtau = np.log10(tau)
