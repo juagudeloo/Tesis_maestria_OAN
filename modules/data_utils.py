@@ -65,9 +65,8 @@ class MURaM:
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
-        self.nz = 256
-        self.od = 20  # height axis
         self.ny = 480
+        self.nz = 256
 
     def charge_quantities(self) -> None:
         """
@@ -153,6 +152,7 @@ class MURaM:
         else:
             muram_logtau = np.load(geom_path / logtau_name)
         print("Done!")
+        print("muram logtau shape", muram_logtau.shape)
         
         def logtau_mapper(orig_arr: np.ndarray, 
            corresp_logtau: np.ndarray,
@@ -184,16 +184,14 @@ class MURaM:
                     atm_to_logtau[ix,iy,:,imur] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
                                                 corresp_logtau = muram_logtau[ix,iy,:], 
                                                 new_logtau = new_logtau_height)
-        
-        self.atm_quant = atm_to_logtau
-            
+                    
         fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
         i = 0
         i_logt = 19
-        for imur in range(self.atm_quant.shape[-1]):
-            ax[0,i].imshow(self.atm_quant[:,:,i_logt,imur], cmap="inferno")
+        for imur in range(atm_to_logtau.shape[-1]):
+            ax[0,i].imshow(atm_to_logtau[:,:,i_logt,imur], cmap="inferno")
             ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau_height[i_logt]:0.2f}")
-            ax[1,i].plot(new_logtau_height, self.atm_quant[...,imur].mean(axis=(0,1)))
+            ax[1,i].plot(new_logtau_height, atm_to_logtau[...,imur].mean(axis=(0,1)))
             i += 1
         fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
                 
