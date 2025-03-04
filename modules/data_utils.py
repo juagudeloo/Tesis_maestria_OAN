@@ -159,8 +159,8 @@ class MURaM:
         print("Done!")
         
         fig, ax = plt.subplots(1,2,figsize=(10,5))
-        ax[0].imshow(logtau[:,:,180], cmap = "gist_gray")
-        ax[1].plot(logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
+        ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
+        ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
         fig.savefig("images/atmosphere/optical_depth.png")
         
         def logtau_mapper(orig_arr: np.ndarray, 
