@@ -99,15 +99,15 @@ class MURaM:
         print("mrho shape:", mrho.shape)
         
         print("Charge velocity...")
-        mvxx = np.load(self.ptm / "opt_depth" / f"mvxx_logtau_20_heights_{self.filename}.npy")
-        mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_20_heights_{self.filename}.npy")
+        #mvxx = np.load(self.ptm / "opt_depth" / f"mvxx_logtau_20_heights_{self.filename}.npy")
+        #mvyy = np.load(self.ptm / "opt_depth" / f"mvyy_logtau_20_heights_{self.filename}.npy")
         mvzz = np.load(self.ptm / "opt_depth" / f"mvzz_logtau_20_heights_{self.filename}.npy")
-        print("mvxx shape:", mvxx.shape)
-        print("mvzz shape:", mvzz.shape)
+        #print("mvxx shape:", mvxx.shape)
+        #print("mvzz shape:", mvzz.shape)
         print("mvyy shape:", mvyy.shape)
         
-        mvxx = mvxx / mrho
-        mvyy = mvyy / mrho
+        #mvxx = mvxx / mrho
+        #mvyy = mvyy / mrho
         mvzz = mvzz / mrho
         
         print(f"""
