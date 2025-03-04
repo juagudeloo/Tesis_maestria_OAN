@@ -181,7 +181,7 @@ class MURaM:
             muram_quantity = self.atm_quant[..., imur]
             for ix in tqdm(range(self.nx)):
                 for iy in range(self.ny):
-                    quantity_tau[ix,:,iy] = logtau_mapper(orig_arr = muram_quantity[ix,:,iy], 
+                    quantity_tau[ix,iy,:] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
                                                 corresp_logtau = muram_logtau[ix,iy,:], 
                                                 new_logtau = new_logtau_height)
             self.atm_quant[..., imur] = quantity_tau
