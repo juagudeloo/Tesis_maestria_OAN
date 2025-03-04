@@ -65,8 +65,9 @@ class MURaM:
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
-        self.ny = 480
         self.nz = 256
+        self.od = 20  # height axis
+        self.ny = 480
 
     def charge_quantities(self) -> None:
         """
@@ -81,7 +82,9 @@ class MURaM:
         quantities_path = "geom_height"
         
         print("Charging temperature ...")
-        mtpr = np.load(self.ptm / quantities_path / f"mtpr_{self.filename}.npy").flatten()
+        eos = np.fromfile(self.ptm / quantities_path / f"eos_{self.filename}", dtype=np.float32)
+        eos = eos.reshape((2, self.nx, self.nz, self.ny), order="C")
+        mtpr = eos[0]
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
@@ -151,8 +154,32 @@ class MURaM:
                                     save_name=logtau_name)
         else:
             muram_logtau = np.load(geom_path / logtau_name)
-        print("Done!")
+            
         print("muram logtau shape", muram_logtau.shape)
+        print("Done!")
+        
+        fig, ax = plt.subplots(1,2,figsize=(10,5))
+        ax[0].imshow(logtau[:,:,180], cmap = "gist_gray")
+        ax[1].plot(logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
+        fig.savefig("images/atmosphere/optical_depth.png")
+        
+        def logtau_mapper(orig_arr: np.ndarray, 
+           corresp_logtau: np.ndarray,
+           new_logtau: np.ndarray) -> np.ndarray:
+            """
+            Function for mapping the quantities distribution from geometrical height to optical depth.
+            Args:
+                orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
+                corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
+                new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
+            Returns:
+                (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
+            """
+            
+            logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
+            new_arr = logtau_mapper(new_logtau)
+            return new_arr
+        
         
         def logtau_mapper(orig_arr: np.ndarray, 
            corresp_logtau: np.ndarray,
@@ -194,7 +221,7 @@ class MURaM:
             ax[1,i].plot(new_logtau_height, atm_to_logtau[...,imur].mean(axis=(0,1)))
             i += 1
         fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
-                
+        
         
         
     def modified_components(self) -> None:
