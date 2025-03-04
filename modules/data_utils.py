@@ -124,7 +124,8 @@ class MURaM:
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
-                                   image_name=f"{self.filename}_atm_quantities.pdf")
+                                   titles = self.mags_names,
+                                   image_name=f"{self.filename}_atm_quantities")
         print("Created!")
         print("atm_quant shape:", self.atm_quant.shape)
 
@@ -153,7 +154,8 @@ class MURaM:
         self.atm_quant[..., 4] = mbvv
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
-                                   image_name=f"{self.filename}_modified_atm_quantities.pdf")
+                                   titles = self.mags_names,
+                                   image_name=f"{self.filename}_modified_atm_quantities")
         print("Created!")
         print("atm_quant shape:", self.atm_quant.shape)
 
@@ -409,7 +411,7 @@ def plot_stokes(stokes: np.ndarray,
 
     print(f"Saved image to: {image_path}")
 
-def plot_atmosphere_quantities(atm_quant: np.ndarray, image_name: str, images_dir: str = "images", atm_subdir: str = "atmosphere") -> None:
+def plot_atmosphere_quantities(atm_quant: np.ndarray, titles:list[str], image_name: str, images_dir: str = "images", atm_subdir: str = "atmosphere") -> None:
     """
     Plots the atmospheric quantities and saves the plot as an image file.
     
@@ -428,8 +430,6 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, image_name: str, images_di
     fig, ax = plt.subplots(2, 3, figsize=(20, 10))
     fig.suptitle('Atmospheric Quantities', fontsize=16)
     
-    titles = ["Temperature", "Density", "Magnetic Field QQ", "Magnetic Field UU", "Magnetic Field VV", "Velocity YY"]
-    
     for i in range(6):
         ax[i // 3, i % 3].imshow(atm_quant[:, :, atm_quant.shape[2] // 2 , i], cmap='viridis')
         ax[i // 3, i % 3].set_title(titles[i])
@@ -438,7 +438,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, image_name: str, images_di
     images_dir = os.path.join(images_dir, atm_subdir)
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, f"{image_name}_atm_quantities.pdf")
+    image_path = os.path.join(images_dir, f"{image_name}.pdf")
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
