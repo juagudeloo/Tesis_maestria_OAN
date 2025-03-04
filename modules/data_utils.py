@@ -85,6 +85,7 @@ class MURaM:
         eos = np.fromfile(self.ptm / quantities_path / f"eos.{self.filename}", dtype=np.float32)
         eos = eos.reshape((2, self.nx*self.nz*self.ny), order="C")
         mtpr = eos[0]
+        mpre = eos[1]
         print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
@@ -162,24 +163,6 @@ class MURaM:
         ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
         fig.savefig("images/atmosphere/optical_depth.png")
-        
-        def logtau_mapper(orig_arr: np.ndarray, 
-           corresp_logtau: np.ndarray,
-           new_logtau: np.ndarray) -> np.ndarray:
-            """
-            Function for mapping the quantities distribution from geometrical height to optical depth.
-            Args:
-                orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
-                corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
-                new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
-            Returns:
-                (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
-            """
-            
-            logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
-            new_arr = logtau_mapper(new_logtau)
-            return new_arr
-        
         
         def logtau_mapper(orig_arr: np.ndarray, 
            corresp_logtau: np.ndarray,
@@ -467,6 +450,7 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     eos = np.fromfile(os.path.join(geom_path,  "eos.080000"), dtype=np.float32)
     eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order = "C")
     mpre = eos[1]
+    mpre = np.moveaxis(mpre, 1, 2)  # Pressure array to be used in the calculation of the optical depth
     del eos
     
     #######################################
