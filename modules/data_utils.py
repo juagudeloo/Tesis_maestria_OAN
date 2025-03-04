@@ -199,7 +199,7 @@ class MURaM:
         #Optical depth calculation
         tau = np.zeros_like(kappa_rho)
         dz = 1e6 # 10 km -> 1e6 cm
-        tau[:,:,self.nz-1] = 1e-3
+        tau[:,:,self.nz-1] = 1e-5
 
         print("Calculating optical depth...")
         for iz in tqdm(range(1,self.nz)):
