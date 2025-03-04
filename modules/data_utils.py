@@ -176,15 +176,16 @@ class MURaM:
         n_logtau = new_logtau_height.shape[0]
 
         # Mapping to the new optical depth stratification
-        quantity_tau = np.zeros((self.nx,self.ny,n_logtau))
+        atm_to_logtau = np.zeros((self.nx,self.ny,n_logtau,self.atm_quant.shape[-1]))
         for imur in range(self.atm_quant.shape[-1]):
             muram_quantity = self.atm_quant[..., imur]
             for ix in tqdm(range(self.nx)):
                 for iy in range(self.ny):
-                    quantity_tau[ix,iy,:] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
+                    atm_to_logtau[ix,iy,:,imur] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
                                                 corresp_logtau = muram_logtau[ix,iy,:], 
                                                 new_logtau = new_logtau_height)
-            self.atm_quant[..., imur] = quantity_tau
+        
+        self.atm_quant = atm_to_logtau
             
         fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
         i = 0
