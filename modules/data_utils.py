@@ -116,6 +116,31 @@ class MURaM:
                 ######################## 
                       """)
 
+        print("Creating atmosphere quantities array...")
+        self.mags_names = [r"$T$", r"$\rho$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$", r"$v_{z}$"]
+        self.atm_quant = np.array([mtpr, mrho, mbxx, mbyy, mbzz, mvzz])
+        self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
+        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.ny, self.atm_quant.shape[-1]))
+        self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
+        
+        plot_atmosphere_quantities(atm_quant=self.atm_quant, 
+                                   image_name=f"{self.filename}_atm_quantities.pdf")
+        print("Created!")
+        print("atm_quant shape:", self.atm_quant.shape)
+
+        print("Charging stokes vectors...")
+        self.stokes = np.load(self.ptm / "stokes" / f"{self.filename}_prof.npy")
+        self.I_63005 = self.stokes[:, :, 0, 0]  # Intensity map that is going to be used to balance intergranular and granular regions.
+        print("Charged!")
+        print("self.stokes shape", self.stokes.shape)
+        
+    def modified_components(self) -> None:
+        self.mags_names = [r"$T$", r"$\rho$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$", r"$v_{z}$"]
+        
+        mbxx = self.atm_quant[..., 2]
+        mbyy = self.atm_quant[..., 3]
+        mbzz = self.atm_quant[..., 4]
+        
         print("Modifying magnetic field components to fight azimuth ambiguity...")
         mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
         mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
@@ -123,14 +148,12 @@ class MURaM:
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$B_{Q}$", r"$B_{U}$", r"$B_{V}$", r"$v_{z}$"]
-        self.atm_quant = np.array([mtpr, mrho, mbqq, mbuu, mbvv, mvzz])
-        self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
-        self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.od, self.ny, self.atm_quant.shape[-1]))
-        self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
+        self.atm_quant[..., 2] = mbqq
+        self.atm_quant[..., 3] = mbuu
+        self.atm_quant[..., 4] = mbvv
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
-                                   image_name=f"{self.filename}_atm_quantities.pdf")
+                                   image_name=f"{self.filename}_modified_atm_quantities.pdf")
         print("Created!")
         print("atm_quant shape:", self.atm_quant.shape)
 
@@ -444,6 +467,7 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln)
         muram.charge_quantities()
+        muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
         muram.scale_quantities()
         muram.gran_intergran_balance()
@@ -476,6 +500,7 @@ def load_data_cubes(filenames: list[str], n_spectral_points: int = 36) -> tuple[
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln)
         muram.charge_quantities()
+        muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
         muram.scale_quantities()
 
