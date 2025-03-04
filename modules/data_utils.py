@@ -83,7 +83,7 @@ class MURaM:
         
         print("Charging temperature ...")
         eos = np.fromfile(self.ptm / quantities_path / f"eos.{self.filename}", dtype=np.float32)
-        eos = eos.reshape((2, self.nx, self.nz, self.ny), order="C")
+        eos = eos.reshape((2, self.nx*self.nz*self.ny), order="C")
         mtpr = eos[0]
         print("mtpr shape:", mtpr.shape)
         
