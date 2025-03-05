@@ -152,7 +152,7 @@ class MURaM:
         print("Charged!")
         if self.verbose:
             print("stokes shape", self.stokes.shape)
-    def optical_depth_stratification(self, new_logtau: np.ndarray[float] = np.linspace(-2.5,0,20)) -> None:
+    def optical_depth_stratification(self, new_logtau: np.ndarray[float]) -> None:
         
         # Geom data path
         geom_path = self.ptm / "geom_height"
@@ -314,7 +314,7 @@ class MURaM:
         self.new_wl = (new_resol * 0.01) + 6300.5
         if self.verbose:
             print("New wavelength values shape is:", self.new_wl.shape)
-    def scale_quantities(self) -> None:
+    def scale_quantities(self, stokes_weigths: list[int]) -> None:
         """
         Scale the atmospheric and Stokes quantities.
         """
@@ -386,9 +386,9 @@ class MURaM:
                     scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
         self.stokes = scaled_stokes
         
-        scaling_importance = [1, 10, 10, 10]  # Stokes parameters importance levels -> mapping Q, U and V to 0.1 of the intensity scale
-        for i in range(len(scaling_importance)):
-            self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * scaling_importance[i]
+        # Stokes parameter weighting
+        for i in range(len(stokes_weigths)):
+            self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weigths[i]
             
         print("Scaled!")
 
@@ -559,7 +559,6 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     np.save(save_path / save_name, logtau)
     print("Done!")
     return logtau
-
 def map_to_logtau(muram: MURaM,
                   geom_atm: np.ndarray,
                   geom_logtau: np.ndarray,
@@ -674,7 +673,10 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, titles:list[str], image_na
 ##############################################################
 def load_training_data(filenames: list[str], 
                        n_spectral_points: int = 36,
-                       verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                       new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
+                       stokes_weights: list[int] = [1,10,10,10],
+                       verbose: bool = False,
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and preprocess training data from a list of filenames.
     This function reads data from multiple files, processes it, and returns the processed data.
@@ -695,10 +697,10 @@ def load_training_data(filenames: list[str],
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose)
         muram.charge_quantities()
-        muram.optical_depth_stratification()
+        muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
-        muram.scale_quantities()
+        muram.scale_quantities(stokes_weigths=stokes_weights)
         muram.gran_intergran_balance()
 
         atm_data.append(muram.atm_quant)
@@ -711,6 +713,8 @@ def load_training_data(filenames: list[str],
 
 def load_data_cubes(filenames: list[str], 
                     n_spectral_points: int = 36,
+                    new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
+                    stokes_weights: list[int] = [1,10,10,10],
                     verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Loads data cubes from a list of filenames and processes them using the MURaM class.
@@ -731,10 +735,10 @@ def load_data_cubes(filenames: list[str],
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose)
         muram.charge_quantities()
-        muram.optical_depth_stratification()
+        muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
-        muram.scale_quantities()
+        muram.scale_quantities(stokes_weigths=stokes_weights)
 
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
