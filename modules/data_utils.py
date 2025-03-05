@@ -398,7 +398,7 @@ class MURaM:
             np.save(scaled_out, scaled_stokes)
             print("Saved normalized stokes to", scaled_out)
         else:
-            scaled_stokes = np.memmap(scaled_out, dtype='float32', mode='r', shape=(self.nx, self.ny, self.new_points, 4)).copy()
+            scaled_stokes = np.memmap(scaled_out, dtype='float32', mode='r').copy()
             print("Loaded normalized stoks from", scaled_out)
             
         self.stokes = scaled_stokes
