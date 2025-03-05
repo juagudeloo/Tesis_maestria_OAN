@@ -77,6 +77,8 @@ def main():
         #Train model
         print("name of the experiment: ", str(n_spec_points)+"_spectral_points")
         
+        
+        experiment_name = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights"
         train(model=model,
             train_dataloader=train_dataloader,
             test_dataloader=test_dataloader, 
@@ -84,12 +86,12 @@ def main():
             loss_fn=loss_fn,
             epochs=epochs,
             device=device,
-            writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
+            writer=create_writer(experiment_name=experiment_name,
                                 model_name=m_type,
                                 extra=f""))
         
         #Save the model to file so we can get back the best model
-        save_filepath = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights.pth"
+        save_filepath = experiment_name + ".pth"
         save_model(model=model,
                 target_dir="models",
                 model_name=save_filepath)
