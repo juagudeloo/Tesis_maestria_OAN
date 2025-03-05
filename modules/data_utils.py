@@ -308,7 +308,7 @@ class MURaM:
         """
         Scale the atmospheric and Stokes quantities.
         """
-        if self.verbose
+        if self.verbose:
             print(f""" self.stokes:
             I_max = {np.max(self.stokes[:, :, :, 0])}
             Q_max = {np.max(self.stokes[:, :, :, 1])}
