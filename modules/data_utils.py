@@ -212,6 +212,8 @@ class MURaM:
         print("Loaded!")
 
         self.atm_quant = atm_to_logtau
+        del atm_to_logtau
+        
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)
                     
@@ -400,7 +402,7 @@ class MURaM:
             print("Loaded normalized stoks from", scaled_out)
             
         self.stokes = scaled_stokes
-        
+        del scaled_stokes
         # Stokes parameter weighting
         for i in range(len(stokes_weigths)):
             self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weigths[i]
