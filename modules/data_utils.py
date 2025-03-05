@@ -62,7 +62,7 @@ class MURaM:
         """
 
         
-        self.ptm = Path("/scratchsan/observatorio/juagudeloo/data")
+        self.ptm = Path("./data")
         self.filename = filename
         self.verbose = verbose
         
