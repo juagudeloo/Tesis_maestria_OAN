@@ -51,7 +51,7 @@ class MURaM:
         Intensity map used for balancing intergranular and granular regions.
     """
 
-    def __init__(self, filename: str):
+    def __init__(self, filename: str, verbose: bool = False):
         """
         Initialize the MURaM object with the given filename.
 
@@ -86,7 +86,8 @@ class MURaM:
         eos = eos.reshape((2, self.nx*self.nz*self.ny), order="C")
         mtpr = eos[0]
         mpre = eos[1]
-        print("mtpr shape:", mtpr.shape)
+        if self.verbose:
+            print("mtpr shape:", mtpr.shape)
         
         print("Charging magnetic field vector...")
         mbxx = np.load(self.ptm / quantities_path / f"mbxx_{self.filename}.npy")
@@ -98,21 +99,25 @@ class MURaM:
         mbxx = mbxx * coef
         mbyy = mbyy * coef
         mbzz = mbzz * coef
-        print("mbxx shape:", mbxx.shape)
-        print("mbzz shape:", mbzz.shape)
-        print("mbyy shape:", mbyy.shape)
+        if self.verbose:
+            print("mbxx shape:", mbxx.shape)
+            print("mbzz shape:", mbzz.shape)
+            print("mbyy shape:", mbyy.shape)
         
-        print("Charging density...")
+        if self.verbose:
+            print("Charging density...")
         mrho = np.load(self.ptm / quantities_path / f"mrho_{self.filename}.npy")
-        print("mrho shape:", mrho.shape)
+        if self.verbose:
+            print("mrho shape:", mrho.shape)
         
         print("Charge velocity...")
         mvxx = np.load(self.ptm / quantities_path / f"mvxx_{self.filename}.npy")
         mvyy = np.load(self.ptm / quantities_path / f"mvyy_{self.filename}.npy")
         mvzz = np.load(self.ptm / quantities_path / f"mvzz_{self.filename}.npy")
-        print("mvxx shape:", mvxx.shape)
-        print("mvzz shape:", mvzz.shape)
-        print("mvyy shape:", mbyy.shape)
+        if self.verbose:
+            print("mvxx shape:", mvxx.shape)
+            print("mvzz shape:", mvzz.shape)
+            print("mvyy shape:", mbyy.shape)
         
         mvxx = mvxx / mrho
         mvyy = mvyy / mrho
@@ -135,14 +140,16 @@ class MURaM:
                                    titles = self.mags_names,
                                    image_name=f"{self.filename}_atm_quantities")
         print("Created!")
-        print("atm_quant shape:", self.atm_quant.shape)
+        if self.verbose:
+            print("atm geom height shape:", self.atm_quant.shape)
 
         print("Charging stokes vectors...")
         self.stokes = np.load(self.ptm / "stokes" / f"{self.filename}_prof.npy")
         self.I_63005 = self.stokes[:, :, 0, 0]  # Intensity map that is going to be used to balance intergranular and granular regions.
         print("Charged!")
-        print("self.stokes shape", self.stokes.shape)
-    def optical_depth_stratification(self) -> None:
+        if self.verbose:
+            print("stokes shape", self.stokes.shape)
+    def optical_depth_stratification(self, new_logtau: np.ndarray[float] = np.linspace(-2.5,0,20)) -> None:
         
         # Data path
         geom_path = self.ptm / "geom_height"
@@ -154,9 +161,11 @@ class MURaM:
                                     save_path = geom_path,
                                     save_name=logtau_name)
         else:
+            print("Loading optical depth stratification...")
             muram_logtau = np.load(geom_path / logtau_name)
-            
-        print("muram logtau shape", muram_logtau.shape)
+        
+        if self.verbose:
+            print("muram logtau shape", muram_logtau.shape)
         print("Done!")
         
         fig, ax = plt.subplots(1,2,figsize=(10,5))
@@ -182,8 +191,7 @@ class MURaM:
             return new_arr
         
         # New optical depth stratification array.
-        new_logtau_height = np.linspace(-2.5, 0, 20)
-        n_logtau = new_logtau_height.shape[0]
+        n_logtau = new_logtau.shape[0]
 
         # Mapping to the new optical depth stratification
         atm_to_logtau = np.zeros((self.nx,self.ny,n_logtau,self.atm_quant.shape[-1]))
@@ -193,34 +201,38 @@ class MURaM:
                 for iy in range(self.ny):
                     atm_to_logtau[ix,iy,:,imur] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
                                                 corresp_logtau = muram_logtau[ix,iy,:], 
-                                                new_logtau = new_logtau_height)
+                                                new_logtau = new_logtau)
+        self.atm_quant = atm_to_logtau
+        if self.verbose:
+            print("atm logtau shape:", self.atm_quant.shape)
                     
         fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
         i = 0
         i_logt = 19
         for imur in range(atm_to_logtau.shape[-1]):
             ax[0,i].imshow(atm_to_logtau[:,:,i_logt,imur], cmap="inferno")
-            ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau_height[i_logt]:0.2f}")
-            ax[1,i].plot(new_logtau_height, atm_to_logtau[...,imur].mean(axis=(0,1)))
+            ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau[i_logt]:0.2f}")
+            ax[1,i].plot(new_logtau, atm_to_logtau[...,imur].mean(axis=(0,1)))
             i += 1
         fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
-        
-        
-        
+             
     def modified_components(self) -> None:
         self.mags_names = [r"$T$", r"$\rho$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$", r"$v_{z}$"]
         
+        # Magnetic field components
         mbxx = self.atm_quant[..., 2]
         mbyy = self.atm_quant[..., 3]
         mbzz = self.atm_quant[..., 4]
         
         print("Modifying magnetic field components to fight azimuth ambiguity...")
+        # Modified magnetic field components
         mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
         mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
         mbvv = mbzz
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
+        # Saving modified quantities replacing the x,y,z components
         self.atm_quant[..., 2] = mbqq
         self.atm_quant[..., 3] = mbuu
         self.atm_quant[..., 4] = mbvv
@@ -229,13 +241,8 @@ class MURaM:
                                    titles = self.mags_names,
                                    image_name=f"{self.filename}_modified_atm_quantities")
         print("Created!")
-        print("atm_quant shape:", self.atm_quant.shape)
-
-        print("Charging stokes vectors...")
-        self.stokes = np.load(self.ptm / "stokes" / f"{self.filename}_prof.npy")
-        self.I_63005 = self.stokes[:, :, 0, 0]  # Intensity map that is going to be used to balance intergranular and granular regions.
-        print("Charged!")
-        print("self.stokes shape", self.stokes.shape)
+        if self.verbose:
+            print("atm modified components shape:", self.atm_quant.shape)
 
     def degrade_spec_resol(self, new_points: int) -> None:
         """
@@ -290,44 +297,48 @@ class MURaM:
             new_stokes = np.load(new_stokes_out)
             print("self.stokes degraded!")
         self.stokes = new_stokes
-        print("The new self.stokes shape is:", self.stokes.shape)
+        if self.verbose:
+            print("Degraded stokes shape is:", self.stokes.shape)
 
         # These are the new wavelength values for the degraded resolution
         self.new_wl = (new_resol * 0.01) + 6300.5
+        if self.verbose:
+            print("New wavelength values shape is:", self.new_wl.shape)
     def scale_quantities(self) -> None:
         """
         Scale the atmospheric and Stokes quantities.
         """
-        print(f""" self.stokes:
-        I_max = {np.max(self.stokes[:, :, :, 0])}
-        Q_max = {np.max(self.stokes[:, :, :, 1])}
-        U_max = {np.max(self.stokes[:, :, :, 2])}
-        V_max = {np.max(self.stokes[:, :, :, 3])}
-        I_min = {np.min(self.stokes[:, :, :, 0])}
-        Q_min = {np.min(self.stokes[:, :, :, 1])}
-        U_min = {np.min(self.stokes[:, :, :, 2])}
-        V_min = {np.min(self.stokes[:, :, :, 3])}
-        """)
-        
-        print(f"""
-        MAX VALUES:
-        mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
-        mrho max = {np.max(self.atm_quant[:, :, :, 1])}
-        mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
-        mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
-        mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-        mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+        if self.verbose
+            print(f""" self.stokes:
+            I_max = {np.max(self.stokes[:, :, :, 0])}
+            Q_max = {np.max(self.stokes[:, :, :, 1])}
+            U_max = {np.max(self.stokes[:, :, :, 2])}
+            V_max = {np.max(self.stokes[:, :, :, 3])}
+            I_min = {np.min(self.stokes[:, :, :, 0])}
+            Q_min = {np.min(self.stokes[:, :, :, 1])}
+            U_min = {np.min(self.stokes[:, :, :, 2])}
+            V_min = {np.min(self.stokes[:, :, :, 3])}
             """)
-        
-        print(f"""
-        MIN VALUES:
-        mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
-        mrho min = {np.min(self.atm_quant[:, :, :, 1])}
-        mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
-        mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
-        mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-        mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
-            """) 
+            
+            print(f"""
+            MAX VALUES:
+            mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
+            mrho max = {np.max(self.atm_quant[:, :, :, 1])}
+            mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
+            mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
+            mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
+            mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+                """)
+            
+            print(f"""
+            MIN VALUES:
+            mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
+            mrho min = {np.min(self.atm_quant[:, :, :, 1])}
+            mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
+            mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
+            mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
+            mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
+                """) 
         
         print("Scaling the quantities...")
         # Atmosphere magnitudes scale factors
@@ -371,36 +382,37 @@ class MURaM:
             
         print("Scaled!")
 
-        print(f""" self.stokes:
-        I_max = {np.max(self.stokes[:, :, :, 0])}
-        Q_max = {np.max(self.stokes[:, :, :, 1])}
-        U_max = {np.max(self.stokes[:, :, :, 2])}
-        V_max = {np.max(self.stokes[:, :, :, 3])}
-        I_min = {np.min(self.stokes[:, :, :, 0])}
-        Q_min = {np.min(self.stokes[:, :, :, 1])}
-        U_min = {np.min(self.stokes[:, :, :, 2])}
-        V_min = {np.min(self.stokes[:, :, :, 3])}
-        """)
-        
-        print(f"""
-        MAX VALUES:
-        mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
-        mrho max = {np.max(self.atm_quant[:, :, :, 1])}
-        mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
-        mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
-        mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-        mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+        if self.verbose:
+            print(f""" self.stokes:
+            I_max = {np.max(self.stokes[:, :, :, 0])}
+            Q_max = {np.max(self.stokes[:, :, :, 1])}
+            U_max = {np.max(self.stokes[:, :, :, 2])}
+            V_max = {np.max(self.stokes[:, :, :, 3])}
+            I_min = {np.min(self.stokes[:, :, :, 0])}
+            Q_min = {np.min(self.stokes[:, :, :, 1])}
+            U_min = {np.min(self.stokes[:, :, :, 2])}
+            V_min = {np.min(self.stokes[:, :, :, 3])}
             """)
-        
-        print(f"""
-        MIN VALUES:
-        mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
-        mrho min = {np.min(self.atm_quant[:, :, :, 1])}
-        mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
-        mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
-        mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-        mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
-            """)
+            
+            print(f"""
+            MAX VALUES:
+            mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
+            mrho max = {np.max(self.atm_quant[:, :, :, 1])}
+            mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
+            mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
+            mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
+            mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+                """)
+            
+            print(f"""
+            MIN VALUES:
+            mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
+            mrho min = {np.min(self.atm_quant[:, :, :, 1])}
+            mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
+            mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
+            mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
+            mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
+                """)
     def gran_intergran_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
@@ -434,9 +446,12 @@ class MURaM:
             self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
             self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
             
-        print(f"Shape after granular and intergranular balance:")
-        print(f"atm_quant shape: {self.atm_quant.shape}")
-        print(f"stokes shape: {self.stokes.shape}")
+        if self.verbose:
+            print(f"""
+        Shape after granular and intergranular balance:")
+            atm shape: {self.atm_quant.shape}
+            stokes shape: {self.stokes.shape}
+            """)
         print("Done")
 
 ##############################################################
@@ -598,7 +613,9 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, titles:list[str], image_na
 ##############################################################
 # loading utils
 ##############################################################
-def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_training_data(filenames: list[str], 
+                       n_spectral_points: int = 36,
+                       verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and preprocess training data from a list of filenames.
     This function reads data from multiple files, processes it, and returns the processed data.
@@ -617,7 +634,7 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
 
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln)
+        muram = MURaM(filename=fln, verbose = verbose)
         muram.charge_quantities()
         muram.optical_depth_stratification()
         muram.modified_components()
@@ -633,7 +650,9 @@ def load_training_data(filenames: list[str], n_spectral_points: int = 36) -> tup
     
     return atm_data, stokes_data, muram.new_wl
 
-def load_data_cubes(filenames: list[str], n_spectral_points: int = 36) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def load_data_cubes(filenames: list[str], 
+                    n_spectral_points: int = 36,
+                    verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Loads data cubes from a list of filenames and processes them using the MURaM class.
     Args:
@@ -651,7 +670,7 @@ def load_data_cubes(filenames: list[str], n_spectral_points: int = 36) -> tuple[
 
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln)
+        muram = MURaM(filename=fln, verbose = verbose)
         muram.charge_quantities()
         muram.optical_depth_stratification()
         muram.modified_components()
