@@ -32,7 +32,7 @@ def main():
     epochs = 10
     lr = 1e-3
     n_spec_points = 114
-    new_logtau = np.linspace(-2.5, 0, 20)
+    new_logtau = np.array([-2.0, -0.8, 0.0])
     
     test_stokes_weights = [[1,1,1,1],
                            [1,10,10,10],
