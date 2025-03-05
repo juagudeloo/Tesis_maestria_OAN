@@ -373,16 +373,29 @@ class MURaM:
         self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["V"])
         
         # Stokes parameter normalization by the continuum
-        scaled_stokes = np.ones_like(self.stokes)
-        cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
-        wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
-        print("calculating the continuum...")
-        for jx in tqdm(range(self.nx)):
-            for jz in range(self.ny):
-                for i in range(self.stokes.shape[-1]):
-                    cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
-                    cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
-                    scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
+        scaled_dir = self.ptm / "scaled_stokes"
+        if not os.path.exists(scaled_dir):
+            os.makedirs(scaled_dir)
+        
+        print("Normalizing the Stokes parameters by the continuum...")
+        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}.npy"
+        if not os.path.exists(scaled_out):
+            # Continuum calculation
+            scaled_stokes = np.ones_like(self.stokes)
+            cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
+            wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
+            print("calculating the continuum...")
+            for jx in tqdm(range(self.nx)):
+                for jz in range(self.ny):
+                    for i in range(self.stokes.shape[-1]):
+                        cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
+                        cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
+                        scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
+            np.save(scaled_out, scaled_stokes)
+        else:
+            scaled_stokes = np.load(scaled_out)
+            print("Loaded normalized stoks from", scaled_out)
+            
         self.stokes = scaled_stokes
         
         # Stokes parameter weighting
