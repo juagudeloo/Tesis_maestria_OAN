@@ -74,9 +74,7 @@ def main():
 
         #Optimizer
         optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-        #Train model
-        print("name of the experiment: ", str(n_spec_points)+"_spectral_points")
-        
+        #Train model        
         
         experiment_name = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights"
         train(model=model,
