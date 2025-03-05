@@ -154,7 +154,7 @@ class MURaM:
             print("stokes shape", self.stokes.shape)
     def optical_depth_stratification(self, new_logtau: np.ndarray[float] = np.linspace(-2.5,0,20)) -> None:
         
-        # Data path
+        # Geom data path
         geom_path = self.ptm / "geom_height"
         logtau_name = f"logtau_{self.filename}.npy"
         
@@ -163,9 +163,11 @@ class MURaM:
             muram_logtau = calculate_logtau(muram = self, 
                                     save_path = geom_path,
                                     save_name=logtau_name)
+            print(f"Saved to {geom_path / logtau_name}")
         else:
             print("Loading optical depth stratification...")
             muram_logtau = np.load(geom_path / logtau_name)
+            print(f"Loaded from {geom_path / logtau_name}")
         
         if self.verbose:
             print("muram logtau shape", muram_logtau.shape)
@@ -176,36 +178,40 @@ class MURaM:
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
         fig.savefig("images/atmosphere/optical_depth.png")
         
-        def logtau_mapper(orig_arr: np.ndarray, 
-           corresp_logtau: np.ndarray,
-           new_logtau: np.ndarray) -> np.ndarray:
-            """
-            Function for mapping the quantities distribution from geometrical height to optical depth.
-            Args:
-                orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
-                corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
-                new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
-            Returns:
-                (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
-            """
-            
-            logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
-            new_arr = logtau_mapper(new_logtau)
-            return new_arr
         
-        # New optical depth stratification array.
+        # Opt data path
+        opt_path = self.ptm / "opt_depth"
+        output_names = ["mtpr","mrho", "mbxx", "mbyy", "mbzz", "mvzz"]
+        
+         # New optical depth stratification array.
         n_logtau = new_logtau.shape[0]
 
         # Mapping to the new optical depth stratification
         atm_to_logtau = np.zeros((self.nx,self.ny,n_logtau,self.atm_quant.shape[-1]))
         for imur in range(self.atm_quant.shape[-1]):
-            muram_quantity = self.atm_quant[..., imur]
-            for ix in tqdm(range(self.nx)):
-                for iy in range(self.ny):
-                    atm_to_logtau[ix,iy,:,imur] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
-                                                corresp_logtau = muram_logtau[ix,iy,:], 
-                                                new_logtau = new_logtau)
-        
+            out_map_name = f"{output_names[imur]}_logtau_{self.filename}_{n_logtau}_nodes.npy"
+            # Check if the file exists
+            if not os.path.exists(opt_path / out_map_name):
+                # Calculate the new optical depth stratification
+                print(f"Mapping {output_names[imur]} to the new optical depth stratification...")
+                muram_quantity = self.atm_quant[..., imur]
+                
+                new_muram_quantity = map_to_logtau(muram = self, 
+                                                   geom_atm=muram_quantity,
+                                                   geom_logtau=muram_logtau,
+                                                   new_logtau=new_logtau,
+                                                   save_path=opt_path,
+                                                   save_name=out_map_name)
+                print(f"Saved to {opt_path / out_map_name}")
+                atm_to_logtau[...,imur] = new_muram_quantity
+            else:
+                # Load the file
+                print(f"Loading {output_names[imur]} mapped to the new optical depth stratification...")
+                atm_to_logtau[...,imur] = np.load(opt_path / out_map_name)
+                print(f"Loaded from {opt_path / out_map_name}")
+                
+        print("Loaded!")
+
         self.atm_quant = atm_to_logtau
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)
@@ -213,10 +219,10 @@ class MURaM:
         fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
         i = 0
         i_logt = 19
-        for imur in range(atm_to_logtau.shape[-1]):
-            ax[0,i].imshow(atm_to_logtau[:,:,i_logt,imur], cmap="inferno")
+        for imur in range(self.atm_quant.shape[-1]):
+            ax[0,i].imshow(self.atm_quant[:,:,i_logt,imur], cmap="inferno")
             ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau[i_logt]:0.2f}")
-            ax[1,i].plot(new_logtau, atm_to_logtau[...,imur].mean(axis=(0,1)))
+            ax[1,i].plot(new_logtau, self.atm_quant[...,imur].mean(axis=(0,1)))
             i += 1
         fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
              
@@ -462,6 +468,23 @@ class MURaM:
 # Preprocessing utils
 ##############################################################
 def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
+    """
+    Calculate the optical depth stratification for the MURaM simulation data.
+
+    Parameters:
+    -----------
+    muram : MURaM
+        The MURaM object containing the simulation data.
+    save_path : str
+        The path to save the calculated optical depth data.
+    save_name : str
+        The name of the file to save the calculated optical depth data.
+
+    Returns:
+    --------
+    np.ndarray
+        The calculated optical depth stratification array.
+    """
     # Data path
     geom_path = muram.ptm / "geom_height"
     
@@ -536,9 +559,41 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     np.save(save_path / save_name, logtau)
     print("Done!")
     return logtau
-def map_to_logtau(muram: MURaM):
-    return None
 
+def map_to_logtau(muram: MURaM,
+                  geom_atm: np.ndarray,
+                  geom_logtau: np.ndarray,
+                  new_logtau: np.ndarray,
+                  save_path: str,
+                  save_name: str):
+    def logtau_mapper(orig_arr: np.ndarray, 
+            corresp_logtau: np.ndarray,
+            new_logtau: np.ndarray,
+            ) -> np.ndarray:
+                """
+                Function for mapping the quantities distribution from geometrical height to optical depth.
+                Args:
+                    orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
+                    corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
+                    new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
+                Returns:
+                    (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
+                """
+                
+                logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
+                new_arr = logtau_mapper(new_logtau)
+                return new_arr
+            
+    new_muram_quantity = np.zeros((muram.nx,muram.ny,muram.n_logtau))
+    for ix in tqdm(range(muram.nx)):
+        for iy in range(muram.ny):
+            new_muram_quantity[ix,iy,:] = logtau_mapper(orig_arr = geom_atm[ix,iy,:], 
+                                        corresp_logtau = geom_logtau[ix,iy,:], 
+                                        new_logtau = new_logtau)
+    
+    np.save(save_path / save_name, new_muram_quantity)
+            
+    return new_muram_quantity
 ##############################################################
 # Plot utils
 ##############################################################
