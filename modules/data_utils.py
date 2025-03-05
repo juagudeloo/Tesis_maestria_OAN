@@ -184,7 +184,7 @@ class MURaM:
         output_names = ["mtpr","mrho", "mbxx", "mbyy", "mbzz", "mvzz"]
         
          # New optical depth stratification array.
-        n_logtau = new_logtau.shape[0]
+        self.n_logtau = new_logtau.shape[0]
 
         # Mapping to the new optical depth stratification
         atm_to_logtau = np.zeros((self.nx,self.ny,n_logtau,self.atm_quant.shape[-1]))
