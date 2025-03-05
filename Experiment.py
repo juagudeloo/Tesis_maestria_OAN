@@ -52,13 +52,6 @@ def main():
                     wl_points = wl_points,
                     image_name = "example_stokes",)
         
-        # Create dataset and dataloaders
-        train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                        atm_data = atm_data,
-                        device = device,
-                        batch_size = 80)
-        
-
         print(f"Training {m_type} model with {n_spec_points} spectral points")
         train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                     atm_data = atm_data,
@@ -67,7 +60,9 @@ def main():
                     linear = True)
         
         hu = 2048
-        model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
+        model = LinearModel(in_shape=n_spec_points*stokes_data.shape[-1],
+                            out_shape=new_logtau.shape[0]*atm_data.shape[-1],
+                            hidden_units=hu).to(device)
         model = model.float()
         #Loss function
         loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places

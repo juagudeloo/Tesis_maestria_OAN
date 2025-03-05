@@ -217,7 +217,7 @@ class MURaM:
                     
         fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
         i = 0
-        i_logt = 19
+        i_logt = -1
         for imur in range(self.atm_quant.shape[-1]):
             ax[0,i].imshow(self.atm_quant[:,:,i_logt,imur], cmap="inferno")
             ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau[i_logt]:0.2f}")
