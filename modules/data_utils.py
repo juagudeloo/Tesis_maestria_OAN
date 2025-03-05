@@ -205,6 +205,7 @@ class MURaM:
                     atm_to_logtau[ix,iy,:,imur] = logtau_mapper(orig_arr = muram_quantity[ix,iy,:], 
                                                 corresp_logtau = muram_logtau[ix,iy,:], 
                                                 new_logtau = new_logtau)
+        
         self.atm_quant = atm_to_logtau
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)
