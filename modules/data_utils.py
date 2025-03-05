@@ -262,11 +262,13 @@ class MURaM:
         new_points : int, optional
             Number of new spectral points after degradation (default is 36).
         """
+        self.new_points = new_points
+        
         # New spectral resolution arrays
         new_resol = np.linspace(0, 288, new_points, dtype=np.int64)
         new_resol = np.add(new_resol, 6)
         # File to save the degraded self.stokes
-        new_stokes_out = self.ptm / "resampled_stokes" / f"resampled_self.stokes_f{self.filename}_sr{new_points}_wl_points.npy"
+        new_stokes_out = self.ptm / "resampled_stokes" / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
         
         # Degradation process
         if not os.path.exists(new_stokes_out):
@@ -279,13 +281,13 @@ class MURaM:
             
             # Convolution
             print("Degrading...")
-            new_stokes = np.zeros((self.nx, self.ny, new_points, self.stokes.shape[-1]))
+            new_stokes = np.zeros((self.nx, self.ny, self.new_points, self.stokes.shape[-1]))
             
             for s in range(self.stokes.shape[-1]):
                 for jx in tqdm(range(self.nx)):
                     for jz in range(self.ny):
                         spectrum = self.stokes[jx, jz, :, s]
-                        resampled_spectrum = np.zeros(new_points)
+                        resampled_spectrum = np.zeros(self.new_points)
                         i = 0
                         for center_wl in new_resol:
                             low_limit = center_wl - 6
@@ -378,7 +380,7 @@ class MURaM:
             os.makedirs(scaled_dir)
         
         print("Normalizing the Stokes parameters by the continuum...")
-        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}.npy"
+        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
         if not os.path.exists(scaled_out):
             # Continuum calculation
             scaled_stokes = np.ones_like(self.stokes)
@@ -392,6 +394,7 @@ class MURaM:
                         cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
                         scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
             np.save(scaled_out, scaled_stokes)
+            print("Saved normalized stokes to", scaled_out)
         else:
             scaled_stokes = np.load(scaled_out)
             print("Loaded normalized stoks from", scaled_out)
@@ -711,7 +714,7 @@ def load_training_data(filenames: list[str],
         muram.charge_quantities()
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
-        muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.degrade_spec_resol(self.new_points=n_spectral_points)
         muram.scale_quantities(stokes_weigths=stokes_weights)
         muram.gran_intergran_balance()
 
@@ -749,7 +752,7 @@ def load_data_cubes(filenames: list[str],
         muram.charge_quantities()
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
-        muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.degrade_spec_resol(self.new_points=n_spectral_points)
         muram.scale_quantities(stokes_weigths=stokes_weights)
 
         atm_data.append(muram.atm_quant)
