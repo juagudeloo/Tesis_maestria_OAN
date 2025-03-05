@@ -515,7 +515,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   titles: list,
   tau_index: int,
   images_dir: str = "images",
-  num_bars: int = 10):
+  num_bars: int = None):
   """
   Plots the density of values of the atm_generated and atm_original for a specific optical depth index.
   The plot is composed of bars.
@@ -562,6 +562,15 @@ def plot_density_bars(atm_generated: np.ndarray,
     xlim_max = max(gen_q95, orig_q95)
 
     # Create histogram bins
+    if not num_bars:
+      gen_q25m, gen_q75m = np.quantile(gen_values, [0.25, 0.75])
+      IQR_gen = gen_q75m - gen_q25m
+      gen_bin_width = 2 * IQR_gen / (len(gen_values) ** (1 / 3))
+      orig_q25m, orig_q75m = np.quantile(orig_values, [0.25, 0.75])
+      IQR_orig = orig_q75m - orig_q25m
+      orig_bin_width = 2 * IQR_orig / (len(orig_values) ** (1 / 3))
+      num_bars = int((max(gen_values.max(), orig_values.max()) - min(gen_values.min(), orig_values.min())) / max(gen_bin_width, orig_bin_width))
+    
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
     smape_res = smape(gen_values, orig_values)
     
