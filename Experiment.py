@@ -28,7 +28,7 @@ def main():
     
     ### Checking linear vs convolutional 1d models ###
     
-    m_type = "linear",
+    m_type = "linear"
     epochs = 10
     lr = 1e-3
     n_spec_points = 114
