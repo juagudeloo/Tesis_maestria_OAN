@@ -188,12 +188,12 @@ class MURaM:
 
         # Mapping to the new optical depth stratification
         atm_to_logtau = np.zeros((self.nx,self.ny,self.n_logtau,self.atm_quant.shape[-1]))
+        print(f"Mapping to new optical depth stratification...")
         for imur in range(self.atm_quant.shape[-1]):
             out_map_name = f"{output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
             # Check if the file exists
             if not os.path.exists(opt_path / out_map_name):
                 # Calculate the new optical depth stratification
-                print(f"Mapping {output_names[imur]} to the new optical depth stratification...")
                 muram_quantity = self.atm_quant[..., imur]
                 
                 new_muram_quantity = map_to_logtau(muram = self, 
@@ -206,9 +206,8 @@ class MURaM:
                 atm_to_logtau[...,imur] = new_muram_quantity
             else:
                 # Load the file
-                print(f"Loading {output_names[imur]} mapped to the new optical depth stratification...")
                 atm_to_logtau[...,imur] = np.load(opt_path / out_map_name)
-                print(f"Loaded from {opt_path / out_map_name}")
+                print(f"Loaded {output_names[imur]} from {opt_path / out_map_name}")
                 
         print("Loaded!")
 
@@ -305,7 +304,7 @@ class MURaM:
             np.save(new_stokes_out, new_stokes)
         else:
             new_stokes = np.load(new_stokes_out)
-            print("self.stokes degraded!")
+            print("stokes degraded!")
         self.stokes = new_stokes
         if self.verbose:
             print("Degraded stokes shape is:", self.stokes.shape)

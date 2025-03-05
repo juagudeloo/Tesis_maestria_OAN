@@ -2,6 +2,8 @@ import sys
 
 from timeit import default_timer as timer 
 
+import numpy as np
+
 import torch
 from torch import nn
 
@@ -24,22 +26,27 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Tensors stored in: {device}")
     
-    
-    
-    
     ### Checking linear vs convolutional 1d models ###
     
-    model_types = [
-        "linear",
-        "cnn1d_4channels"]
+    m_type = "linear",
     epochs = 10
     lr = 1e-3
-    test_spectral_res = [36, 58, 90, 114]
+    n_spec_points = 114
+    new_logtau = np.linspace(-2.5, 0, 20)
     
-    #1. Loop through spectral resolutions
-    for n_spec_points in test_spectral_res:
+    test_stokes_weights = [[1,1,1,1],
+                           [1,10,10,10],
+                           [1,20,20,10],
+                           [1,40,40,10],
+                           [1,80,80,10],
+                           [1,160,160,10]]
+    
+    #1. Loop through stokes weights
+    for stokes_weights in test_stokes_weights:
         atm_data, stokes_data, wl_points = load_training_data(filenames, 
-                                                              n_spectral_points=n_spec_points)
+                                                                n_spectral_points=n_spec_points,
+                                                                new_logtau=new_logtau,
+                                                                stokes_weights=stokes_weights)
         
         plot_stokes(stokes=stokes_data[0], 
                     wl_points = wl_points,
@@ -51,53 +58,40 @@ def main():
                         device = device,
                         batch_size = 80)
         
-        #2. Loop through model types
-        for m_type in model_types:
-            print(f"Training {m_type} models")
-            if m_type == "linear":
-                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                            atm_data = atm_data,
-                            device = device,
-                            batch_size = 80,
-                            linear = True)
-            elif m_type == "cnn1d_4channels":
-                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
-                            atm_data = atm_data,
-                            device = device,
-                            batch_size = 80,
-                            stokes_as_channels=True,
-                            linear = False)
-            #Creating the model
-            if m_type == "linear":
-                hu = 2048
-                model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
-            elif m_type == "cnn1d_4channels":
-                hu = 72
-                model = CNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
-            model = model.float()
-            #Loss function
-            loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
 
-            #Optimizer
-            optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
-            #Train model
-            train(model=model,
-                train_dataloader=train_dataloader,
-                test_dataloader=test_dataloader, 
-                optimizer=optimizer,
-                loss_fn=loss_fn,
-                epochs=epochs,
-                device=device,
-                writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
-                                    model_name=m_type,
-                                    extra=f""))
-            
-            #Save the model to file so we can get back the best model
-            save_filepath = f"{m_type}_{n_spec_points}_spectral_points.pth"
-            save_model(model=model,
-                    target_dir="models",
-                    model_name=save_filepath)
-            print("-"*50 + "\n")
+        print(f"Training {m_type} model with {n_spec_points} spectral points")
+        train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+                    atm_data = atm_data,
+                    device = device,
+                    batch_size = 80,
+                    linear = True)
+        
+        hu = 2048
+        model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
+        model = model.float()
+        #Loss function
+        loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places
+
+        #Optimizer
+        optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
+        #Train model
+        train(model=model,
+            train_dataloader=train_dataloader,
+            test_dataloader=test_dataloader, 
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            epochs=epochs,
+            device=device,
+            writer=create_writer(experiment_name=str(n_spec_points)+"_spectral_points",
+                                model_name=m_type,
+                                extra=f""))
+        
+        #Save the model to file so we can get back the best model
+        save_filepath = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights.pth"
+        save_model(model=model,
+                target_dir="models",
+                model_name=save_filepath)
+        print("-"*50 + "\n")
 
            
 
