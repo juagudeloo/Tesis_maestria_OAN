@@ -612,7 +612,6 @@ def plot_density_bars(atm_generated: np.ndarray,
 
 def plot_correlation(atm_generated: np.ndarray,
            atm_original: np.ndarray,
-           tau: np.ndarray,
            model_subdir: str,
            corr_diag_subdir: str,
            image_name: str,
