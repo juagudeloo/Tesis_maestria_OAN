@@ -382,7 +382,7 @@ def generate_results(model: torch.nn.Module,
   
   atm_generated = torch.cat(atm_generated, dim=0)
   atm_generated = atm_generated.numpy()
-  atm_generated = np.reshape(atm_generated, (480,480,20,6))
+  atm_generated = np.reshape(atm_generated, (480,480,3,6))
   
   print("atm generated data shape :", atm_generated.shape)
   
