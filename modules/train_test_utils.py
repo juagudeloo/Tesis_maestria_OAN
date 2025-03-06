@@ -539,18 +539,6 @@ def plot_density_bars(atm_generated: np.ndarray,
   num_bars (int, optional): Number of bars in the plot. Defaults to 10.
   """
   
-  def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """Calculates the Symmetric Mean Absolute Percentage Error (SMAPE) between two arrays.
-
-    Args:
-      y_true (np.ndarray): Array of true values.
-      y_pred (np.ndarray): Array of predicted values.
-
-    Returns:
-      float: The SMAPE value as a percentage.
-    """
-    return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
-  
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
@@ -633,6 +621,7 @@ def plot_correlation(atm_generated: np.ndarray,
   tau_index (int): Index of the optical depth to plot.
   images_dir (str, optional): Directory to save the images. Defaults to "images".
   """
+  
   num_params = atm_generated.shape[3]
   num_rows = (num_params + 1) // 2  # Calculate the number of rows needed for two columns
 
@@ -644,10 +633,10 @@ def plot_correlation(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-
+    smape_res = smape(gen_values, orig_values)
     # Plot correlation
-    axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', edgecolor='k')
-    axs[row, col].set_title(f"{titles[j]}")
+    axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=5)
+    axs[row, col].set_title(f"{titles[j]} smape = {smape_res:.2f}")
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)
@@ -668,3 +657,19 @@ def plot_correlation(atm_generated: np.ndarray,
 
 # Example usage:
 # plot_correlation(atm_generated, atm_original, "model_subdir", "correlation_plots", "correlation.png", ["Title1", "Title2", "Title3", "Title4", "Title5", "Title6"], tau_index=10)
+
+##########################################################3
+#metrics utils
+###########################################################
+
+def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Calculates the Symmetric Mean Absolute Percentage Error (SMAPE) between two arrays.
+
+    Args:
+      y_true (np.ndarray): Array of true values.
+      y_pred (np.ndarray): Array of predicted values.
+
+    Returns:
+      float: The SMAPE value as a percentage.
+    """
+    return 100 * np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred)))
