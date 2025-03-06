@@ -362,6 +362,7 @@ def descale_atm(atm_generated: np.ndarray,
 
 def generate_results(model: torch.nn.Module,
                      stokes_data: np.ndarray,
+                     atm_shape: tuple[int, int, int, int],
                      maxmin: dict[str, list[float]],
                      device: torch.device
                      ) -> np.ndarray:
@@ -382,7 +383,7 @@ def generate_results(model: torch.nn.Module,
   
   atm_generated = torch.cat(atm_generated, dim=0)
   atm_generated = atm_generated.numpy()
-  atm_generated = np.reshape(atm_generated, (480,480,3,6))
+  atm_generated = np.reshape(atm_generated, atm_shape)
   
   print("atm generated data shape :", atm_generated.shape)
   

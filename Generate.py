@@ -98,6 +98,7 @@ def main():
           plot_od_generated_atm(
                             atm_generated = atm_generated,
                             atm_original = atm_data_original,
+                            tau=new_logtau,
                             model_subdir = experiment_name,
                             image_name = "mean_OD.png",
                             titles = mags_names,
@@ -111,6 +112,7 @@ def main():
             plot_surface_generated_atm(
                               atm_generated = atm_generated,
                               atm_original = atm_data_original,
+                              tau=new_logtau,
                               model_subdir = experiment_name,
                               image_name = "surface.png",
                               titles = mags_names,
@@ -120,6 +122,7 @@ def main():
             plot_density_bars(
                     atm_generated = atm_generated,
                     atm_original = atm_data_original,
+                    tau=new_logtau,
                     dense_diag_subdir= "density_plots",
                     model_subdir = experiment_name,
                     image_name = "OD_density.png",
@@ -129,6 +132,7 @@ def main():
             plot_correlation(
                     atm_generated = atm_generated,
                     atm_original = atm_data_original,
+                    tau=new_logtau,
                     corr_diag_subdir = "correlation_plots",
                     model_subdir = experiment_name,
                     image_name = "correlation.png",
