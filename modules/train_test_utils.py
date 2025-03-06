@@ -566,6 +566,7 @@ def plot_density_bars(atm_generated: np.ndarray,
       IQR_orig = orig_q75m - orig_q25m
       orig_bin_width = 2 * IQR_orig / (len(orig_values) ** (1 / 3))
       num_bars = int((max(gen_values.max(), orig_values.max()) - min(gen_values.min(), orig_values.min())) / max(gen_bin_width, orig_bin_width))
+      num_bars = min(num_bars, 100)
     
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
     smape_res = smape(gen_values, orig_values)
@@ -635,7 +636,7 @@ def plot_correlation(atm_generated: np.ndarray,
     orig_values = atm_original[:, :, tau_index, j].flatten()
     smape_res = smape(gen_values, orig_values)
     # Plot correlation
-    axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=5)
+    axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
     axs[row, col].set_title(f"{titles[j]} smape = {smape_res:.2f}")
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
