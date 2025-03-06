@@ -114,6 +114,7 @@ def main():
                               atm_generated = atm_generated,
                               atm_original = atm_data_original,
                               tau=new_logtau,
+                              filename=filename,
                               model_subdir = experiment_name,
                               surface_subdir="surface_plots",
                               image_name = "surface.png",
