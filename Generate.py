@@ -79,6 +79,7 @@ def main():
           print(f"Generating results for {experiment_name}...")
           atm_generated = generate_results(model = model,
                                             stokes_data = stokes_data,
+                                            atm_shape=atm_data_original.shape,
                                             maxmin = phys_maxmin,
                                             device = device
                                           )      
