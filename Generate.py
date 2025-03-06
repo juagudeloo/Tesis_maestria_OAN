@@ -62,7 +62,7 @@ def main():
           # Load model and charge corresponding stokes data
           stokes_data =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[i]*stokes_data[i].shape[1], stokes_data[i].shape[2]*stokes_data[i].shape[3]))
           model = LinearModel(in_shape=n_spec_points*stokes_data.shape[-1],
-                              out_shape=new_logtau.shape[0]*atm_data.shape[-1],
+                              out_shape=new_logtau.shape[0]*atm_data_original.shape[-1],
                               hidden_units=2048).to(device)
           
           experiment_name = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights"
