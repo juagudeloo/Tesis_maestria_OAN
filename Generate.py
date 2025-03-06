@@ -60,7 +60,7 @@ def main():
           atm_data_original = descale_atm(atm_data_original, phys_maxmin)
           
           # Load model and charge corresponding stokes data
-          stokes_data =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[i]*stokes_data[i].shape[1], stokes_data[i].shape[2]*stokes_data[i].shape[3]))
+          stokes_original =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[i]*stokes_data[i].shape[1], stokes_data[i].shape[2]*stokes_data[i].shape[3]))
           model = LinearModel(in_shape=n_spec_points*4,
                               out_shape=new_logtau.shape[0]*atm_data_original.shape[-1],
                               hidden_units=2048).to(device)
@@ -78,7 +78,7 @@ def main():
           #Generate results
           print(f"Generating results for {experiment_name}...")
           atm_generated = generate_results(model = model,
-                                            stokes_data = stokes_data,
+                                            stokes_data = stokes_original,
                                             atm_shape=atm_data_original.shape,
                                             maxmin = phys_maxmin,
                                             device = device
