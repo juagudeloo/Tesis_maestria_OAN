@@ -503,6 +503,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   
   fig.tight_layout()
   
+  print(images_dir, filename, model_subdir, surface_subdir)
   images_dir = os.path.join(images_dir, filename, model_subdir, surface_subdir)
   if not os.path.exists(images_dir):
     os.makedirs(images_dir)
