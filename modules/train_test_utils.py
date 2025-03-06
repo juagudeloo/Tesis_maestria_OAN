@@ -393,7 +393,6 @@ def generate_results(model: torch.nn.Module,
 
 ### VISUALIZATION UTILITIES ###
 
-tau = np.linspace(-2.5, 0, 20)
      
 def plot_od_generated_atm(
        atm_generated: np.ndarray,
@@ -401,6 +400,7 @@ def plot_od_generated_atm(
        model_subdir: str,
        image_name: str,
        titles: list,
+       tau: np.ndarray = np.linspace(-2.5,0,20),
        images_dir: str = "images",
        filename: str = None
        ):
@@ -448,6 +448,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
        image_name: str,
        titles: list,
        itau: int = 10,
+       tau: np.ndarray = np.linspace(-2.5,0,20),
        images_dir: str = "images",
        filename: str = None,
        ):
@@ -517,6 +518,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   image_name: str,
   titles: list,
   tau_index: int,
+  tau: np.ndarray = np.linspace(-2.5,0,20),
   num_bars: int = None,
   images_dir: str = "images",
   filename: str = None
@@ -610,11 +612,13 @@ def plot_density_bars(atm_generated: np.ndarray,
 
 def plot_correlation(atm_generated: np.ndarray,
            atm_original: np.ndarray,
+           tau: np.ndarray,
            model_subdir: str,
            corr_diag_subdir: str,
            image_name: str,
            titles: list,
            tau_index: int,
+           tau: np.ndarray = np.linspace(-2.5,0,20),
            images_dir: str = "images",
            filename: str = None):
   """
