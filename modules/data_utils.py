@@ -133,8 +133,9 @@ class MURaM:
                       """)
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$", r"$v_{z}$"]
-        self.atm_quant = np.array([mtpr, mrho, mbxx, mbyy, mbzz, mvzz])
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$"]
+        self.output_names = ["mtpr","mrho", "mvzz", "mbxx", "mbyy", "mbzz"]
+        self.atm_quant = np.array([mtpr, mrho, mvzz, mbxx, mbyy, mbzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.nz, self.ny, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
@@ -179,10 +180,8 @@ class MURaM:
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
         fig.savefig("images/atmosphere/optical_depth.png")
         
-        
         # Opt data path
         opt_path = self.ptm / "opt_depth"
-        output_names = ["mtpr","mrho", "mbxx", "mbyy", "mbzz", "mvzz"]
         
          # New optical depth stratification array.
         self.n_logtau = new_logtau.shape[0]
@@ -191,7 +190,7 @@ class MURaM:
         atm_to_logtau = np.zeros((self.nx,self.ny,self.n_logtau,self.atm_quant.shape[-1]))
         print(f"Mapping to new optical depth stratification...")
         for imur in range(self.atm_quant.shape[-1]):
-            out_map_name = f"{output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
+            out_map_name = f"{self.output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
             # Check if the file exists
             if not os.path.exists(opt_path / out_map_name):
                 # Calculate the new optical depth stratification
@@ -208,7 +207,7 @@ class MURaM:
             else:
                 # Load the file
                 atm_to_logtau[...,imur] = np.load(opt_path / out_map_name)
-                print(f"Loaded {output_names[imur]} from {opt_path / out_map_name}")
+                print(f"Loaded {self.output_names[imur]} from {opt_path / out_map_name}")
                 
         print("Loaded!")
 
@@ -218,22 +217,13 @@ class MURaM:
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)
                     
-        fig, ax = plt.subplots(2,9,figsize=(9*4,4*2))
-        i = 0
-        i_logt = -1
-        for imur in range(self.atm_quant.shape[-1]):
-            ax[0,i].imshow(self.atm_quant[:,:,i_logt,imur], cmap="inferno")
-            ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau[i_logt]:0.2f}")
-            ax[1,i].plot(new_logtau, self.atm_quant[...,imur].mean(axis=(0,1)))
-            i += 1
-        fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")  
     def modified_components(self) -> None:
-        self.mags_names = [r"$T$", r"$\rho$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$", r"$v_{z}$"]
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$"]
         
         # Magnetic field components
-        mbxx = self.atm_quant[..., 2]
-        mbyy = self.atm_quant[..., 3]
-        mbzz = self.atm_quant[..., 4]
+        mbxx = self.atm_quant[..., 3]
+        mbyy = self.atm_quant[..., 4]
+        mbzz = self.atm_quant[..., 5]
         
         print("Modifying magnetic field components to fight azimuth ambiguity...")
         # Modified magnetic field components
@@ -244,9 +234,9 @@ class MURaM:
 
         print("Creating atmosphere quantities array...")
         # Saving modified quantities replacing the x,y,z components
-        self.atm_quant[..., 2] = mbqq
-        self.atm_quant[..., 3] = mbuu
-        self.atm_quant[..., 4] = mbvv
+        self.atm_quant[..., 3] = mbqq
+        self.atm_quant[..., 4] = mbuu
+        self.atm_quant[..., 5] = mbvv
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
@@ -336,20 +326,20 @@ class MURaM:
             MAX VALUES:
             mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
             mrho max = {np.max(self.atm_quant[:, :, :, 1])}
-            mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
-            mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
-            mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-            mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+            mvzz max = {np.max(self.atm_quant[:, :, :, 2])}
+            mbqq max = {np.max(self.atm_quant[:, :, :, 3])}
+            mbuu max = {np.max(self.atm_quant[:, :, :, 4])}
+            mbvv max = {np.max(self.atm_quant[:, :, :, 5])}
                 """)
             
             print(f"""
             MIN VALUES:
             mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
             mrho min = {np.min(self.atm_quant[:, :, :, 1])}
-            mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
-            mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
-            mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-            mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
+            mvzz min = {np.min(self.atm_quant[:, :, :, 2])}
+            mbqq min = {np.min(self.atm_quant[:, :, :, 3])}
+            mbuu min = {np.min(self.atm_quant[:, :, :, 4])}
+            mbvv min = {np.min(self.atm_quant[:, :, :, 5])}
                 """) 
         
         print("Scaling the quantities...")
@@ -370,10 +360,10 @@ class MURaM:
         # Atmosphere magnitudes normalization
         self.atm_quant[:, :, :, 0] = norm_func(self.atm_quant[:, :, :, 0], self.phys_maxmin["T"])
         self.atm_quant[:, :, :, 1] = norm_func(self.atm_quant[:, :, :, 1], self.phys_maxmin["Rho"])
-        self.atm_quant[:, :, :, 2] = norm_func(self.atm_quant[:, :, :, 2], self.phys_maxmin["B"])
+        self.atm_quant[:, :, :, 2] = norm_func(self.atm_quant[:, :, :, 2], self.phys_maxmin["V"])
         self.atm_quant[:, :, :, 3] = norm_func(self.atm_quant[:, :, :, 3], self.phys_maxmin["B"])
         self.atm_quant[:, :, :, 4] = norm_func(self.atm_quant[:, :, :, 4], self.phys_maxmin["B"])
-        self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["V"])
+        self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["B"])
         
         # Stokes parameter normalization by the continuum
         scaled_dir = self.ptm / "scaled_stokes"
@@ -424,21 +414,21 @@ class MURaM:
             MAX VALUES:
             mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
             mrho max = {np.max(self.atm_quant[:, :, :, 1])}
-            mbqq max = {np.max(self.atm_quant[:, :, :, 2])}
-            mbuu max = {np.max(self.atm_quant[:, :, :, 3])}
-            mbvv max = {np.max(self.atm_quant[:, :, :, 4])}
-            mvzz max = {np.max(self.atm_quant[:, :, :, 5])}
+            mvzz max = {np.max(self.atm_quant[:, :, :, 2])}
+            mbqq max = {np.max(self.atm_quant[:, :, :, 3])}
+            mbuu max = {np.max(self.atm_quant[:, :, :, 4])}
+            mbvv max = {np.max(self.atm_quant[:, :, :, 5])}
                 """)
             
             print(f"""
             MIN VALUES:
             mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
             mrho min = {np.min(self.atm_quant[:, :, :, 1])}
-            mbqq min = {np.min(self.atm_quant[:, :, :, 2])}
-            mbuu min = {np.min(self.atm_quant[:, :, :, 3])}
-            mbvv min = {np.min(self.atm_quant[:, :, :, 4])}
-            mvzz min = {np.min(self.atm_quant[:, :, :, 5])}
-                """)
+            mvzz min = {np.min(self.atm_quant[:, :, :, 2])}
+            mbqq min = {np.min(self.atm_quant[:, :, :, 3])}
+            mbuu min = {np.min(self.atm_quant[:, :, :, 4])}
+            mbvv min = {np.min(self.atm_quant[:, :, :, 5])}
+                """) 
     def gran_intergran_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
@@ -674,7 +664,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
     
     fig, ax = plt.subplots(2, 3, figsize=(20, 10))
     fig.suptitle('Atmospheric Quantities', fontsize=16)
-    cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
+    cmaps = ['inferno', 'spring', 'seismic_r', 'PuOr', 'PuOr', 'PuOr']
 
     for i in range(6):
         ax[i // 3, i % 3].imshow(atm_quant[:, :, height_index , i], cmap=cmaps[i])

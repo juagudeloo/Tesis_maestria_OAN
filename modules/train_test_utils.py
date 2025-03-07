@@ -53,7 +53,6 @@ def set_seeds(seed: int=42):
     torch.manual_seed(seed)
     # Set the seed for CUDA torch operations (ones that happen on the GPU)
     torch.cuda.manual_seed(seed)
-
 def train_step(model: torch.nn.Module, 
                dataloader: torch.utils.data.DataLoader, 
                loss_fn: torch.nn.Module, 
@@ -112,7 +111,6 @@ def train_step(model: torch.nn.Module,
   train_loss = train_loss / len(dataloader)
   train_acc = train_acc / len(dataloader)
   return train_loss, train_acc
-
 def test_step(model: torch.nn.Module, 
               dataloader: torch.utils.data.DataLoader, 
               loss_fn: torch.nn.Module,
@@ -161,7 +159,6 @@ def test_step(model: torch.nn.Module,
   test_loss = test_loss / len(dataloader)
   test_acc = test_acc / len(dataloader)
   return test_loss, test_acc
-
 def create_writer(experiment_name: str, 
                   model_name: str, 
                   extra: str=None) -> torch.utils.tensorboard.writer.SummaryWriter():
@@ -201,7 +198,6 @@ def create_writer(experiment_name: str,
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)
-
 def train(model: torch.nn.Module, 
           train_dataloader: torch.utils.data.DataLoader, 
           test_dataloader: torch.utils.data.DataLoader, 
@@ -299,7 +295,6 @@ def train(model: torch.nn.Module,
 
     # Return the filled results at the end of the epochs
     return results
-
 def save_model(model: torch.nn.Module,
                target_dir: str,
                model_name: str):
@@ -330,7 +325,6 @@ def save_model(model: torch.nn.Module,
   torch.save(obj=model.state_dict(),
              f=model_save_path)
 
-
 ### MODEL UTILITIES ###
 
 def charge_weights(model: torch.nn.Module,
@@ -343,7 +337,6 @@ def charge_weights(model: torch.nn.Module,
   print(f"[INFO] Loading model from: {model_path}")
   
   model.load_state_dict(torch.load(model_path, weights_only=True))
-
 def descale_atm(atm_generated: np.ndarray,
                 maxmin: dict[str, list[float]]) -> np.ndarray:
     def denorm_func(arr, maxmin):
@@ -353,13 +346,12 @@ def descale_atm(atm_generated: np.ndarray,
     
     atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
     atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-    atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["B"])
+    atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
     atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
     atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["B"])
-    atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["V"])
+    atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["B"])
     
     return atm_generated
-
 def generate_results(model: torch.nn.Module,
                      stokes_data: np.ndarray,
                      atm_shape: tuple[int, int, int, int],
@@ -392,8 +384,7 @@ def generate_results(model: torch.nn.Module,
   return atm_generated
 
 ### VISUALIZATION UTILITIES ###
-
-     
+  
 def plot_od_generated_atm(
        atm_generated: np.ndarray,
        atm_original: np.ndarray,
@@ -413,10 +404,10 @@ def plot_od_generated_atm(
   params = [
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
-  (2, 'Bq', 'G'),
-  (3, 'Bu', 'G'),
-  (4, 'Bv', 'G'),
-  (5, 'v', 'km/s')
+  (2, 'v', 'km/s')
+  (3, 'Bq', 'G'),
+  (4, 'Bu', 'G'),
+  (5, 'Bv', 'G'),
   ]
 
   # Plot generated and original atmosphere
@@ -440,7 +431,6 @@ def plot_od_generated_atm(
   fig.savefig(image_path)
   
   print(f"Saved image to: {image_path}")
-
 def plot_surface_generated_atm(atm_generated: np.ndarray,
        atm_original: np.ndarray,
        model_subdir: str,
@@ -471,10 +461,10 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   params = [
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
-    (2, 'Bq', 'G'),
-    (3, 'Bu', 'G'),
-    (4, 'Bv', 'G'),
-    (5, 'v', 'km/s')
+    (2, 'v', 'km/s')
+    (3, 'Bq', 'G'),
+    (4, 'Bu', 'G'),
+    (5, 'Bv', 'G'),
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
@@ -511,7 +501,6 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   fig.savefig(image_path)
   
   print(f"Saved image to: {image_path}")
-
 def plot_density_bars(atm_generated: np.ndarray,
   atm_original: np.ndarray,
   model_subdir: str,
@@ -595,11 +584,6 @@ def plot_density_bars(atm_generated: np.ndarray,
   fig.savefig(image_path)
 
   print(f"Saved image to: {image_path}")
-
-# Example usage:
-# plot_density_bars(atm_generated, atm_original, "model_subdir", "density_bars.png", ["Title1", "Title2", "Title3", "Title4", "Title5", "Title6"])
-
-
 def plot_correlation(atm_generated: np.ndarray,
            atm_original: np.ndarray,
            model_subdir: str,
@@ -655,9 +639,6 @@ def plot_correlation(atm_generated: np.ndarray,
   fig.savefig(image_path)
 
   print(f"Saved image to: {image_path}")
-
-# Example usage:
-# plot_correlation(atm_generated, atm_original, "model_subdir", "correlation_plots", "correlation.png", ["Title1", "Title2", "Title3", "Title4", "Title5", "Title6"], tau_index=10)
 
 ##########################################################3
 #metrics utils
