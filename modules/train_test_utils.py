@@ -561,7 +561,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     smape_res = smape(gen_values, orig_values)
     
     # Define units for each parameter
-    units = ['K', r'g/cm$^3$', 'G', 'G', 'G', 'km/s']
+    units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
     
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
