@@ -757,35 +757,10 @@ def load_data_cubes(filenames: list[str],
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose)
         muram.charge_quantities()
-        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
-                                   titles = muram.mags_names,
-                                   image_name=f"{muram.filename}_atm_quantities_non_stratified",
-                                   images_dir="testing_images",
-                                   atm_subdir="atmosphere") 
         muram.optical_depth_stratification(new_logtau=new_logtau)
-        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
-                                   titles = muram.mags_names,
-                                   image_name=f"{muram.filename}_atm_quantities_stratified",
-                                   images_dir="testing_images",
-                                   atm_subdir="atmosphere")
         muram.modified_components()
-        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
-                                   titles = muram.mags_names,
-                                   image_name=f"{muram.filename}_atm_quantities_modified_components",
-                                   images_dir="testing_images",
-                                   atm_subdir="atmosphere")
         muram.degrade_spec_resol(new_points=n_spectral_points)
-        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
-                                   titles = muram.mags_names,
-                                   image_name=f"{muram.filename}_atm_quantities_degraded_spec_resol",
-                                   images_dir="testing_images",
-                                   atm_subdir="atmosphere")
         muram.scale_quantities(stokes_weigths=stokes_weights)
-        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
-                                   titles = muram.mags_names,
-                                   image_name=f"{muram.filename}_atm_quantities_scaled",
-                                   images_dir="testing_images",
-                                   atm_subdir="atmosphere")
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
     
