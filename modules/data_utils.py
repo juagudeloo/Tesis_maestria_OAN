@@ -225,8 +225,7 @@ class MURaM:
             ax[0,i].set_title(f"{self.mags_names[i]} at {new_logtau[i_logt]:0.2f}")
             ax[1,i].plot(new_logtau, self.atm_quant[...,imur].mean(axis=(0,1)))
             i += 1
-        fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")
-             
+        fig.savefig(f"images/atmosphere/{self.filename}_optical_depth_stratification.pdf")  
     def modified_components(self) -> None:
         self.mags_names = [r"$T$", r"$\rho$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$", r"$v_{z}$"]
         
@@ -254,7 +253,6 @@ class MURaM:
         print("Created!")
         if self.verbose:
             print("atm modified components shape:", self.atm_quant.shape)
-
     def degrade_spec_resol(self, new_points: int) -> None:
         """
         Degrade the spectral resolution of the Stokes parameters.
@@ -652,8 +650,11 @@ def plot_stokes(stokes: np.ndarray,
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
-
-def plot_atmosphere_quantities(atm_quant: np.ndarray, titles:list[str], image_name: str, images_dir: str = "images", atm_subdir: str = "atmosphere") -> None:
+def plot_atmosphere_quantities(atm_quant: np.ndarray, 
+                               titles:list[str], 
+                               image_name: str, 
+                               images_dir: str = "images", 
+                               atm_subdir: str = "atmosphere") -> None:
     """
     Plots the atmospheric quantities and saves the plot as an image file.
     
@@ -673,7 +674,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray, titles:list[str], image_na
     fig.suptitle('Atmospheric Quantities', fontsize=16)
     
     for i in range(6):
-        ax[i // 3, i % 3].imshow(atm_quant[:, :, atm_quant.shape[2] // 2 , i], cmap='viridis')
+        ax[i // 3, i % 3].imshow(atm_quant[:, :, -1 , i], cmap='viridis')
         ax[i // 3, i % 3].set_title(titles[i])
         ax[i // 3, i % 3].axis('off')
     
@@ -748,6 +749,7 @@ def load_data_cubes(filenames: list[str],
     atm_data = []
     stokes_data = []
 
+    print("new_logtau:", new_logtau)
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose)

@@ -60,7 +60,7 @@ def main():
           atm_data_original = descale_atm(atm_data_original, phys_maxmin)
           plot_atmosphere_quantities(atm_data_original, 
                                      titles=mags_names,
-                                     image_name="when_generate_original_atm.png",)
+                                     image_name=f"when_generate_original_atm_{filename}.png",)
           
           # Load model and charge corresponding stokes data
           #stokes_original =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[i]*stokes_data[i].shape[1], stokes_data[i].shape[2]*stokes_data[i].shape[3]))
