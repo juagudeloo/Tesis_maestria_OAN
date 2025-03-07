@@ -218,7 +218,7 @@ class MURaM:
             print("atm logtau shape:", self.atm_quant.shape)
                     
     def modified_components(self) -> None:
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$"]
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\gamma$", r"$\varphi$"]
         
         # Magnetic field components
         mbxx = self.atm_quant[..., 3]
@@ -227,16 +227,20 @@ class MURaM:
         
         print("Modifying magnetic field components to fight azimuth ambiguity...")
         # Modified magnetic field components
-        mbqq = np.sign(mbxx**2 - mbyy**2) * np.sqrt(np.abs(mbxx**2 - mbyy**2))
-        mbuu = np.sign(mbxx * mbyy) * np.sqrt(np.abs(mbxx * mbyy))
-        mbvv = mbzz
+        def opposite_angle(angle):
+            opposite = (angle + np.pi) % (2 * np.pi)
+            return opposite
+        magnetic_field_strength = np.sqrt(mbxx**2 + mbyy**2 + mbzz**2)
+        azimuth = np.rad2deg(np.arctan(mbyy/mbxx)) 
+        azimuth = azimuth if azimuth < 180 else opposite_angle(azimuth) # azimuth ambiguity
+        zenith = np.rad2deg(np.arctan(mbzz/np.sqrt(mbxx**2 + mbyy**2)))
         print("Quantities modified!")
 
         print("Creating atmosphere quantities array...")
         # Saving modified quantities replacing the x,y,z components
-        self.atm_quant[..., 3] = mbqq
-        self.atm_quant[..., 4] = mbuu
-        self.atm_quant[..., 5] = mbvv
+        self.atm_quant[..., 3] = magnetic_field_strength
+        self.atm_quant[..., 4] = azimuth
+        self.atm_quant[..., 5] = zenith
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
@@ -659,7 +663,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
     Returns:
     None
     Saves:
-    A plot of the atmospheric quantities as an image file in the specified directory.
+    A plot of the atmospheric quantities as an image file in thWWe specified directory.
     """
     
     fig, ax = plt.subplots(2, 3, figsize=(20, 10))
@@ -721,7 +725,6 @@ def load_training_data(filenames: list[str],
     stokes_data = np.concatenate(stokes_data, axis=0)
     
     return atm_data, stokes_data, muram.new_wl
-
 def load_data_cubes(filenames: list[str], 
                     n_spectral_points: int = 36,
                     new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
@@ -755,7 +758,6 @@ def load_data_cubes(filenames: list[str],
         stokes_data.append(muram.stokes)
     
     return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin
-
 def create_dataloaders(stokes_data: np.ndarray,
                        atm_data: np.ndarray,
                        device: str,
