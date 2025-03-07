@@ -380,24 +380,24 @@ class MURaM:
             os.makedirs(scaled_dir)
         
         print("Normalizing the Stokes parameters by the continuum...")
-        #scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
-        #if not os.path.exists(scaled_out):
-        # Continuum calculation
-        scaled_stokes = np.ones_like(self.stokes)
-        cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
-        wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
-        print("calculating the continuum...")
-        for jx in tqdm(range(self.nx)):
-            for jz in range(self.ny):
-                for i in range(self.stokes.shape[-1]):
-                    cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
-                    cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
-                    scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
-        #np.save(scaled_out, scaled_stokes)
-        #print("Saved normalized stokes to", scaled_out)
-        #else:
-            #scaled_stokes = np.load(scaled_out)
-            #print("Loaded normalized stoks from", scaled_out)
+        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
+        if not os.path.exists(scaled_out):
+            # Continuum calculation
+            scaled_stokes = np.ones_like(self.stokes)
+            cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
+            wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
+            print("calculating the continuum...")
+            for jx in tqdm(range(self.nx)):
+                for jz in range(self.ny):
+                    for i in range(self.stokes.shape[-1]):
+                        cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
+                        cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
+                        scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
+            np.save(scaled_out, scaled_stokes)
+            print("Saved normalized stokes to", scaled_out)
+        else:
+            scaled_stokes = np.load(scaled_out)
+            print("Loaded normalized stoks from", scaled_out)
             
         self.stokes = scaled_stokes
         del scaled_stokes
@@ -672,9 +672,10 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
     
     fig, ax = plt.subplots(2, 3, figsize=(20, 10))
     fig.suptitle('Atmospheric Quantities', fontsize=16)
-    
+    cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
+
     for i in range(6):
-        ax[i // 3, i % 3].imshow(atm_quant[:, :, -1 , i], cmap='viridis')
+        ax[i // 3, i % 3].imshow(atm_quant[:, :, -1 , i], cmap=cmaps[i])
         ax[i // 3, i % 3].set_title(titles[i])
         ax[i // 3, i % 3].axis('off')
     
