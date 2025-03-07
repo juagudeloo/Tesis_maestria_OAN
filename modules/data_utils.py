@@ -761,7 +761,11 @@ def load_data_cubes(filenames: list[str],
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
         muram.scale_quantities(stokes_weigths=stokes_weights)
-
+        plot_atmosphere_quantities(atm_quant=muram.atm_quant,
+                                   titles = muram.mags_names,
+                                   image_name=f"{muram.filename}_atm_quantities_from_load_data_cubes",
+                                   images_dir="testing_images",
+                                   atm_subdir="atmosphere")
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
     
