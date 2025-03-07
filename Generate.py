@@ -40,11 +40,8 @@ def main():
     new_logtau = np.array([-2.0, -0.8, 0.0])
     
     test_stokes_weights = [[1,1,1,1],
-                           [1,10,10,10],
-                           [1,20,20,10],
-                           [1,40,40,10],
-                           [1,80,80,10],
-                           [1,160,160,10]]
+                           [1,4,4,2],
+                           [1,7,7,2],]
     
     for stokes_weights in test_stokes_weights:
         print(f"Stokes weights: {stokes_weights}")
