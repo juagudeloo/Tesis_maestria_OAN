@@ -405,9 +405,9 @@ def plot_od_generated_atm(
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
   (2, 'v', 'km/s')
-  (3, 'Bq', 'G'),
-  (4, 'Bu', 'G'),
-  (5, 'Bv', 'G'),
+  (3, 'B', 'G'),
+  (4, 'azimuth', 'deg'),
+  (5, 'zenith', 'deg'),
   ]
 
   # Plot generated and original atmosphere
@@ -462,9 +462,9 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
     (2, 'v', 'km/s')
-    (3, 'Bq', 'G'),
-    (4, 'Bu', 'G'),
-    (5, 'Bv', 'G'),
+    (3, 'B', 'G'),
+    (4, 'azimuth', 'deg'),
+    (5, 'zenith', 'deg'),
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
@@ -561,7 +561,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     smape_res = smape(gen_values, orig_values)
     
     # Define units for each parameter
-    units = ['K', r'g/cm$^3$', 'G', 'G', 'G', 'km/s']
+    units = ['K', r'g/cm$^3$', 'km/s', 'G', 'deg', 'deg']
     
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
