@@ -141,7 +141,8 @@ class MURaM:
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
-                                   image_name=f"{self.filename}_atm_quantities")
+                                   image_name=f"{self.filename}_atm_quantities",
+                                   height_index=180)
         print("Created!")
         if self.verbose:
             print("atm geom height shape:", self.atm_quant.shape)
@@ -653,6 +654,7 @@ def plot_stokes(stokes: np.ndarray,
 def plot_atmosphere_quantities(atm_quant: np.ndarray, 
                                titles:list[str], 
                                image_name: str, 
+                               height_index: int = -1,
                                images_dir: str = "images", 
                                atm_subdir: str = "atmosphere") -> None:
     """
@@ -675,7 +677,7 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
     cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
 
     for i in range(6):
-        ax[i // 3, i % 3].imshow(atm_quant[:, :, -1 , i], cmap=cmaps[i])
+        ax[i // 3, i % 3].imshow(atm_quant[:, :, height_index , i], cmap=cmaps[i])
         ax[i // 3, i % 3].set_title(titles[i])
         ax[i // 3, i % 3].axis('off')
     
