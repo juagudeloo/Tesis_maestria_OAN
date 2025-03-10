@@ -51,7 +51,7 @@ class MURaM:
         Intensity map used for balancing intergranular and granular regions.
     """
 
-    def __init__(self, filename: str, verbose: bool = False):
+    def __init__(self, filename: str, verbose: bool = False, ptm: str = "./data"):
         """
         Initialize the MURaM object with the given filename.
 
@@ -62,7 +62,7 @@ class MURaM:
         """
 
         
-        self.ptm = Path("./data")
+        self.ptm = Path(ptm)
         self.filename = filename
         self.verbose = verbose
         
@@ -298,6 +298,8 @@ class MURaM:
                             resampled_spectrum[i] = np.sum(np.multiply(shorten_spect, g))
                             i += 1
                         new_stokes[jx, jz, :, s] = resampled_spectrum
+                        # Adding noise
+                        new_stokes[jx, jz, :, s] += 1e-4 * np.random.randn(new_points) * np.max(new_stokes[jx, jz, :, 0], axis=0) 
             np.save(new_stokes_out, new_stokes)
         else:
             new_stokes = np.load(new_stokes_out)
@@ -687,6 +689,8 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
 # loading utils
 ##############################################################
 def load_training_data(filenames: list[str], 
+                       ptm: str = "./data",
+                       noise_level: float = 0.01,
                        n_spectral_points: int = 36,
                        new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                        stokes_weights: list[int] = [1,10,10,10],
@@ -710,11 +714,12 @@ def load_training_data(filenames: list[str],
 
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln, verbose = verbose)
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
         muram.charge_quantities()
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.add_noise(noise_level=noise_level)
         muram.scale_quantities(stokes_weigths=stokes_weights)
         muram.gran_intergran_balance()
 
@@ -726,7 +731,9 @@ def load_training_data(filenames: list[str],
     
     return atm_data, stokes_data, muram.new_wl
 def load_data_cubes(filenames: list[str], 
+                    ptm = "./data",
                     n_spectral_points: int = 36,
+                    noise_level: float = 0.01,
                     new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                     stokes_weights: list[int] = [1,10,10,10],
                     verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -748,11 +755,12 @@ def load_data_cubes(filenames: list[str],
     print("new_logtau:", new_logtau)
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln, verbose = verbose)
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
         muram.charge_quantities()
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.add_noise(noise_level=noise_level)
         muram.scale_quantities(stokes_weigths=stokes_weights)
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
