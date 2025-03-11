@@ -574,17 +574,9 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     
     print("no errors...")
     kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
-    
-    # Interpolate each point one by one
-    for i, pt in enumerate(PT_log):
-        try:
-            kappa_rho.flat[i] = kappa_interp(pt)
-        except ValueError as e:
-            print(f"Error during interpolation at index {i}: {e}")
-            print(f"PT_log[{i}] = {pt}")
-            raise
-
+    kappa_rho = kappa_interp(PT_log)
     kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
+    kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
     kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
     
     #Optical depth calculation
