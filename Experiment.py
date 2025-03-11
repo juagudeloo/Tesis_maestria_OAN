@@ -86,6 +86,7 @@ def main():
     
     # ----------------- Thermodynamic model -----------------
     thermody_experiment_name = f"thermodynamic_unique"
+    print("Running experiment: ", thermody_experiment_name)
     train(model=thermody_model,
         train_dataloader=thermody_train_dataloader,
         test_dataloader=thermody_test_dataloader, 
@@ -105,6 +106,7 @@ def main():
     print("-"*50 + "\n")
     
     # ----------------- Magnetic field model -----------------
+    print("Running experiment: ", magn_experiment_name)
     magn_experiment_name = f"magnetic_field_unique"
     train(model=magn_model,
         train_dataloader=magn_train_dataloader,
