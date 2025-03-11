@@ -65,12 +65,12 @@ def main():
     #3. Create models
     scales = [1,2,4]
     thermody_model = InversionModel(scales=scales, 
-                           new_points=len(wl_points),
+                           nwl_points=len(wl_points),
                            n_outputs=3*new_logtau).to(device).float()
     thermody_model.name = "thermodynamic"
     
     magn_model = InversionModel(scales=scales, 
-                           new_points=len(wl_points),
+                           nwl_points=len(wl_points),
                            n_outputs=3*new_logtau).to(device).float()
     magn_model.name = "magnetic_field"
 
