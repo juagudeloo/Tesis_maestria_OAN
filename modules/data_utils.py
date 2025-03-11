@@ -215,8 +215,7 @@ class MURaM:
         del atm_to_logtau
         
         if self.verbose:
-            print("atm logtau shape:", self.atm_quant.shape)
-                    
+            print("atm logtau shape:", self.atm_quant.shape)                  
     def modified_components(self) -> None:
         self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\gamma$", r"$\varphi$"]
         
@@ -628,17 +627,14 @@ def plot_stokes(stokes: np.ndarray,
     A plot of the Stokes parameters as an image file in the specified directory.
     """
     
-    fig, ax = plt.subplots(1, 4, figsize=(20, 5))
+    fig, ax = plt.subplots(1, 4, figsize=(20, 4))
     step_value = wl_points[1] - wl_points[0]
+    stokes_titles = ["I", "Q", "U", "V"]
     fig.suptitle(f'Stokes Parameters (Step: {step_value:.2f} nm)', fontsize=16)
-    ax[0].scatter(wl_points, stokes[:, 0])
-    ax[0].set_title("I")
-    ax[1].scatter(wl_points, stokes[:, 1])
-    ax[1].set_title("Q")
-    ax[2].scatter(wl_points, stokes[:, 2])
-    ax[2].set_title("U")
-    ax[3].scatter(wl_points, stokes[:, 3])
-    ax[3].set_title("V")
+    for i in range(len(stokes_titles)):
+        ax[i].scatter(wl_points, stokes[:, 0], color = "red", s = 2)
+        ax[i].plot(wl_points, stokes[:, 0], "k")
+        ax[i].set_title(stokes_titles[i])
     
     images_dir = os.path.join(images_dir, stokes_subdir)
     if not os.path.exists(images_dir):
