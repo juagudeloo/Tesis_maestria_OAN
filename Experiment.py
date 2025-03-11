@@ -44,6 +44,7 @@ def main():
                                                             n_spectral_points=n_spec_points,
                                                             new_logtau=new_logtau,
                                                             stokes_weights=stokes_weights)
+    stokes_data = np.moveaxis(stokes_data, 1, 2)
     
     plot_stokes(stokes=stokes_data[0], 
                 wl_points = wl_points,
