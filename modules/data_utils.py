@@ -532,6 +532,9 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     K = opacity_values
     
     # Interpolation of the opacity values
+    print("Interpolating opacity values...")
+    print(np.max(Tk), np.min(Tk))
+    print(np.max(Pk), np.min(Pk))
     kappa_interp = RegularGridInterpolator((Pk,Tk), K, method="linear")
     
     def limit_values(data, min_val, max_val):
