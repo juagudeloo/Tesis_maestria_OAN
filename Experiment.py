@@ -107,8 +107,8 @@ def main():
     print("-"*50 + "\n")
     
     # ----------------- Magnetic field model -----------------
-    print("Running experiment: ", magn_experiment_name)
     magn_experiment_name = f"magnetic_field_unique"
+    print("Running experiment: ", magn_experiment_name)
     train(model=magn_model,
         train_dataloader=magn_train_dataloader,
         test_dataloader=magn_test_dataloader, 
@@ -121,7 +121,7 @@ def main():
                             extra=f""))
     
     #Save the model to file so we can get back the best model
-    save_filepath = thermody_experiment_name + ".pth"
+    save_filepath = magn_experiment_name + ".pth"
     save_model(model=magn_model,
             target_dir="models",
             model_name=save_filepath)

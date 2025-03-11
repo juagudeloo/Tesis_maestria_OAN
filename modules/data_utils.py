@@ -542,7 +542,6 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str, verbose: bool)
     
     def limit_values(data, min_val, max_val):
         new_data = np.clip(data, min_val+0.00001, max_val-0.00001)
-        print(new_data.min(), new_data.max())
         return new_data
             
     T_log = np.log10(muram.atm_quant[..., 0]) 
