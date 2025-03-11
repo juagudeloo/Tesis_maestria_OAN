@@ -660,8 +660,8 @@ def plot_stokes(stokes: np.ndarray,
     stokes_titles = ["I", "Q", "U", "V"]
     fig.suptitle(f'Stokes Parameters (Step: {step_value:.2f} nm)', fontsize=16)
     for i in range(len(stokes_titles)):
-        ax[i].scatter(wl_points, stokes[:, 0], color = "red", s = 2)
-        ax[i].plot(wl_points, stokes[:, 0], "k")
+        ax[i].scatter(wl_points, stokes[0], color = "red", s = 2)
+        ax[i].plot(wl_points, stokes[0], "k")
         ax[i].set_title(stokes_titles[i])
     
     images_dir = os.path.join(images_dir, stokes_subdir)
