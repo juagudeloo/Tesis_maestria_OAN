@@ -232,7 +232,7 @@ class MURaM:
             return opposite
         magnetic_field_strength = np.sqrt(mbxx**2 + mbyy**2 + mbzz**2)
         azimuth = np.rad2deg(np.arctan(mbyy/mbxx)) 
-        azimuth = azimuth if azimuth < 180 else opposite_angle(azimuth) # azimuth ambiguity
+        azimuth = np.where(azimuth < 180, opposite_angle(azimuth), azimuth) # azimuth ambiguity
         zenith = np.rad2deg(np.arctan(mbzz/np.sqrt(mbxx**2 + mbyy**2)))
         print("Quantities modified!")
 
