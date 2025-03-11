@@ -39,6 +39,7 @@ def main():
     
     #1. Loop through stokes weights
     atm_data, stokes_data, wl_points = load_training_data(filenames, 
+                                                          ptm = "/scratchsan/observatorio/juagudeloo/data",
                                                             noise_level=noise_level,
                                                             n_spectral_points=n_spec_points,
                                                             new_logtau=new_logtau,
