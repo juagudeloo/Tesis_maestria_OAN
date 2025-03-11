@@ -560,6 +560,10 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
         print("Out-of-bounds values found in PT_log")
         print("PT_log min:", PT_log.min(axis=0))
         print("PT_log max:", PT_log.max(axis=0))
+        out_of_bounds_indices = np.where((PT_log[:, 0] < Pk.min()) | (PT_log[:, 0] > Pk.max()) | 
+                                         (PT_log[:, 1] < Tk.min()) | (PT_log[:, 1] > Tk.max()))
+        print("Out-of-bounds indices:", out_of_bounds_indices)
+        print("Out-of-bounds values:", PT_log[out_of_bounds_indices])
         raise ValueError("PT_log contains out-of-bounds values")
 
     # Check for nan or inf values in PT_log
@@ -570,7 +574,13 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     
     print("no errors...")
     kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
-    kappa_rho = kappa_interp(PT_log)
+    try:
+        kappa_rho = kappa_interp(PT_log)
+    except ValueError as e:
+        print("Error during interpolation:", e)
+        print("PT_log:", PT_log)
+        raise
+
     kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
     kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
     
