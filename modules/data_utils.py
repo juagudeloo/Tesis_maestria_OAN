@@ -545,8 +545,15 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
         return new_data
             
     T_log = np.log10(muram.atm_quant[..., 0]) 
-    T_log = limit_values(T_log, Tk.min(), Tk.max())
     P_log = np.log10(mpre) 
+
+    # Add print statements to check the range of T_log and P_log
+    print("T_log min:", T_log.min(), "T_log max:", T_log.max())
+    print("P_log min:", P_log.min(), "P_log max:", P_log.max())
+    print("Tk min:", Tk.min(), "Tk max:", Tk.max())
+    print("Pk min:", Pk.min(), "Pk max:", Pk.max())
+
+    T_log = limit_values(T_log, Tk.min(), Tk.max())
     P_log = limit_values(P_log, Pk.min(), Pk.max())
     PT_log = np.array(list(zip(P_log.flatten(), T_log.flatten())))
     
