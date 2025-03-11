@@ -567,7 +567,8 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
         print("nan or inf values found in PT_log")
         print("PT_log:", PT_log)
         raise ValueError("PT_log contains nan or inf values")
-
+    
+    print("no errors...")
     kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
     kappa_rho = kappa_interp(PT_log)
     kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
