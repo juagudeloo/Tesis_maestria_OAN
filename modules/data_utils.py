@@ -164,7 +164,8 @@ class MURaM:
             print("Calculating optical depth stratification...")
             muram_logtau = calculate_logtau(muram = self, 
                                     save_path = geom_path,
-                                    save_name=logtau_name)
+                                    save_name=logtau_name,
+                                    verbose=self.verbose)
             print(f"Saved to {geom_path / logtau_name}")
         else:
             print("Loading optical depth stratification...")
@@ -478,7 +479,7 @@ class MURaM:
 ##############################################################
 # Preprocessing utils
 ##############################################################
-def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
+def calculate_logtau(muram:MURaM, save_path: str, save_name: str, verbose: bool) -> np.ndarray:
     """
     Calculate the optical depth stratification for the MURaM simulation data.
 
@@ -538,7 +539,7 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     kappa_interp = RegularGridInterpolator((Pk,Tk), K, method="linear")
     
     def limit_values(data, min_val, max_val):
-        new_data = np.clip(data, min_val+0.0001, max_val-0.0001)
+        new_data = np.clip(data, min_val+0.00001, max_val-0.00001)
         print(new_data.min(), new_data.max())
         return new_data
             
@@ -547,10 +548,11 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     T_log = limit_values(T_log, Tk.min(), Tk.max())
     P_log = limit_values(P_log, Pk.min(), Pk.max())
     # Add print statements to check the range of T_log and P_log
-    print("T_log min:", T_log.min(), "T_log max:", T_log.max())
-    print("P_log min:", P_log.min(), "P_log max:", P_log.max())
-    print("Tk min:", Tk.min(), "Tk max:", Tk.max())
-    print("Pk min:", Pk.min(), "Pk max:", Pk.max())
+    if verbose:
+        print("T_log min:", T_log.min(), "T_log max:", T_log.max())
+        print("P_log min:", P_log.min(), "P_log max:", P_log.max())
+        print("Tk min:", Tk.min(), "Tk max:", Tk.max())
+        print("Pk min:", Pk.min(), "Pk max:", Pk.max())
     PT_log = np.array(list(zip(P_log.flatten(), T_log.flatten())))
     
     # Check for out-of-bounds values in PT_log
@@ -576,7 +578,6 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     kappa_rho = np.zeros_like(muram.atm_quant[..., 0])
     kappa_rho = kappa_interp(PT_log)
     kappa_rho = kappa_rho.reshape(muram.atm_quant[...,0].shape)
-    kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
     kappa_rho = np.multiply(kappa_rho, muram.atm_quant[..., 1])
     
     #Optical depth calculation
