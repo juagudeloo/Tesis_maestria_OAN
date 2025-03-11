@@ -539,8 +539,8 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     
     def limit_values(data, min_val, max_val):
         new_data = data.copy()
-        new_data[new_data >= max_val] = max_val
-        new_data[new_data <= min_val] = min_val
+        new_data[new_data > max_val] = max_val
+        new_data[new_data < min_val] = min_val
         print(new_data.min(), new_data.max())
         return new_data
             
