@@ -743,7 +743,6 @@ def load_training_data(filenames: list[str],
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
-        muram.add_noise(noise_level=noise_level)
         muram.scale_quantities(stokes_weigths=stokes_weights)
         muram.gran_intergran_balance()
 
@@ -784,7 +783,6 @@ def load_data_cubes(filenames: list[str],
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.modified_components()
         muram.degrade_spec_resol(new_points=n_spectral_points)
-        muram.add_noise(noise_level=noise_level)
         muram.scale_quantities(stokes_weigths=stokes_weights)
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
