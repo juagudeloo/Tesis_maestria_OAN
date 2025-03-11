@@ -82,7 +82,7 @@ class ConvBlock(nn.Module):
         super(ConvBlock, self).__init__()
         self.c1 = nn.Sequential(nn.Conv1d(in_channels = in_channels, out_channels=c1_filters, kernel_size=kernel_size, stride=1, padding=0),
                                     nn.ReLU(),
-                                    nn.MaxPool1d(kernel_size=p))
+                                    nn.MaxPool1d(kernel_size=pool_size))
         self.c2 = nn.Sequential(nn.Conv1d(in_channels = c1_filters, out_channels=c2_filters, kernel_size=kernel_size, stride=1, padding=0),
                                     nn.ReLU(),
                                     nn.MaxPool1d(kernel_size=pool_size))
