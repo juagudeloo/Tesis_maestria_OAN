@@ -538,7 +538,7 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     kappa_interp = RegularGridInterpolator((Pk,Tk), K, method="linear")
     
     def limit_values(data, min_val, max_val):
-        new_data = np.clip(data, min_val, max_val)
+        new_data = np.clip(data, min_val+0.0001, max_val-0.0001)
         print(new_data.min(), new_data.max())
         return new_data
             
