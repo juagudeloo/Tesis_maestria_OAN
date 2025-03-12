@@ -338,24 +338,28 @@ def charge_weights(model: torch.nn.Module,
   
   model.load_state_dict(torch.load(model_path, weights_only=True))
 def descale_atm(atm_generated: np.ndarray,
-                maxmin: dict[str, list[float]]) -> np.ndarray:
+                maxmin: dict[str, list[float]],
+                type_of_quantity: int) -> np.ndarray:
     def denorm_func(arr, maxmin):
         max_val = maxmin[0]
         min_val = maxmin[1]
         return arr*(max_val-min_val)+min_val
     
-    atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
-    atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-    atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
-    atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
-    atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["B"])
-    atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["B"])
+    if type_of_quantity == 1: #Thermodynamical
+        atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
+        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
+        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
+    elif type_of_quantity == 2: #Magnetic field
+      for i in range(3):
+        atm_generated[:,:,:,i] = denorm_func(atm_generated[:,:,:,i], maxmin["B"])
     
     return atm_generated
+  
 def generate_results(model: torch.nn.Module,
                      stokes_data: np.ndarray,
                      atm_shape: tuple[int, int, int, int],
                      maxmin: dict[str, list[float]],
+                     type_of_quantity: int,
                      device: torch.device
                      ) -> np.ndarray:
   
@@ -379,7 +383,9 @@ def generate_results(model: torch.nn.Module,
   
   print("atm generated data shape :", atm_generated.shape)
   
-  atm_generated = descale_atm(atm_generated, maxmin)
+  atm_generated = descale_atm(atm_generated=atm_generated, 
+                              maxmin=maxmin, 
+                              type_of_quantity=type_of_quantity)
   
   return atm_generated
 

@@ -31,7 +31,7 @@ def main():
     m_type = "hybrid"
     epochs = 10
     lr = 1e-3
-    n_spec_points = 114
+    n_spec_points = 112
     new_logtau = np.array([-2.0, -0.8, 0.0])
     noise_level = 0.1
     
@@ -86,25 +86,25 @@ def main():
     #5. Train models
     
     # ----------------- Thermodynamic model -----------------
-    #thermody_experiment_name = f"thermodynamic_unique"
-    #print("Running experiment: ", thermody_experiment_name)
-    #train(model=thermody_model,
-    #    train_dataloader=thermody_train_dataloader,
-    #    test_dataloader=thermody_test_dataloader, 
-    #    optimizer=thermody_optimizer,
-    #    loss_fn=loss_fn,
-    #    epochs=epochs,
-    #    device=device,
-    #    writer=create_writer(experiment_name=thermody_experiment_name,
-    #                        model_name=thermody_model.name,
-    #                        extra=f""))
-    #
-    ##Save the model to file so we can get back the best model
-    #save_filepath = thermody_experiment_name + ".pth"
-    #save_model(model=thermody_model,
-    #        target_dir="models",
-    #        model_name=save_filepath)
-    #print("-"*50 + "\n")
+    thermody_experiment_name = f"thermodynamic_unique"
+    print("Running experiment: ", thermody_experiment_name)
+    train(model=thermody_model,
+        train_dataloader=thermody_train_dataloader,
+        test_dataloader=thermody_test_dataloader, 
+        optimizer=thermody_optimizer,
+        loss_fn=loss_fn,
+        epochs=epochs,
+        device=device,
+        writer=create_writer(experiment_name=thermody_experiment_name,
+                            model_name=thermody_model.name,
+                            extra=f""))
+    
+    #Save the model to file so we can get back the best model
+    save_filepath = thermody_experiment_name + ".pth"
+    save_model(model=thermody_model,
+            target_dir="models",
+            model_name=save_filepath)
+    print("-"*50 + "\n")
     
     # ----------------- Magnetic field model -----------------
     magn_experiment_name = f"magnetic_field_unique"
