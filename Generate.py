@@ -60,7 +60,7 @@ def main():
     thermody_experiment_name = f"thermodynamic_unique"
     print("Running experiment: ", thermody_experiment_name)
     thermody_model = InversionModel(scales=scales, 
-                           nwl_points=len(n_spec_points),
+                           nwl_points=n_spec_points,
                            n_outputs=3*len(new_logtau)).to(device).float()
     thermody_model.name = "thermodynamic"
     
@@ -85,7 +85,7 @@ def main():
     # ----------------- Magnetic model -----------------
     magn_experiment_name = f"magnetic_field_unique"
     magn_model = InversionModel(scales=scales, 
-                           nwl_points=len(n_spec_points),
+                           nwl_points=n_spec_points,
                            n_outputs=3*len(new_logtau)).to(device).float()
     magn_model.name = "magnetic_field"
     
