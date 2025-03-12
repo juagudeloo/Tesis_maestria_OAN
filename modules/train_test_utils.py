@@ -627,7 +627,7 @@ def plot_correlation(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    pearson_corr = pearsonr(gen_values, orig_values)
+    pearson_corr, _ = pearsonr(gen_values, orig_values)
     # Plot correlation
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
     axs[row, col].set_title(f"{titles[j]} pearson = {pearson_corr:.2f}")
