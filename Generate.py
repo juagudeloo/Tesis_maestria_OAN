@@ -49,7 +49,7 @@ def main():
                                                                     stokes_weights=stokes_weights)
     
     # Descale atm data
-    atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
+    atm_data_original = np.reshape(np.copy(atm_data[0]), (nx, ny, new_logtau.shape[0],6))
     atm_data_original = descale_atm(atm_data_original, phys_maxmin)
     
     # Load model and charge corresponding stokes data
