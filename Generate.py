@@ -78,7 +78,7 @@ def main():
       #Generate results
       print(f"Generating results for {thermody_experiment_name}...")
       thermody_generated = generate_results(model = thermody_model,
-                                        stokes_data_original = stokes_data_original,
+                                        stokes_data = stokes_data_original,
                                         atm_shape=(nx,ny,new_logtau.shape[0],3),
                                         maxmin = phys_maxmin,
                                         type_of_quantity=1,
@@ -104,7 +104,7 @@ def main():
       #Generate results
       print(f"Generating results for {magn_experiment_name}...")
       magnetic_generated = generate_results(model = magn_model,
-                                        stokes_data_original = stokes_data_original,
+                                        stokes_data = stokes_data_original,
                                         atm_shape=(nx,ny,new_logtau.shape[0],3),
                                         maxmin = phys_maxmin,
                                         type_of_quantity=2,
