@@ -55,8 +55,8 @@ def main():
       atm_data_original = descale_atm(atm_data_original, phys_maxmin)
       
       # Load model and charge corresponding stokes data
-      stokes_data =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[0]*stokes_data[i].shape[1], stokes_data[i].shape[2],stokes_data[i].shape[3]))
-      stokes_data = np.moveaxis(stokes_data, 1, 2)
+      stokes_data_original =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[0]*stokes_data[i].shape[1], stokes_data[i].shape[2],stokes_data[i].shape[3]))
+      stokes_data_original = np.moveaxis(stokes_data_original, 1, 2)
       
       scales = [1,2,4] #Coarse-grain scales
       # ----------------- Thermodynamic model -----------------
@@ -78,7 +78,7 @@ def main():
       #Generate results
       print(f"Generating results for {thermody_experiment_name}...")
       thermody_generated = generate_results(model = thermody_model,
-                                        stokes_data = stokes_data,
+                                        stokes_data_original = stokes_data_original,
                                         atm_shape=(nx,ny,new_logtau.shape[0],3),
                                         maxmin = phys_maxmin,
                                         type_of_quantity=1,
@@ -104,7 +104,7 @@ def main():
       #Generate results
       print(f"Generating results for {magn_experiment_name}...")
       magnetic_generated = generate_results(model = magn_model,
-                                        stokes_data = stokes_data,
+                                        stokes_data_original = stokes_data_original,
                                         atm_shape=(nx,ny,new_logtau.shape[0],3),
                                         maxmin = phys_maxmin,
                                         type_of_quantity=2,
