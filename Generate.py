@@ -100,7 +100,7 @@ def main():
     print(f"Generating results for {magn_experiment_name}...")
     magnetic_generated = generate_results(model = magn_model,
                                       stokes_data = stokes_data,
-                                      atm_shape=(nx,ny,n_spec_points,3)
+                                      atm_shape=(nx,ny,n_spec_points,3),
                                       maxmin = phys_maxmin,
                                       type_of_quantity=2,
                                       device = device
