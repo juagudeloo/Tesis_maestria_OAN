@@ -54,6 +54,7 @@ def main():
     
     # Load model and charge corresponding stokes data
     stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
+    stokes_data = np.moveaxis(stokes_data, 1, 2)
     
     scales = [1,2,4] #Coarse-grain scales
     # ----------------- Thermodynamic model -----------------
