@@ -67,7 +67,7 @@ def main():
                            n_outputs=3*len(new_logtau)).to(device).float()
     thermody_model.name = "thermodynamic"
     
-    thermody_weights_name = thermody_experiment_name + ".pth"
+    
     #Charge weights
     print(f"Charging weights from {thermody_weights_name}...")
     charge_weights(model = thermody_model,
@@ -91,12 +91,13 @@ def main():
                            nwl_points=n_spec_points,
                            n_outputs=3*len(new_logtau)).to(device).float()
     magn_model.name = "magnetic_field"
+    magn_weights_name = magn_weights_name + ".pth"
     
     #Charge weights
     print(f"Charging weights from {magn_experiment_name}...")
     charge_weights(model = magn_model,
                     target_dir = target_dir,
-                    weights_name = magn_experiment_name
+                    weights_name = magn_weights_name
                 )
     
     

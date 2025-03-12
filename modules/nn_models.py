@@ -30,11 +30,8 @@ class InversionModel(nn.Module):
         self.output_layer = nn.Linear(in_features = flatten_size, out_features = n_outputs)
 
     def forward(self, x):
-        print("Multi scale feature mapping")
         x = self.multi_scale_feature_mapping(x)
-        print("Flatten layer")
         x = self.flatten_layer(x)
-        print("Linear layers")
         for layer in self.linear_layers:
             x = layer(x)
         x = self.output_layer(x)
@@ -80,7 +77,6 @@ class ConvBlock(nn.Module):
                                     nn.MaxPool1d(kernel_size=pool_size))
 
     def forward(self, x):
-        print("ConvBlock")
         x = self.c1(x)
         x = self.c2(x)
         return x
