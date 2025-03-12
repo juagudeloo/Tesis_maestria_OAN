@@ -43,6 +43,7 @@ def main():
     
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, 
+                                                                    ptm = "/scratchsan/observatorio/juagudeloo/data",
                                                                     n_spectral_points=n_spec_points,
                                                                     new_logtau=new_logtau,
                                                                     stokes_weights=stokes_weights)

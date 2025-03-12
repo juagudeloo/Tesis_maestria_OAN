@@ -410,7 +410,7 @@ def plot_od_generated_atm(
   params = [
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
-  (2, 'v', 'km/s')
+  (2, 'v', 'km/s'),
   (3, 'B', 'G'),
   (4, 'azimuth', 'deg'),
   (5, 'zenith', 'deg'),
@@ -467,7 +467,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   params = [
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
-    (2, 'v', 'km/s')
+    (2, 'v', 'km/s'),
     (3, 'B', 'G'),
     (4, 'azimuth', 'deg'),
     (5, 'zenith', 'deg'),
