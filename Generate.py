@@ -146,6 +146,7 @@ def main():
                         model_subdir = model_subdir,
                         image_name = f"OD_surface_{itau}.png",
                         titles = mags_names,
+                        tau = new_logtau,
                         itau = 2
                       )
       plot_density_bars(
@@ -155,6 +156,7 @@ def main():
               model_subdir = model_subdir,
               image_name = "OD_density.png",
               tau_index = itau,
+              tau=new_logtau,
               titles = mags_names)
       plot_correlation(
               atm_generated = atm_generated,
@@ -162,6 +164,7 @@ def main():
               dense_diag_subdir= "density_plots",
               model_subdir = model_subdir,
               image_name = "OD_density.png",
+              tau=new_logtau,
               tau_index = itau,
               titles = mags_names)
     
