@@ -64,20 +64,8 @@ class CoarseGrain(nn.Module):
         self.scale = scale
 
     def forward(self, x):
-        n_samples = x.size(0)
-        n_channels = x.size(1)
-        new_points = x.size(2)
-        stokes_scale = torch.zeros((n_samples, n_channels, new_points // self.scale), dtype=torch.float32, device=x.device)
-        
-        print(f"Coarse grain scale: {self.scale}")
-        for sample in range(n_samples):
-            for chan in range(n_channels):
-                for j in range(new_points // self.scale):
-                    slice_x = x[sample, chan, j*self.scale:(j+1)*self.scale]
-                    if slice_x.numel() > 0:  # Ensure the slice is not empty
-                        stokes_scale[sample, chan, j] = torch.mean(slice_x, dim=0)
-                    else:
-                        raise ValueError("Empty slice")
+        unfolded = x.unfold(dimension=2, size=self.scale, step=self.scale)
+        stokes_scale = unfolded.mean(dim=-1)
         
         return stokes_scale
     
