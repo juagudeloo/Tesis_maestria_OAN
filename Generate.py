@@ -44,13 +44,12 @@ def main():
     stokes_weights = [1,7,7,2]
     
     # Load data
-    for i, filename in enumerate(filenames):
-      atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, 
+    atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, 
                                                                       ptm = "/scratchsan/observatorio/juagudeloo/data",
                                                                       n_spectral_points=n_spec_points,
                                                                       new_logtau=new_logtau,
                                                                       stokes_weights=stokes_weights)
-      
+    for i, filename in enumerate(filenames):
       # Descale atm data
       atm_data_original = np.reshape(np.copy(atm_data[i]), (nx, ny, new_logtau.shape[0],6))
       atm_data_original = descale_atm(atm_data_original, phys_maxmin)
