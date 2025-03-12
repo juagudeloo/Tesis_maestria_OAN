@@ -133,7 +133,7 @@ def main():
       plot_od_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
-                        filename=filename
+                        filename=filename,
                         model_subdir = model_subdir,
                         image_name = "mean_OD.png",
                         titles = mags_names,
