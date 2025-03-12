@@ -134,7 +134,7 @@ def main():
                       atm_original = atm_data_original,
                       model_subdir = model_subdir,
                       image_name = "mean_OD.png",
-                      titles = mags_names
+                      titles = mags_names,
                       tau=new_logtau
                       )
     
