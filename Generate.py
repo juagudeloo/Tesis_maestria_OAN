@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import InversionModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation
 
 
 def main():
@@ -128,33 +128,7 @@ def main():
     print("Plotting generated atmospheres...")
     #Suface plots
     model_subdir = "Two models"
-    plot_surface_generated_atm(
-                        atm_generated = atm_generated,
-                        atm_original = atm_data_original,
-                        model_subdir = model_subdir,
-                        image_name = "low_surface.png",
-                        titles = mags_names,
-                        itau = 0
-                      )
-    plot_surface_generated_atm(
-                        atm_generated = atm_generated,
-                        atm_original = atm_data_original,
-                        model_subdir = model_subdir,
-                        image_name = "medium_surface.png",
-                        titles = mags_names,
-                        itau = 1
-                      )
-    plot_surface_generated_atm(
-                        atm_generated = atm_generated,
-                        atm_original = atm_data_original,
-                        model_subdir = model_subdir,
-                        image_name = "high_atm_surface.png",
-                        titles = mags_names,
-                        itau = 2
-                      )
-  
     #OD plots
-    
     plot_od_generated_atm(
                       atm_generated = atm_generated,
                       atm_original = atm_data_original,
@@ -164,9 +138,25 @@ def main():
                       )
     
     #Density bars
-    tau_indices = range(0,20)
+    tau_indices = range(0,new_logtau.shape[0])
     for itau in tau_indices:
+      plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = f"OD_surface_{itau}.png",
+                        titles = mags_names,
+                        itau = 2
+                      )
       plot_density_bars(
+              atm_generated = atm_generated,
+              atm_original = atm_data_original,
+              dense_diag_subdir= "density_plots",
+              model_subdir = model_subdir,
+              image_name = "OD_density.png",
+              tau_index = itau,
+              titles = mags_names)
+      plot_correlation(
               atm_generated = atm_generated,
               atm_original = atm_data_original,
               dense_diag_subdir= "density_plots",
