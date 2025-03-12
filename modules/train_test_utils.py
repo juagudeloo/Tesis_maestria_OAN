@@ -10,6 +10,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
+from scipy.stats import pearsonr
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import root_mean_squared_error
@@ -626,10 +627,10 @@ def plot_correlation(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    smape_res = smape(gen_values, orig_values)
+    pearson_corr = pearsonr(gen_values, orig_values)
     # Plot correlation
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
-    axs[row, col].set_title(f"{titles[j]} smape = {smape_res:.2f}")
+    axs[row, col].set_title(f"{titles[j]} pearson = {pearson_corr:.2f}")
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)

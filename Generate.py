@@ -169,7 +169,7 @@ def main():
                 filename=filename,
                 corr_diag_subdir= "correlation_plots",
                 model_subdir = model_subdir,
-                image_name = "OD_density.png",
+                image_name = "OD_correlation.png",
                 tau=new_logtau,
                 tau_index = itau,
                 titles = mags_names)

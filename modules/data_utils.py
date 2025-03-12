@@ -218,7 +218,7 @@ class MURaM:
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)                  
     def modified_components(self) -> None:
-        self.mags_names = [r"$T$", r"$rho$", r"$v_{z}$", r"$B$", r"$gamma$", r"$varphi$"]
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\gamma$", r"$\varphi$"]
         
         # Magnetic field components
         mbxx = self.atm_quant[..., 3]
