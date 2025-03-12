@@ -114,7 +114,7 @@ def main():
     
     # Convert velocity component from cm/s to km/s
     
-    atm_generated = np.concat([thermody_generated, magnetic_generated], axis = -1)
+    atm_generated = np.concatenate([thermody_generated, magnetic_generated], axis = -1)
     print("atm generated shape:", atm_generated.shape)
     
     

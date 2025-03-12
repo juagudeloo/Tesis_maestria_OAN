@@ -374,10 +374,9 @@ def generate_results(model: torch.nn.Module,
   print(f"stokes data shape for generation:", stokes_data.size())
   
   # Reduce batch size
-  batch_size = 480  # Adjust this value based on your GPU memory
+  batch_size = 25600  # Adjust this value based on your GPU memory
   atm_generated = []
   for i in range(0, stokes_data.shape[0], batch_size):
-      print(f"Generating data for batch {i} to {i+batch_size}")
       batch_data = stokes_data[i:i+batch_size].to(device)
       with torch.no_grad():
           atm_generated_batch = model(batch_data)
