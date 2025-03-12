@@ -79,100 +79,100 @@ def main():
     print(f"Generating results for {thermody_experiment_name}...")
     thermody_generated = generate_results(model = thermody_model,
                                       stokes_data = stokes_data,
-                                      atm_shape=(nx,ny,n_spec_points,3),
+                                      atm_shape=(nx,ny,new_logtau.shape[0],3),
                                       maxmin = phys_maxmin,
                                       type_of_quantity=1,
                                       device = device
                                     )      
     
-    ## ----------------- Magnetic model -----------------
-    #magn_experiment_name = f"magnetic_field_unique"
-    #magn_model = InversionModel(scales=scales, 
-    #                       nwl_points=n_spec_points,
-    #                       n_outputs=3*len(new_logtau)).to(device).float()
-    #magn_model.name = "magnetic_field"
-    #
-    ##Charge weights
-    #print(f"Charging weights from {magn_experiment_name}...")
-    #charge_weights(model = magn_model,
-    #                target_dir = target_dir,
-    #                weights_name = magn_experiment_name
-    #            )
-    #
-    #
-    ##Generate results
-    #print(f"Generating results for {magn_experiment_name}...")
-    #magnetic_generated = generate_results(model = magn_model,
-    #                                  stokes_data = stokes_data,
-    #                                  atm_shape=(nx,ny,n_spec_points,3),
-    #                                  maxmin = phys_maxmin,
-    #                                  type_of_quantity=2,
-    #                                  device = device
-    #                                )      
-    ## ----------------------------------------------------
-    #
-    ## Convert velocity component from cm/s to km/s
-    #
-    #atm_generated = np.concat([thermody_generated, magnetic_generated], axis = -1)
-    #print("atm generated shape:", atm_generated.shape)
-    #
-    #
-    #atm_generated[..., 2] /= 1e5
-    #atm_data_original[..., 2] /= 1e5
-  #
-    ###################################
-    ## Plot generated atmospheres  
-    ###################################
-    #
-    #print("Plotting generated atmospheres...")
-    ##Suface plots
-    #model_subdir = "Two models"
-    #plot_surface_generated_atm(
-    #                    atm_generated = atm_generated,
-    #                    atm_original = atm_data_original,
-    #                    model_subdir = model_subdir,
-    #                    image_name = "low_surface.png",
-    #                    titles = mags_names,
-    #                    itau = 0
-    #                  )
-    #plot_surface_generated_atm(
-    #                    atm_generated = atm_generated,
-    #                    atm_original = atm_data_original,
-    #                    model_subdir = model_subdir,
-    #                    image_name = "medium_surface.png",
-    #                    titles = mags_names,
-    #                    itau = 1
-    #                  )
-    #plot_surface_generated_atm(
-    #                    atm_generated = atm_generated,
-    #                    atm_original = atm_data_original,
-    #                    model_subdir = model_subdir,
-    #                    image_name = "high_atm_surface.png",
-    #                    titles = mags_names,
-    #                    itau = 2
-    #                  )
-  #
-    ##OD plots
-    #
-    #plot_od_generated_atm(
-    #                  atm_generated = atm_generated,
-    #                  atm_original = atm_data_original,
-    #                  model_subdir = model_subdir,
-    #                  image_name = "mean_OD.png",
-    #                  titles = mags_names
-    #                  )
-    #
-    ##Density bars
-    #tau_indices = range(0,20)
-    #for itau in tau_indices:
-    #  plot_density_bars(
-    #          atm_generated = atm_generated,
-    #          atm_original = atm_data_original,
-    #          dense_diag_subdir= "density_plots",
-    #          model_subdir = model_subdir,
-    #          image_name = "OD_density.png",
-    #          tau_index = itau,
-    #          titles = mags_names)
+    # ----------------- Magnetic model -----------------
+    magn_experiment_name = f"magnetic_field_unique"
+    magn_model = InversionModel(scales=scales, 
+                           nwl_points=n_spec_points,
+                           n_outputs=3*len(new_logtau)).to(device).float()
+    magn_model.name = "magnetic_field"
+    
+    #Charge weights
+    print(f"Charging weights from {magn_experiment_name}...")
+    charge_weights(model = magn_model,
+                    target_dir = target_dir,
+                    weights_name = magn_experiment_name
+                )
+    
+    
+    #Generate results
+    print(f"Generating results for {magn_experiment_name}...")
+    magnetic_generated = generate_results(model = magn_model,
+                                      stokes_data = stokes_data,
+                                      atm_shape=(nx,ny,new_logtau.shape[0],3),
+                                      maxmin = phys_maxmin,
+                                      type_of_quantity=2,
+                                      device = device
+                                    )      
+    # ----------------------------------------------------
+    
+    # Convert velocity component from cm/s to km/s
+    
+    atm_generated = np.concat([thermody_generated, magnetic_generated], axis = -1)
+    print("atm generated shape:", atm_generated.shape)
+    
+    
+    atm_generated[..., 2] /= 1e5
+    atm_data_original[..., 2] /= 1e5
+  
+    ##################################
+    # Plot generated atmospheres  
+    ##################################
+    
+    print("Plotting generated atmospheres...")
+    #Suface plots
+    model_subdir = "Two models"
+    plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = "low_surface.png",
+                        titles = mags_names,
+                        itau = 0
+                      )
+    plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = "medium_surface.png",
+                        titles = mags_names,
+                        itau = 1
+                      )
+    plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = "high_atm_surface.png",
+                        titles = mags_names,
+                        itau = 2
+                      )
+  
+    #OD plots
+    
+    plot_od_generated_atm(
+                      atm_generated = atm_generated,
+                      atm_original = atm_data_original,
+                      model_subdir = model_subdir,
+                      image_name = "mean_OD.png",
+                      titles = mags_names
+                      )
+    
+    #Density bars
+    tau_indices = range(0,20)
+    for itau in tau_indices:
+      plot_density_bars(
+              atm_generated = atm_generated,
+              atm_original = atm_data_original,
+              dense_diag_subdir= "density_plots",
+              model_subdir = model_subdir,
+              image_name = "OD_density.png",
+              tau_index = itau,
+              titles = mags_names)
     
 print("Done!")
 
