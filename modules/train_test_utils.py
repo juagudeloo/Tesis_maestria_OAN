@@ -408,8 +408,6 @@ def plot_od_generated_atm(
        filename: str = None
        ):
 
-  print("atm_generated shape:", atm_generated.shape)
-  print("atm_original shape:", atm_original.shape)
   fig, axs = plt.subplots(2, 3, figsize=(3.5*3, 3*2))
   
   # Define the parameters for the plots
@@ -455,8 +453,6 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
        filename: str = None,
        ):
 
-  print("atm_generated shape:", atm_generated.shape)
-  print("atm_original shape:", atm_original.shape)
   fig, axs = plt.subplots(2, 6, figsize=(3.5*6, 3*2))
   
   tau_value = tau[itau]
