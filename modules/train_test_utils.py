@@ -339,7 +339,7 @@ def charge_weights(model: torch.nn.Module,
   model.load_state_dict(torch.load(model_path, weights_only=True))
 def descale_atm(atm_generated: np.ndarray,
                 maxmin: dict[str, list[float]],
-                type_of_quantity: int) -> np.ndarray:
+                type_of_quantity: int = 3) -> np.ndarray:
     def denorm_func(arr, maxmin):
         max_val = maxmin[0]
         min_val = maxmin[1]
@@ -351,6 +351,12 @@ def descale_atm(atm_generated: np.ndarray,
         atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
     elif type_of_quantity == 2: #Magnetic field
       for i in range(3):
+        atm_generated[:,:,:,i] = denorm_func(atm_generated[:,:,:,i], maxmin["B"])
+    elif type_of_quantity == 3:
+      atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
+      atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
+      atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
+      for i in range(3,6):
         atm_generated[:,:,:,i] = denorm_func(atm_generated[:,:,:,i], maxmin["B"])
     
     return atm_generated
