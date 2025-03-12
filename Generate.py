@@ -7,8 +7,8 @@ import numpy as np
 import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
-from modules.nn_models import LinearModel, CNN1DModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation
+from modules.nn_models import InversionModel
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars
 
 
 def main():
@@ -34,111 +34,143 @@ def main():
     #########################################################################################
     # Generation
     #########################################################################################
-
+    model_type = "linear"
+    nx = 480
+    ny = 480
     n_spec_points = 114
     new_logtau = np.array([-2.0, -0.8, 0.0])
-    noise_level = 0.1
-    
     stokes_weights = [1,7,7,2]
     
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, 
-                                                                noise_level=noise_level,
-                                                                n_spectral_points=n_spec_points,
-                                                                new_logtau=new_logtau,
-                                                                stokes_weights=stokes_weights)
-    for i in range(len(filenames)):
-      filename = filenames[i]
-      # Descale atm data
-      atm_data_original = np.reshape(np.copy(atm_data[i]), (480,480,len(new_logtau),atm_data[i].shape[-1]))
-      atm_data_original = descale_atm(atm_data_original, phys_maxmin)
-      
-      # Load model and charge corresponding stokes data
-      stokes_original =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[i]*stokes_data[i].shape[1], stokes_data[i].shape[2]*stokes_data[i].shape[3]))
-      model = LinearModel(in_shape=n_spec_points*4,
-                          out_shape=new_logtau.shape[0]*atm_data_original.shape[-1],
-                          hidden_units=2048).to(device)
-      
-      experiment_name = f"{stokes_weights[0]}_{stokes_weights[1]}_{stokes_weights[2]}_{stokes_weights[3]}_stokes_weights"
-      weights_name = experiment_name + ".pth"
-              
-      #Charge weights
-      print(f"Charging weights from {experiment_name}...")
-      charge_weights(model = model,
-                      target_dir = target_dir,
-                      weights_name = weights_name
-                  )
-      
-      #Generate results
-      print(f"Generating results for {experiment_name}...")
-      atm_generated = generate_results(model = model,
-                                        stokes_data = stokes_original,
-                                        atm_shape=atm_data_original.shape,
-                                        maxmin = phys_maxmin,
-                                        device = device
-                                      )      
-      
-      # Convert velocity component from cm/s to km/s
-      atm_generated[..., 5] /= 1e5
-      atm_data_original[..., 5] /= 1e5
+                                                                    n_spectral_points=n_spec_points,
+                                                                    new_logtau=new_logtau,
+                                                                    stokes_weights=stokes_weights)
     
-      ##################################
-      # Plot generated atmospheres  
-      ##################################
-      
-      print("Plotting generated atmospheres...")
+    # Descale atm data
+    atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
+    atm_data_original = descale_atm(atm_data_original, phys_maxmin)
     
-      #OD plots
-      
-      plot_od_generated_atm(
+    # Load model and charge corresponding stokes data
+    stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
+    
+    scales = [1,2,4] #Coarse-grain scales
+    # ----------------- Thermodynamic model -----------------
+    thermody_experiment_name = f"thermodynamic_unique"
+    print("Running experiment: ", thermody_experiment_name)
+    thermody_model = InversionModel(scales=scales, 
+                           nwl_points=len(n_spec_points),
+                           n_outputs=3*len(new_logtau)).to(device).float()
+    thermody_model.name = "thermodynamic"
+    
+    thermody_weights_name = thermody_experiment_name + ".pth"
+    #Charge weights
+    print(f"Charging weights from {thermody_weights_name}...")
+    charge_weights(model = thermody_model,
+                    target_dir = target_dir,
+                    weights_name = thermody_weights_name
+                )
+    
+    #Generate results
+    print(f"Generating results for {thermody_experiment_name}...")
+    thermody_generated = generate_results(model = thermody_model,
+                                      stokes_data = stokes_data,
+                                      atm_shape=(nx,ny,n_spec_points,3)
+                                      maxmin = phys_maxmin,
+                                      type_of_quantity=1,
+                                      device = device
+                                    )      
+    
+    # ----------------- Magnetic model -----------------
+    magn_experiment_name = f"magnetic_field_unique"
+    magn_model = InversionModel(scales=scales, 
+                           nwl_points=len(n_spec_points),
+                           n_outputs=3*len(new_logtau)).to(device).float()
+    magn_model.name = "magnetic_field"
+    
+    #Charge weights
+    print(f"Charging weights from {magn_experiment_name}...")
+    charge_weights(model = magn_model,
+                    target_dir = target_dir,
+                    weights_name = magn_experiment_name
+                )
+    
+    
+    #Generate results
+    print(f"Generating results for {magn_experiment_name}...")
+    magnetic_generated = generate_results(model = magn_model,
+                                      stokes_data = stokes_data,
+                                      atm_shape=(nx,ny,n_spec_points,3)
+                                      maxmin = phys_maxmin,
+                                      type_of_quantity=2,
+                                      device = device
+                                    )      
+    # ----------------------------------------------------
+    
+    # Convert velocity component from cm/s to km/s
+    
+    atm_generated = np.concat([thermody_generated, magnetic_generated], axis = -1)
+    print("atm generated shape:", atm_generated.shape)
+    
+    
+    atm_generated[..., 2] /= 1e5
+    atm_data_original[..., 2] /= 1e5
+  
+    ##################################
+    # Plot generated atmospheres  
+    ##################################
+    
+    print("Plotting generated atmospheres...")
+    #Suface plots
+    model_subdir = "Two models"
+    plot_surface_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
-                        tau=new_logtau,
-                        model_subdir = experiment_name,
-                        image_name = "mean_OD.png",
+                        model_subdir = model_subdir,
+                        image_name = "low_surface.png",
                         titles = mags_names,
-                        filename=filename
-                        )
-      
-      #Density bars
-      tau_indices = range(0,3)
-      for itau in tau_indices:
-        #Surface plots
-        plot_surface_generated_atm(
-                          atm_generated = atm_generated,
-                          atm_original = atm_data_original,
-                          tau=new_logtau,
-                          filename=filename,
-                          model_subdir = experiment_name,
-                          surface_subdir="surface_plots",
-                          image_name = "surface.png",
-                          titles = mags_names,
-                          itau = itau
-                        )
-        #Density bars
-        plot_density_bars(
-                atm_generated = atm_generated,
-                atm_original = atm_data_original,
-                tau=new_logtau,
-                filename=filename,
-                dense_diag_subdir= "density_plots",
-                model_subdir = experiment_name,
-                image_name = "OD_density.png",
-                tau_index = itau,
-                titles = mags_names)
-        #Correlation plots
-        plot_correlation(
-                atm_generated = atm_generated,
-                atm_original = atm_data_original,
-                tau=new_logtau,
-                filename=filename,
-                corr_diag_subdir = "correlation_plots",
-                model_subdir = experiment_name,
-                image_name = "correlation.png",
-                titles = mags_names,
-                tau_index = itau)
+                        itau = 0
+                      )
+    plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = "medium_surface.png",
+                        titles = mags_names,
+                        itau = 1
+                      )
+    plot_surface_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        model_subdir = model_subdir,
+                        image_name = "high_atm_surface.png",
+                        titles = mags_names,
+                        itau = 2
+                      )
+  
+    #OD plots
     
-        print(f"Done {filename}!")
+    plot_od_generated_atm(
+                      atm_generated = atm_generated,
+                      atm_original = atm_data_original,
+                      model_subdir = model_subdir,
+                      image_name = "mean_OD.png",
+                      titles = mags_names
+                      )
     
+    #Density bars
+    tau_indices = range(0,20)
+    for itau in tau_indices:
+      plot_density_bars(
+              atm_generated = atm_generated,
+              atm_original = atm_data_original,
+              dense_diag_subdir= "density_plots",
+              model_subdir = model_subdir,
+              image_name = "OD_density.png",
+              tau_index = itau,
+              titles = mags_names)
+    
+print("Done!")
+
 if __name__ == "__main__":
     main()
