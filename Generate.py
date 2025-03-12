@@ -148,10 +148,10 @@ def main():
                           filename=filename,
                           model_subdir = model_subdir,
                           surface_subdir= "surface_plots",
-                          image_name = f"OD_surface_{itau}.png",
+                          image_name = f"OD_surface.png",
                           titles = mags_names,
                           tau = new_logtau,
-                          itau = 2
+                          itau = itau
                         )
         plot_density_bars(
                 atm_generated = atm_generated,
