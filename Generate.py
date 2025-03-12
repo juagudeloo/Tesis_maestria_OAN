@@ -75,7 +75,7 @@ def main():
     print(f"Generating results for {thermody_experiment_name}...")
     thermody_generated = generate_results(model = thermody_model,
                                       stokes_data = stokes_data,
-                                      atm_shape=(nx,ny,n_spec_points,3)
+                                      atm_shape=(nx,ny,n_spec_points,3),
                                       maxmin = phys_maxmin,
                                       type_of_quantity=1,
                                       device = device
