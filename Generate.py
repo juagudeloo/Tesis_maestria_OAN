@@ -135,6 +135,7 @@ def main():
                       model_subdir = model_subdir,
                       image_name = "mean_OD.png",
                       titles = mags_names
+                      tau=new_logtau
                       )
     
     #Density bars
