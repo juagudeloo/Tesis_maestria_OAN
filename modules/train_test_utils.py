@@ -348,12 +348,12 @@ def descale_atm(atm_generated: np.ndarray,
     
     if type_of_quantity == 1: #Thermodynamical
         atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
-        #atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-        #atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
+        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])descale
+        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
     elif type_of_quantity == 2: #Magnetic field
         atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["B"])
-        #atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["varphi"])
-        #atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["gamma"])
+        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["B"])
+        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["B"])
     elif type_of_quantity == 3:
       atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
       atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
