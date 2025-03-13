@@ -359,8 +359,8 @@ def descale_atm(atm_generated: np.ndarray,
       atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
       atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
       atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
-      #atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["varphi"])
-      #atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["gamma"])
+      atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["B"])
+      atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["B"])
     
     return atm_generated
   
