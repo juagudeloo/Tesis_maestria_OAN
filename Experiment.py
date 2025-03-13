@@ -32,7 +32,7 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     m_type = "hybrid"
-    epochs = 10
+    epochs = 20
     lr = 1e-3
     n_spec_points = 112
     new_logtau = np.array([-2.0, -0.8, 0.0])
