@@ -18,9 +18,12 @@ def main():
     
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
-    filenames = ["080000", 
-                 #"085000", "090000"
-                 ]
+    filenames = []
+    for i in range(80, 98):
+        filenames.append(f"0{i}000")
+    filenames.append("090000")
+    for i in range(100, 113):
+        filenames.append(f"{i}000")
         
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"
