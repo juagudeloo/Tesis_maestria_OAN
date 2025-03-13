@@ -348,17 +348,19 @@ def descale_atm(atm_generated: np.ndarray,
     
     if type_of_quantity == 1: #Thermodynamical
         atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
-        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
+        #atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
+        #atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
     elif type_of_quantity == 2: #Magnetic field
-      for i in range(3):
-        atm_generated[:,:,:,i] = denorm_func(atm_generated[:,:,:,i], maxmin["B"])
+        atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,0], maxmin["B"])
+        #atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,1], maxmin["varphi"])
+        #atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,2], maxmin["gamma"])
     elif type_of_quantity == 3:
       atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
       atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
       atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
-      for i in range(3,6):
-        atm_generated[:,:,:,i] = denorm_func(atm_generated[:,:,:,i], maxmin["B"])
+      atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
+      #atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["varphi"])
+      #atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["gamma"])
     
     return atm_generated
   
@@ -440,6 +442,7 @@ def plot_od_generated_atm(
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, image_name)
   fig.savefig(image_path)
+  plt.close(fig)
   
   print(f"Saved image to: {image_path}")
 def plot_surface_generated_atm(atm_generated: np.ndarray,
@@ -454,7 +457,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
        filename: str = None,
        ):
 
-  fig, axs = plt.subplots(2, 6, figsize=(3.5*6, 3*2))
+  fig, axs = plt.subplots(3, 4, figsize=(4*4, 4*3))
   
   tau_value = tau[itau]
   fig.suptitle(r'$\log \tau$'+f' = {tau_value:.2f}')
@@ -464,7 +467,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   vmax = [atm_original[:, :, itau, i].max() for i in range(6)]
 
   # Define colormaps
-  cmaps = ['inferno', 'summer', 'bwr_r', "Spectral_r", "RdYlGn_r", "PiYG"]
+  cmaps = ['inferno', 'cividis', 'bwr_r', "Spectral_r", "RdYlGn_r", "PiYG"]
 
   # Plot generated and original atmosphere
   params = [
@@ -477,6 +480,8 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
+    row = i // 2
+    col = (i % 2) * 2
 
     if param_idx in [2, 3, 4, 5]:  # Magnetic field components and velocity need symmetric colorbars
       orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
@@ -487,19 +492,23 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
       orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
       vmin = orig_q5
       vmax = orig_q95
+    if param_idx == 4:
+      vmin = 0
+      vmax = 180
+    if param_idx == 5:
+      vmin = -90
+      vmax = 90
 
-    im = axs[0, i].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[0, i].set_title(f'Generated {titles[i]}')
-    axs[0, i].axis('off')
-    cbar = fig.colorbar(im, ax=axs[0, i])
+    im = axs[row, col].imshow(atm_original[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    axs[row, col].set_title(f'Original {title}')
+    axs[row, col].axis('off')
+    cbar = fig.colorbar(im, ax=axs[row, col])
     cbar.set_label(unit)
-
-    im = axs[1, i].imshow(atm_original[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[1, i].set_title(f'Original {titles[i]}')
-    axs[1, i].axis('off')
-    cbar = fig.colorbar(im, ax=axs[1, i])
+    im = axs[row, col + 1].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    axs[row, col + 1].set_title(f'Generated {title}')
+    axs[row, col + 1].axis('off')
+    cbar = fig.colorbar(im, ax=axs[row, col + 1])
     cbar.set_label(unit)
-  
   fig.tight_layout()
   
   print(images_dir, filename, model_subdir, surface_subdir)
@@ -508,6 +517,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[itau]:.2f}_{image_name}")
   fig.savefig(image_path)
+  plt.close(fig)
   
   print(f"Saved image to: {image_path}")
 def plot_density_bars(atm_generated: np.ndarray,
@@ -591,6 +601,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
   fig.savefig(image_path)
+  plt.close(fig)
 
   print(f"Saved image to: {image_path}")
 def plot_correlation(atm_generated: np.ndarray,
@@ -634,6 +645,9 @@ def plot_correlation(atm_generated: np.ndarray,
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)
+    if j == 4:
+      axs[row, col].set_xlim(0,2000)
+      axs[row, col].set_xlim(0,2000)
 
   # Remove any empty subplots
   if num_params % 2 != 0:
@@ -646,6 +660,7 @@ def plot_correlation(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
   fig.savefig(image_path)
+  plt.close(fig)
 
   print(f"Saved image to: {image_path}")
 

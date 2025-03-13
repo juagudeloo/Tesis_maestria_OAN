@@ -218,7 +218,7 @@ class MURaM:
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)                  
     def modified_components(self) -> None:
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\gamma$", r"$\varphi$"]
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\varphi$", r"$\gamma$"]
         
         # Magnetic field components
         mbxx = self.atm_quant[..., 3]
@@ -250,6 +250,8 @@ class MURaM:
         print("Created!")
         if self.verbose:
             print("atm modified components shape:", self.atm_quant.shape)
+            
+        self.modified_flag = True
     def degrade_spec_resol(self, new_points: int) -> None:
         """
         Degrade the spectral resolution of the Stokes parameters.
@@ -318,6 +320,9 @@ class MURaM:
         """
         Scale the atmospheric and Stokes quantities.
         """
+        
+        if not self.modified_flag:
+            raise ValueError("The quantities must be modified before scaling.")
         if self.verbose:
             print(f""" self.stokes:
             I_max = {np.max(self.stokes[:, :, :, 0])}
@@ -354,9 +359,11 @@ class MURaM:
         # Atmosphere magnitudes scale factors
         self.phys_maxmin = {
             "T": [2e4, 0],
-            "B": [3e3, -3e3],
             "Rho": [1e-5, 1e-10],
-            "V": [1e6, -1e6]
+            "V": [1e6, -1e6],
+            "B": [3e3, -3e3],
+            "varphi": [0, 180],
+            "gamma": [-90, 90]
         }
 
         # maxmin normalization function
@@ -370,8 +377,8 @@ class MURaM:
         self.atm_quant[:, :, :, 1] = norm_func(self.atm_quant[:, :, :, 1], self.phys_maxmin["Rho"])
         self.atm_quant[:, :, :, 2] = norm_func(self.atm_quant[:, :, :, 2], self.phys_maxmin["V"])
         self.atm_quant[:, :, :, 3] = norm_func(self.atm_quant[:, :, :, 3], self.phys_maxmin["B"])
-        self.atm_quant[:, :, :, 4] = norm_func(self.atm_quant[:, :, :, 4], self.phys_maxmin["B"])
-        self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["B"])
+        self.atm_quant[:, :, :, 4] = norm_func(self.atm_quant[:, :, :, 4], self.phys_maxmin["varphi"])
+        self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["gamma"])
         
         # Stokes parameter normalization by the continuum
         scaled_dir = self.ptm / "scaled_stokes"
