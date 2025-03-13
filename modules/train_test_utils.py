@@ -645,7 +645,7 @@ def plot_correlation(atm_generated: np.ndarray,
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)
-    if j == 4:
+    if titles[j] == r'$B$':
       axs[row, col].set_xlim(0,2000)
       axs[row, col].set_xlim(0,2000)
 
