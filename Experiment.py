@@ -19,9 +19,9 @@ def main():
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
     filenames = []
-    for i in range(80, 98):
+    for i in range(80, 97):
         filenames.append(f"0{i}000")
-    filenames.append("090000")
+    filenames.append("099000")
     for i in range(100, 113):
         filenames.append(f"{i}000")
         
