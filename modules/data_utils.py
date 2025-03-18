@@ -267,6 +267,9 @@ class MURaM:
         new_resol = np.linspace(0, 288, new_points, dtype=np.int64)
         new_resol = np.add(new_resol, 6)
         # File to save the degraded self.stokes
+        resampled_dir = self.ptm / "resampled_stokes_with_noise"
+        if not os.path.exists(resampled_dir):
+            os.makedirs(resampled_dir)
         new_stokes_out = self.ptm / "resampled_stokes" / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
         
         # Degradation process
@@ -381,7 +384,7 @@ class MURaM:
         self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["gamma"])
         
         # Stokes parameter normalization by the continuum
-        scaled_dir = self.ptm / "scaled_stokes"
+        scaled_dir = self.ptm / "scaled_stokes_with_noise"
         if not os.path.exists(scaled_dir):
             os.makedirs(scaled_dir)
         
