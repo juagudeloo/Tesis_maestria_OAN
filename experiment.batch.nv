@@ -7,7 +7,7 @@
 ##SBATCH --time=1-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
 #SBATCH --nodes=1                       #Numberode nodos a usar
 #SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
-#SBATCH --mem=40G                       #Total de memoria RAM por nodo en Gbytes
+#SBATCH --mem=20G                       #Total de memoria RAM por nodo en Gbytes
 #SBATCH --gres=gpu:1              # Numbers of needed GPU.
 #SBATCH --output=/homes/observatorio/juagudeloo/SPIN-DL_%j.out      #archivo salida estandar(seguimiento)
 #SBATCH --error=/homes/observatorio/juagudeloo/SPIN-DL_%j.err       #archivo de Errores 
@@ -16,11 +16,12 @@
 ###SBATCH --mail-user=juagudeloo@unal.edu.co
 #SBATCH --export=SCRATCH_DIR=/scratch/$SLURM_JOB_ACCOUNT/$SLURM_JOB_USER/$SLURM_JOB_ID
 
-module purge
-module load envs/anaconda3
-conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
+#module purge
+#module load envs/anaconda3
+#conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
 cd $SCRATCH_DIR
-
-python3 Generate.py
+ export SINGULARITY_BINDPATH="/scratchsan:/scratchsan"
+  singularity run --nv /localapps/pytorch_latest_v1.sif python3 Experiment.py  2>&1 | tee logs/Experiment.log
+ 
 
