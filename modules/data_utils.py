@@ -267,7 +267,10 @@ class MURaM:
         new_resol = np.linspace(0, 288, new_points, dtype=np.int64)
         new_resol = np.add(new_resol, 6)
         # File to save the degraded self.stokes
-        new_stokes_out = self.ptm / "resampled_stokes" / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
+        resampled_dir = self.ptm / "resampled_stokes_with_noise"
+        if not os.path.exists(resampled_dir):
+            os.makedirs(resampled_dir)
+        new_stokes_out = resampled_dir / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
         
         # Degradation process
         if not os.path.exists(new_stokes_out):
