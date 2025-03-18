@@ -191,7 +191,7 @@ class MURaM:
         atm_to_logtau = np.zeros((self.nx,self.ny,self.n_logtau,self.atm_quant.shape[-1]))
         print(f"Mapping to new optical depth stratification...")
         for imur in range(self.atm_quant.shape[-1]):
-            out_map_name = f"{self.output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
+            out_map_name = f"{self.output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes_{len(self.mags_names)}.npy"
             # Check if the file exists
             if not os.path.exists(opt_path / out_map_name):
                 # Calculate the new optical depth stratification
