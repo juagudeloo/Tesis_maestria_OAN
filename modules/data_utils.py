@@ -384,7 +384,7 @@ class MURaM:
         self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["gamma"])
         
         # Stokes parameter normalization by the continuum
-        scaled_dir = self.ptm / "scaled_stokes"
+        scaled_dir = self.ptm / "scaled_stokes_with_noise"
         if not os.path.exists(scaled_dir):
             os.makedirs(scaled_dir)
         
