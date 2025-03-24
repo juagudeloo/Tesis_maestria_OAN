@@ -69,7 +69,6 @@ class MURaM:
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
         self.nz = 256
-        self.od = 20  # height axis
         self.ny = 480
 
     def charge_quantities(self) -> None:
@@ -92,20 +91,6 @@ class MURaM:
         if self.verbose:
             print("mtpr shape:", mtpr.shape)
         
-        print("Charging magnetic field vector...")
-        mbxx = np.load(self.ptm / quantities_path / f"mbxx_{self.filename}.npy")
-        mbyy = np.load(self.ptm / quantities_path / f"mbyy_{self.filename}.npy")
-        mbzz = np.load(self.ptm / quantities_path / f"mbzz_{self.filename}.npy")
-        
-        coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
-        
-        mbxx = mbxx * coef
-        mbyy = mbyy * coef
-        mbzz = mbzz * coef
-        if self.verbose:
-            print("mbxx shape:", mbxx.shape)
-            print("mbzz shape:", mbzz.shape)
-            print("mbyy shape:", mbyy.shape)
         
         if self.verbose:
             print("Charging density...")
@@ -114,17 +99,26 @@ class MURaM:
             print("mrho shape:", mrho.shape)
         
         print("Charge velocity...")
-        mvxx = np.load(self.ptm / quantities_path / f"mvxx_{self.filename}.npy")
-        mvyy = np.load(self.ptm / quantities_path / f"mvyy_{self.filename}.npy")
         mvzz = np.load(self.ptm / quantities_path / f"mvzz_{self.filename}.npy")
         if self.verbose:
-            print("mvxx shape:", mvxx.shape)
-            print("mvzz shape:", mvzz.shape)
-            print("mvyy shape:", mbyy.shape)
+            print("mvyy shape:", mvzz.shape)
         
         mvxx = mvxx / mrho
         mvyy = mvyy / mrho
         mvzz = mvzz / mrho
+
+        #########################################
+        mrho = np.log10(mrho) #For better learning process
+        ########################################
+
+        print("Charging magnetic field vector...")
+        mbzz = np.load(self.ptm / quantities_path / f"mbzz_{self.filename}.npy")
+        
+        coef = np.sqrt(4.0 * np.pi)  # cgs units conversion
+        
+        mbzz = mbzz * coef
+        if self.verbose:
+            print("mbzz shape:", mbzz.shape)
         
         print(f"""
                 ######################## 
@@ -133,9 +127,9 @@ class MURaM:
                       """)
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$"]
+        self.mags_names = [r"$T$", r"$\log(\rho)$", r"$v_{\text{LOS}}$", r"$B_{\text{LOS}}$"]
         self.output_names = ["mtpr","mrho", "mvzz", "mbxx", "mbyy", "mbzz"]
-        self.atm_quant = np.array([mtpr, mrho, mvzz, mbxx, mbyy, mbzz])
+        self.atm_quant = np.array([mtpr, mrho, mvzz, mbzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.nz, self.ny, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
@@ -218,6 +212,8 @@ class MURaM:
         if self.verbose:
             print("atm logtau shape:", self.atm_quant.shape)                  
     def modified_components(self) -> None:
+        if not r"$B_x$" in self.mags_names or not r"$B_y$" in self.mags_names:
+            raise ValueError("All magnetic field components must be loaded before modifying.")
         self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B$", r"$\varphi$", r"$\gamma$"]
         
         # Magnetic field components
@@ -252,7 +248,7 @@ class MURaM:
             print("atm modified components shape:", self.atm_quant.shape)
             
         self.modified_flag = True
-    def degrade_spec_resol(self, new_points: int) -> None:
+    def degrade_spec_resol(self, spatial_then_lsf: bool = False) -> None:
         """
         Degrade the spectral resolution of the Stokes parameters.
 
@@ -261,64 +257,12 @@ class MURaM:
         new_points : int, optional
             Number of new spectral points after degradation (default is 36).
         """
-        self.new_points = new_points
         
-        # New spectral resolution arrays
-        new_resol = np.linspace(0, 288, new_points, dtype=np.int64)
-        new_resol = np.add(new_resol, 6)
-        # File to save the degraded self.stokes
-        resampled_dir = self.ptm / "resampled_stokes_with_noise"
-        if not os.path.exists(resampled_dir):
-            os.makedirs(resampled_dir)
-        new_stokes_out = resampled_dir / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
-        
-        # Degradation process
-        if not os.path.exists(new_stokes_out):
-            # Gaussian LSF kernel definition
-            N_kernel_points = 13  # number of points of the kernel.
-            def gauss(n: int = N_kernel_points, sigma: float = 1) -> np.ndarray:
-                r = range(-int(n / 2), int(n / 2) + 1)
-                return np.array([1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-float(x)**2 / (2 * sigma**2)) for x in r])
-            g = gauss()
-            
-            # Convolution
-            print("Degrading...")
-            new_stokes = np.zeros((self.nx, self.ny, self.new_points, self.stokes.shape[-1]))
-            
-            for s in range(self.stokes.shape[-1]):
-                for jx in tqdm(range(self.nx)):
-                    for jz in range(self.ny):
-                        spectrum = self.stokes[jx, jz, :, s]
-                        resampled_spectrum = np.zeros(self.new_points)
-                        i = 0
-                        for center_wl in new_resol:
-                            low_limit = center_wl - 6
-                            upper_limit = center_wl + 7
+        if spatial_then_lsf:
 
-                            if center_wl == 6:
-                                shorten_spect = spectrum[0:13]
-                            elif center_wl == 294:
-                                shorten_spect = spectrum[-14:-1]
-                            else:
-                                shorten_spect = spectrum[low_limit:upper_limit]
-
-                            resampled_spectrum[i] = np.sum(np.multiply(shorten_spect, g))
-                            i += 1
-                        new_stokes[jx, jz, :, s] = resampled_spectrum
-                        # Adding noise
-                        new_stokes[jx, jz, :, s] += 1e-4 * np.random.randn(new_points) * np.max(new_stokes[jx, jz, :, 0], axis=0) 
-            np.save(new_stokes_out, new_stokes)
         else:
-            new_stokes = np.load(new_stokes_out)
-            print("stokes degraded!")
-        self.stokes = new_stokes
-        if self.verbose:
-            print("Degraded stokes shape is:", self.stokes.shape)
 
-        # These are the new wavelength values for the degraded resolution
-        self.new_wl = (new_resol * 0.01) + 6300.5
-        if self.verbose:
-            print("New wavelength values shape is:", self.new_wl.shape)
+            
     def scale_quantities(self, stokes_weigths: list[int]) -> None:
         """
         Scale the atmospheric and Stokes quantities.
@@ -343,9 +287,7 @@ class MURaM:
             mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
             mrho max = {np.max(self.atm_quant[:, :, :, 1])}
             mvzz max = {np.max(self.atm_quant[:, :, :, 2])}
-            mbqq max = {np.max(self.atm_quant[:, :, :, 3])}
-            mbuu max = {np.max(self.atm_quant[:, :, :, 4])}
-            mbvv max = {np.max(self.atm_quant[:, :, :, 5])}
+            mbzz max = {np.max(self.atm_quant[:, :, :, 3])}
                 """)
             
             print(f"""
@@ -353,9 +295,7 @@ class MURaM:
             mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
             mrho min = {np.min(self.atm_quant[:, :, :, 1])}
             mvzz min = {np.min(self.atm_quant[:, :, :, 2])}
-            mbqq min = {np.min(self.atm_quant[:, :, :, 3])}
-            mbuu min = {np.min(self.atm_quant[:, :, :, 4])}
-            mbvv min = {np.min(self.atm_quant[:, :, :, 5])}
+            mbzz min = {np.min(self.atm_quant[:, :, :, 3])}
                 """) 
         
         print("Scaling the quantities...")
@@ -387,34 +327,46 @@ class MURaM:
         scaled_dir = self.ptm / "scaled_stokes_with_noise"
         if not os.path.exists(scaled_dir):
             os.makedirs(scaled_dir)
+        mean_continuum_dir = self.ptm / "mean_continuum"
+        if not os.path.exists(mean_continuum_dir):
+            os.makedirs(mean_continuum_dir)
         
         print("Normalizing the Stokes parameters by the continuum...")
         scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
+        mean_continuum_out = mean_continuum_dir / f"mean_continuum_{self.filename}_sr{self.new_points}_wl_points.npy"
         if not os.path.exists(scaled_out):
             # Continuum calculation
             scaled_stokes = np.ones_like(self.stokes)
+            mean_continuum = np.ones_like(self.stokes[...,0,0])
             cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
             wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
             print("calculating the continuum...")
             for jx in tqdm(range(self.nx)):
-                for jz in range(self.ny):
+                for jy in range(self.ny):
                     for i in range(self.stokes.shape[-1]):
-                        cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
+                        cont_values = self.stokes[jx, jy, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
                         cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
-                        scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
+                        scaled_stokes[jx, jy, :, i] = self.stokes[jx, jy, :, i] / cont_model(self.new_wl)
+                        mean_continuum[jx, jy] = cont_model(self.new_wl).mean()
             np.save(scaled_out, scaled_stokes)
+            np.save(mean_continuum_out, mean_continuum)
             print("Saved normalized stokes to", scaled_out)
+            print("Saved mean continuum to", mean_continuum_out)
         else:
             scaled_stokes = np.load(scaled_out)
+            mean_continuum = np.load(mean_continuum_out)
             print("Loaded normalized stoks from", scaled_out)
+            print("Loaded mean continuum from", mean_continuum_out)
             
         self.stokes = scaled_stokes
         del scaled_stokes
         # Stokes parameter weighting
         for i in range(len(stokes_weigths)):
             self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weigths[i]
-            
-        print("Scaled!")
+            print("Scaled!")
+
+        # Continuum normalization
+        self.mean_continuum = norm_func(mean_continuum, [mean_continuum.max(), mean_continuum.min()])
 
         if self.verbose:
             print(f""" self.stokes:
@@ -433,9 +385,7 @@ class MURaM:
             mtpr max = {np.max(self.atm_quant[:, :, :, 0])}
             mrho max = {np.max(self.atm_quant[:, :, :, 1])}
             mvzz max = {np.max(self.atm_quant[:, :, :, 2])}
-            mbqq max = {np.max(self.atm_quant[:, :, :, 3])}
-            mbuu max = {np.max(self.atm_quant[:, :, :, 4])}
-            mbvv max = {np.max(self.atm_quant[:, :, :, 5])}
+            mbzz max = {np.max(self.atm_quant[:, :, :, 3])}
                 """)
             
             print(f"""
@@ -443,43 +393,70 @@ class MURaM:
             mtpr min = {np.min(self.atm_quant[:, :, :, 0])}
             mrho min = {np.min(self.atm_quant[:, :, :, 1])}
             mvzz min = {np.min(self.atm_quant[:, :, :, 2])}
-            mbqq min = {np.min(self.atm_quant[:, :, :, 3])}
-            mbuu min = {np.min(self.atm_quant[:, :, :, 4])}
-            mbvv min = {np.min(self.atm_quant[:, :, :, 5])}
+            mbzz min = {np.min(self.atm_quant[:, :, :, 3])}
                 """) 
     def gran_intergran_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
         """
-        # Threshold definition
-        thresh1 = filters.threshold_otsu(self.I_63005)
-        
-        # Mask extraction
-        im_bin = self.I_63005 < thresh1
-        gran_mask = np.ma.masked_array(self.I_63005, mask=im_bin).mask
-        inter_mask = np.ma.masked_array(self.I_63005, mask=~im_bin).mask
+        # Balancing the quantity of data from the four new masks by randomly dropping elements from the greater zone.
+        print("Balancing data...")
 
-        # Mask application
-        atm_quant_gran = self.atm_quant[gran_mask]
-        atm_quant_inter = self.atm_quant[inter_mask]
-        stokes_gran = self.stokes[gran_mask]
-        stokes_inter = self.stokes[inter_mask]
-        len_inter = atm_quant_inter.shape[0]
-        len_gran = atm_quant_gran.shape[0]
+        # Continuum mask
+        thresh1 = filters.threshold_otsu(self.mean_continuum)
+        mean_continuum_mask = self.mean_continuum<thresh1
 
-        #Leveraging the quantity of data from the granular and intergranular zones by a random dropping of elements of the greater zone.
-        print("leveraging...")
-        index_select  = []
-        np.random.seed(50)
-        if len_inter < len_gran:
-            index_select = np.random.choice(range(len_gran), size = (len_inter,), replace = False)
-            self.atm_quant = np.concatenate((atm_quant_gran[index_select], atm_quant_inter), axis = 0)
-            self.stokes = np.concatenate((stokes_gran[index_select], stokes_inter), axis = 0)
-        elif len_inter > len_gran:
-            index_select = np.random.choice(range(len_inter), size = (len_gran,), replace = False)
-            self.atm_quant = np.concatenate((atm_quant_gran, atm_quant_inter[index_select]), axis = 0)
-            self.stokes = np.concatenate((stokes_gran, stokes_inter[index_select]), axis = 0)
-            
+        # Circular polarization mask
+        circular_polarimetry = np.sum(np.abs(self.stokes[...,3]), axis = -1)/self.new_points
+        denoised = filters.gaussian(circular_polarimetry, sigma = 2)
+        thresh1 = filters.threshold_otsu(denoised)
+        circular_polarization_mask = denoised < thresh1
+
+        # Create composite masks
+        foreground_mean_continuum = mean_continuum_mask == 1
+        background_mean_continuum = mean_continuum_mask == 0
+        foreground_circular_polarization = circular_polarization_mask == 1
+        background_circular_polarization = circular_polarization_mask == 0
+
+        # Combine masks to get the four categories
+        combined_foreground = foreground_mean_continuum & foreground_circular_polarization
+        combined_background = background_mean_continuum & background_circular_polarization
+        combined_foreground_mean_background_circular = foreground_mean_continuum & background_circular_polarization
+        combined_background_mean_foreground_circular = background_mean_continuum & foreground_circular_polarization
+
+        # Function to balance data between two masks
+        def balance_data(mask1, mask2, data):
+            len1 = np.sum(mask1)
+            len2 = np.sum(mask2)
+            np.random.seed(50)
+            if len1 < len2:
+                index_select = np.random.choice(range(len2), size=(len1,), replace=False)
+                balanced_data1 = data[mask1]
+                balanced_data2 = data[mask2][index_select]
+            elif len1 > len2:
+                index_select = np.random.choice(range(len1), size=(len2,), replace=False)
+                balanced_data1 = data[mask1][index_select]
+                balanced_data2 = data[mask2]
+            else:
+                balanced_data1 = data[mask1]
+                balanced_data2 = data[mask2]
+
+            return balanced_data1, balanced_data2
+
+        # Balance data for each pair of masks
+        muram_box_balanced_1, muram_box_balanced_2 = balance_data(combined_foreground, combined_foreground_mean_background_circular, self.atm_quant)
+        stokes_balanced_1, stokes_balanced_2 = balance_data(combined_foreground, combined_foreground_mean_background_circular, self.stokes)
+
+        muram_box_balanced_3, muram_box_balanced_4 = balance_data(combined_background_mean_foreground_circular, combined_background, self.atm_quant)
+        stokes_balanced_3, stokes_balanced_4 = balance_data(combined_background_mean_foreground_circular, combined_background, self.stokes)
+
+        # Combine balanced data
+        self.atm_quant = np.concatenate((muram_box_balanced_1, muram_box_balanced_2, muram_box_balanced_3, muram_box_balanced_4), axis=0)
+        self.stokes = np.concatenate((stokes_balanced_1, stokes_balanced_2, stokes_balanced_3, stokes_balanced_4), axis=0)
+
+
+        print("Done")
+                    
         if self.verbose:
             print(f"""
         Shape after granular and intergranular balance:")
