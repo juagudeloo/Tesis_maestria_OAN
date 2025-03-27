@@ -345,7 +345,7 @@ class MURaM:
         print("Scaling the quantities...")
         # Atmosphere magnitudes scale factors
         self.phys_maxmin = {
-            "T": [2e4, 0],
+            "T": [6.5e3, 4e3],
             "B": [3e3, -3e3],
             "Rho": [1e-5, 1e-10],
             "V": [1e6, -1e6]
