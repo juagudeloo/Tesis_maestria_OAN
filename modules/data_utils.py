@@ -345,7 +345,7 @@ class MURaM:
         print("Scaling the quantities...")
         # Atmosphere magnitudes scale factors
         self.phys_maxmin = {
-            "T": [2e4, 0],
+            "T": [6.5e3, 4e3],
             "B": [3e3, -3e3],
             "Rho": [1e-5, 1e-10],
             "V": [1e6, -1e6]
@@ -495,7 +495,7 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     geom_path = muram.ptm / "geom_height"
     
     # Load the pressure
-    eos = np.fromfile(os.path.join(geom_path,  "eos.080000"), dtype=np.float32)
+    eos = np.fromfile(os.path.join(geom_path,  f"eos.{muram.filename}"), dtype=np.float32)
     eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order = "C")
     mpre = eos[1]
     mpre = np.moveaxis(mpre, 1, 2)  # Pressure array to be used in the calculation of the optical depth
