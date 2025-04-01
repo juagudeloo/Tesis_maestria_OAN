@@ -17,7 +17,7 @@ def main():
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
     filenames = ["080000", 
-                 "085000", "090000"
+                 #"085000", "090000"
                  ]
     
     #Load data
@@ -38,13 +38,11 @@ def main():
     
     ### Checking linear vs convolutional 1d models ###
     
-    test_epochs = [10, 20]
+    test_epochs = [1, 2]
     model_types = [
         "simple_linear", "simple_cnn1d_36channels", 
                    "simple_cnn1d_4channels"]
     lr = 1e-3
-    
-    
     
     #1. Loop through model types
     for m_type in model_types:
@@ -101,7 +99,7 @@ def main():
                 #Save the model to file so we can get back the best model
                 save_filepath = f"{m_type}_{hu}_hidden_units_{epochs}_epochs.pth"
                 save_model(model=model,
-                        target_dir="models",
+                        target_dir="models/first_experiment",
                         model_name=save_filepath)
                 print("-"*50 + "\n")
 

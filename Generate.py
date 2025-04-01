@@ -19,7 +19,7 @@ def main():
     #########################################################################################
     
     # Filenames of the snapshots to be calculated
-    filenames = ["175000"]
+    filenames = ["087000"]
     
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames)
@@ -61,7 +61,7 @@ def main():
     models_names = list(nn_models.keys())
     
     # Weights paths
-    target_dir = Path("models")
+    target_dir = Path("models/first_experiment")
     weight_names = [models_names[0] + "_2048_hidden_units_10_epochs.pth", 
                    models_names[1] + "_1024_hidden_units_10_epochs.pth",
                    models_names[2] + "_72_hidden_units_10_epochs.pth",
@@ -101,6 +101,7 @@ def main():
       plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
+                          images_dir = "images/first_experiment",
                           model_subdir = model_name,
                           image_name = "low_atm_surface.png",
                           titles = mags_names,
@@ -109,6 +110,7 @@ def main():
       plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
+                          images_dir = "images/first_experiment",
                           model_subdir = model_name,
                           image_name = "high_atm_surface.png",
                           titles = mags_names,
@@ -120,6 +122,7 @@ def main():
       plot_od_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
+                        images_dir = "images/first_experiment",
                         model_subdir = model_name,
                         image_name = "mean_OD.png",
                         titles = mags_names
@@ -132,6 +135,7 @@ def main():
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
                 dense_diag_subdir= "density_plots",
+                images_dir = "images/first_experiment",
                 model_subdir = model_name,
                 image_name = "OD_density.png",
                 tau_index = itau,
