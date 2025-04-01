@@ -9,6 +9,7 @@ slurm_outputs
 data/
 *.pth
 *.npy
+*.code-workspace
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
