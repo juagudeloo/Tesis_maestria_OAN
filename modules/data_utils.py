@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 from pathlib import Path
+from scipy.ndimage import convolve1d
 
 class MURaM:
     """
@@ -62,7 +63,7 @@ class MURaM:
         """
 
         
-        self.ptm = Path("./data")
+        self.ptm = Path("../data")
         self.filename = filename
         self.verbose = verbose
         
@@ -259,45 +260,24 @@ class MURaM:
         new_resol = np.linspace(0, 288, new_points, dtype=np.int64)
         new_resol = np.add(new_resol, 6)
         # File to save the degraded self.stokes
-        new_stokes_out = self.ptm / "resampled_stokes" / f"resampled_self.stokes_f{self.filename}_sr{self.new_points}_wl_points.npy"
+        # Gaussian LSF kernel definition
+        N_kernel_points = 13  # number of points of the kernel.
+        def gauss(n: int = N_kernel_points, sigma: float = 1) -> np.ndarray:
+            r = np.arange(-int(n / 2), int(n / 2) + 1)
+            return np.exp(-r**2 / (2 * sigma**2)) / (sigma * np.sqrt(2 * np.pi))
+        g = gauss()
+
+        # Convolution
+        print("Degrading...")
+        new_stokes = np.zeros((self.nx, self.ny, self.new_points, self.stokes.shape[-1]))
+
+        for s in range(self.stokes.shape[-1]):
+            for jx in tqdm(range(self.nx)):
+                for jz in range(self.ny):
+                    spectrum = self.stokes[jx, jz, :, s]
+                    convolved_spectrum = convolve1d(spectrum, g, mode='constant', cval=0.0)
+                    new_stokes[jx, jz, :, s] = convolved_spectrum[new_resol]
         
-        # Degradation process
-        if not os.path.exists(new_stokes_out):
-            # Gaussian LSF kernel definition
-            N_kernel_points = 13  # number of points of the kernel.
-            def gauss(n: int = N_kernel_points, sigma: float = 1) -> np.ndarray:
-                r = range(-int(n / 2), int(n / 2) + 1)
-                return np.array([1 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-float(x)**2 / (2 * sigma**2)) for x in r])
-            g = gauss()
-            
-            # Convolution
-            print("Degrading...")
-            new_stokes = np.zeros((self.nx, self.ny, self.new_points, self.stokes.shape[-1]))
-            
-            for s in range(self.stokes.shape[-1]):
-                for jx in tqdm(range(self.nx)):
-                    for jz in range(self.ny):
-                        spectrum = self.stokes[jx, jz, :, s]
-                        resampled_spectrum = np.zeros(self.new_points)
-                        i = 0
-                        for center_wl in new_resol:
-                            low_limit = center_wl - 6
-                            upper_limit = center_wl + 7
-
-                            if center_wl == 6:
-                                shorten_spect = spectrum[0:13]
-                            elif center_wl == 294:
-                                shorten_spect = spectrum[-14:-1]
-                            else:
-                                shorten_spect = spectrum[low_limit:upper_limit]
-
-                            resampled_spectrum[i] = np.sum(np.multiply(shorten_spect, g))
-                            i += 1
-                        new_stokes[jx, jz, :, s] = resampled_spectrum
-            np.save(new_stokes_out, new_stokes)
-        else:
-            new_stokes = np.load(new_stokes_out)
-            print("stokes degraded!")
         self.stokes = new_stokes
         if self.verbose:
             print("Degraded stokes shape is:", self.stokes.shape)
@@ -365,31 +345,18 @@ class MURaM:
         self.atm_quant[:, :, :, 4] = norm_func(self.atm_quant[:, :, :, 4], self.phys_maxmin["B"])
         self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["B"])
         
-        # Stokes parameter normalization by the continuum
-        scaled_dir = self.ptm / "scaled_stokes"
-        if not os.path.exists(scaled_dir):
-            os.makedirs(scaled_dir)
         
         print("Normalizing the Stokes parameters by the continuum...")
-        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
-        if not os.path.exists(scaled_out):
-            # Continuum calculation
-            scaled_stokes = np.ones_like(self.stokes)
-            cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
-            wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
-            print("calculating the continuum...")
-            for jx in tqdm(range(self.nx)):
-                for jz in range(self.ny):
-                    for i in range(self.stokes.shape[-1]):
-                        cont_values = self.stokes[jx, jz, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
-                        cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
-                        scaled_stokes[jx, jz, :, i] = self.stokes[jx, jz, :, i] / cont_model(self.new_wl)
-            np.save(scaled_out, scaled_stokes)
-            print("Saved normalized stokes to", scaled_out)
-        else:
-            scaled_stokes = np.load(scaled_out)
-            print("Loaded normalized stoks from", scaled_out)
-            
+        # Continuum calculation
+        scaled_stokes = np.ones_like(self.stokes)
+        cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
+        wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
+        
+        print("calculating the continuum...")
+        cont_values = self.stokes[:, :, cont_indices, 0]  # Extract continuum values for all spatial points
+        cont_model = interp1d(wl_cont_values, cont_values, kind="linear", axis=-1, bounds_error=False, fill_value="extrapolate")  # Vectorized interpolation
+        scaled_stokes = self.stokes / cont_model(self.new_wl)  # Apply continuum normalization
+
         self.stokes = scaled_stokes
         del scaled_stokes
         # Stokes parameter weighting
