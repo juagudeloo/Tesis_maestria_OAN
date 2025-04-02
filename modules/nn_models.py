@@ -31,7 +31,7 @@ class SimpleCNN1DModel(nn.Module):
             nn.AdaptiveAvgPool1d(1),  # Ensure the output size is fixed to 1
             nn.Flatten(),
             nn.Dropout(p=0.5, inplace=False),
-            nn.Linear(in_features=hidden_units*8, out_features=out_shape)
+            nn.Linear(in_features=hidden_units, out_features=out_shape)
         )
     
     def forward(self, x):

@@ -62,15 +62,17 @@ def main():
     
     # Weights paths
     target_dir = Path("models/first_experiment")
-    weight_names = [models_names[0] + "_2048_hidden_units_10_epochs.pth", 
-                   models_names[1] + "_1024_hidden_units_10_epochs.pth",
-                   models_names[2] + "_72_hidden_units_10_epochs.pth",
-                   ]
+    weight_names = [models_names[0] + "_2048_hidden_units_1_epochs.pth", 
+                   models_names[1] + "_1024_hidden_units_1_epochs.pth",
+                   models_names[2] + "_72_hidden_units_1_epochs.pth"]
     
     #########################################################################################
     # Generation
     #########################################################################################
-    
+    images_path = Path("images/first_experiment")
+    if not images_path.exists():
+      images_path.mkdir(parents=True)
+
     for i in range(len(nn_models.keys())):
             
       model = nn_models[models_names[i]]
@@ -87,6 +89,7 @@ def main():
       #Generate results
       print(f"Generating results for {model_name}...")
       atm_generated = generate_results(model = model,
+                                        atm_shape=  (480, 480, 20, 6),
                                         stokes_data = stokes_data[model_name],
                                         maxmin = phys_maxmin,
                                         device = device
@@ -98,10 +101,13 @@ def main():
       
       print("Plotting generated atmospheres...")
       #Suface plots
+      
+      
+      
       plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
-                          images_dir = "images/first_experiment",
+                          images_dir = images_path,
                           model_subdir = model_name,
                           image_name = "low_atm_surface.png",
                           titles = mags_names,
@@ -110,7 +116,7 @@ def main():
       plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
-                          images_dir = "images/first_experiment",
+                          images_dir = images_path,
                           model_subdir = model_name,
                           image_name = "high_atm_surface.png",
                           titles = mags_names,
@@ -122,7 +128,7 @@ def main():
       plot_od_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
-                        images_dir = "images/first_experiment",
+                        images_dir = images_path,
                         model_subdir = model_name,
                         image_name = "mean_OD.png",
                         titles = mags_names
@@ -135,7 +141,7 @@ def main():
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
                 dense_diag_subdir= "density_plots",
-                images_dir = "images/first_experiment",
+                images_dir = images_path,
                 model_subdir = model_name,
                 image_name = "OD_density.png",
                 tau_index = itau,

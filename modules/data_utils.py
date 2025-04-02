@@ -21,6 +21,7 @@ import matplotlib.animation as animation
 
 from pathlib import Path
 from scipy.ndimage import convolve1d
+from scipy.interpolate import interp1d
 
 class MURaM:
     """
@@ -127,6 +128,9 @@ class MURaM:
         mvyy = mvyy / mrho
         mvzz = mvzz / mrho
         
+        # density in logarithmic scale
+        mrho = np.log10(mrho)
+        
         print(f"""
                 ######################## 
                 Finished!
@@ -176,13 +180,14 @@ class MURaM:
             print("muram logtau shape", muram_logtau.shape)
         print("Done!")
         
+        # Plotting the optical depth stratification
+        image_path = Path("images/first_experiment/atmosphere")
+        if not image_path.exists():
+            image_path.mkdir(parents=True)
         fig, ax = plt.subplots(1,2,figsize=(10,5))
         ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
-        fig.savefig("images/atmosphere/optical_depth.png")
-        
-        # Opt data path
-        opt_path = self.ptm / "opt_depth"
+        fig.savefig("images/first_experiment/atmosphere/optical_depth.png")
         
          # New optical depth stratification array.
         self.n_logtau = new_logtau.shape[0]
@@ -191,25 +196,15 @@ class MURaM:
         atm_to_logtau = np.zeros((self.nx,self.ny,self.n_logtau,self.atm_quant.shape[-1]))
         print(f"Mapping to new optical depth stratification...")
         for imur in range(self.atm_quant.shape[-1]):
-            out_map_name = f"{self.output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
-            # Check if the file exists
-            if not os.path.exists(opt_path / out_map_name):
-                # Calculate the new optical depth stratification
-                muram_quantity = self.atm_quant[..., imur]
-                
-                new_muram_quantity = map_to_logtau(muram = self, 
-                                                   geom_atm=muram_quantity,
-                                                   geom_logtau=muram_logtau,
-                                                   new_logtau=new_logtau,
-                                                   save_path=opt_path,
-                                                   save_name=out_map_name)
-                print(f"Saved to {opt_path / out_map_name}")
-                atm_to_logtau[...,imur] = new_muram_quantity
-            else:
-                # Load the file
-                atm_to_logtau[...,imur] = np.load(opt_path / out_map_name)
-                print(f"Loaded {self.output_names[imur]} from {opt_path / out_map_name}")
-                
+            # Calculate the new optical depth stratification
+            muram_quantity = self.atm_quant[..., imur]
+            
+            new_muram_quantity = map_to_logtau(muram = self, 
+                                                geom_atm=muram_quantity,
+                                                geom_logtau=muram_logtau,
+                                                new_logtau=new_logtau)
+            atm_to_logtau[...,imur] = new_muram_quantity
+            
         print("Loaded!")
 
         self.atm_quant = atm_to_logtau
@@ -327,7 +322,7 @@ class MURaM:
         self.phys_maxmin = {
             "T": [6.5e3, 4e3],
             "B": [3e3, -3e3],
-            "Rho": [1e-5, 1e-10],
+            "Rho": [-5, -10],
             "V": [1e6, -1e6]
         }
 
@@ -355,7 +350,8 @@ class MURaM:
         print("calculating the continuum...")
         cont_values = self.stokes[:, :, cont_indices, 0]  # Extract continuum values for all spatial points
         cont_model = interp1d(wl_cont_values, cont_values, kind="linear", axis=-1, bounds_error=False, fill_value="extrapolate")  # Vectorized interpolation
-        scaled_stokes = self.stokes / cont_model(self.new_wl)  # Apply continuum normalization
+        Ic = cont_model(self.new_wl).flatten().mean()  # Interpolated continuum values
+        scaled_stokes = self.stokes / Ic # Apply continuum normalization
 
         self.stokes = scaled_stokes
         del scaled_stokes
@@ -440,7 +436,7 @@ class MURaM:
 ##############################################################
 # Preprocessing utils
 ##############################################################
-def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
+def calculate_logtau(muram: MURaM, save_path: str, save_name: str) -> np.ndarray:
     """
     Calculate the optical depth stratification for the MURaM simulation data.
 
@@ -462,23 +458,23 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
     geom_path = muram.ptm / "geom_height"
     
     # Load the pressure
-    eos = np.fromfile(os.path.join(geom_path,  f"eos.{muram.filename}"), dtype=np.float32)
-    eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order = "C")
+    eos = np.fromfile(os.path.join(geom_path, f"eos.{muram.filename}"), dtype=np.float32)
+    eos = eos.reshape((2, muram.nx, muram.nz, muram.ny), order="C")
     mpre = eos[1]
     mpre = np.moveaxis(mpre, 1, 2)  # Pressure array to be used in the calculation of the optical depth
     del eos
     
     #######################################
-    #Calculate optical depth
+    # Calculate optical depth
     #######################################
     
     # Upload the opacity data
     tab_T = np.array([3.32, 3.34, 3.36, 3.38, 3.40, 3.42, 3.44, 3.46, 3.48, 3.50,
-                    3.52, 3.54, 3.56, 3.58, 3.60, 3.62, 3.64, 3.66, 3.68, 3.70,
-                    3.73, 3.76, 3.79, 3.82, 3.85, 3.88, 3.91, 3.94, 3.97, 4.00,
-                    4.05, 4.10, 4.15, 4.20, 4.25, 4.30, 4.35, 4.40, 4.45, 4.50,
-                    4.55, 4.60, 4.65, 4.70, 4.75, 4.80, 4.85, 4.90, 4.95, 5.00,
-                    5.05, 5.10, 5.15, 5.20, 5.25, 5.30])
+                      3.52, 3.54, 3.56, 3.58, 3.60, 3.62, 3.64, 3.66, 3.68, 3.70,
+                      3.73, 3.76, 3.79, 3.82, 3.85, 3.88, 3.91, 3.94, 3.97, 4.00,
+                      4.05, 4.10, 4.15, 4.20, 4.25, 4.30, 4.35, 4.40, 4.45, 4.50,
+                      4.55, 4.60, 4.65, 4.70, 4.75, 4.80, 4.85, 4.90, 4.95, 5.00,
+                      5.05, 5.10, 5.15, 5.20, 5.25, 5.30])
 
     tab_p = np.array([-2., -1.5, -1., -0.5, 0., 0.5, 1., 1.5, 2., 2.5,
                     3., 3.5, 4., 4.5, 5., 5.5, 6., 6.5, 7., 7.5, 8.])
@@ -535,36 +531,32 @@ def calculate_logtau(muram:MURaM, save_path: str, save_name: str) -> np.ndarray:
 def map_to_logtau(muram: MURaM,
                   geom_atm: np.ndarray,
                   geom_logtau: np.ndarray,
-                  new_logtau: np.ndarray,
-                  save_path: str,
-                  save_name: str):
+                  new_logtau: np.ndarray):
     def logtau_mapper(orig_arr: np.ndarray, 
-            corresp_logtau: np.ndarray,
-            new_logtau: np.ndarray,
-            ) -> np.ndarray:
-                """
-                Function for mapping the quantities distribution from geometrical height to optical depth.
-                Args:
-                    orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
-                    corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
-                    new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping
-                Returns:
-                    (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
-                """
-                
-                logtau_mapper = interp1d(x = corresp_logtau, y = orig_arr)
-                new_arr = logtau_mapper(new_logtau)
-                return new_arr
-            
-    new_muram_quantity = np.zeros((muram.nx,muram.ny,muram.n_logtau))
+                      corresp_logtau: np.ndarray,
+                      new_logtau: np.ndarray) -> np.ndarray:
+        """
+        Function for mapping the quantities distribution from geometrical height to optical depth.
+        Args:
+            orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
+            corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
+            new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping.
+        Returns:
+            (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
+        """
+        logtau_mapper = interp1d(x=corresp_logtau, y=orig_arr, kind="linear", bounds_error=False, fill_value="extrapolate")
+        return logtau_mapper(new_logtau)
+
+    # Vectorized implementation for efficiency
+    new_muram_quantity = np.zeros((muram.nx, muram.ny, muram.n_logtau))
     for ix in tqdm(range(muram.nx)):
-        for iy in range(muram.ny):
-            new_muram_quantity[ix,iy,:] = logtau_mapper(orig_arr = geom_atm[ix,iy,:], 
-                                        corresp_logtau = geom_logtau[ix,iy,:], 
-                                        new_logtau = new_logtau)
+        new_muram_quantity[ix, :, :] = np.array([
+            logtau_mapper(orig_arr=geom_atm[ix, iy, :], 
+                          corresp_logtau=geom_logtau[ix, iy, :], 
+                          new_logtau=new_logtau)
+            for iy in range(muram.ny)
+        ])
     
-    np.save(save_path / save_name, new_muram_quantity)
-            
     return new_muram_quantity
 ##############################################################
 # Plot utils
