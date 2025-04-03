@@ -16,8 +16,7 @@ def main():
     
     ### DATA LOADING ###
     #filenames to be readed for creating the dataset
-    filenames = ["080000", 
-                 #"085000", "090000"
+    filenames = ["080000", "085000", "090000"
                  ]
     
     #Load data
@@ -38,7 +37,7 @@ def main():
     
     ### Checking linear vs convolutional 1d models ###
     
-    test_epochs = [1, 2]
+    test_epochs = [10, 20]
     model_types = [
         "simple_linear", "simple_cnn1d_36channels", 
                    "simple_cnn1d_4channels"]
@@ -85,7 +84,7 @@ def main():
                 #Optimizer
                 optimizer = torch.optim.Adam(params=model.parameters(), lr=lr)
                 #Train model
-                train(model=model,
+                results = train(model=model,
                     train_dataloader=train_dataloader,
                     test_dataloader=test_dataloader, 
                     optimizer=optimizer,

@@ -147,6 +147,7 @@ class MURaM:
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
+                                   images_dir = "images/first_experiment",
                                    image_name=f"{self.filename}_atm_quantities",
                                    height_index=180)
         print("Created!")
@@ -236,6 +237,7 @@ class MURaM:
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
+                                   images_dir = "images/first_experiment/",
                                    image_name=f"{self.filename}_modified_atm_quantities")
         print("Created!")
         if self.verbose:
@@ -532,30 +534,31 @@ def map_to_logtau(muram: MURaM,
                   geom_atm: np.ndarray,
                   geom_logtau: np.ndarray,
                   new_logtau: np.ndarray):
-    def logtau_mapper(orig_arr: np.ndarray, 
-                      corresp_logtau: np.ndarray,
-                      new_logtau: np.ndarray) -> np.ndarray:
-        """
-        Function for mapping the quantities distribution from geometrical height to optical depth.
-        Args:
-            orig_arr(np.ndarray): Original array distributed along geometrical height to be mapped.
-            corresp_logtau(np.ndarray): Distribution of optical depth for the original array.
-            new_logtau(np.ndarray): Array of the new optical depth measurement of height for the mapping.
-        Returns:
-            (np.ndarray) Array containing the mapped quantity to the new distribution on optical depth.
-        """
-        logtau_mapper = interp1d(x=corresp_logtau, y=orig_arr, kind="linear", bounds_error=False, fill_value="extrapolate")
-        return logtau_mapper(new_logtau)
-
-    # Vectorized implementation for efficiency
+    """
+    Map quantities from geometrical height to optical depth.
+    
+    Args:
+        muram (MURaM): MURaM simulation object.
+        geom_atm (np.ndarray): Original array distributed along geometrical height.
+        geom_logtau (np.ndarray): Distribution of optical depth for the original array.
+        new_logtau (np.ndarray): Target optical depth grid for mapping.
+    
+    Returns:
+        np.ndarray: Array containing the mapped quantity to the new optical depth grid.
+    """
     new_muram_quantity = np.zeros((muram.nx, muram.ny, muram.n_logtau))
+    
     for ix in tqdm(range(muram.nx)):
-        new_muram_quantity[ix, :, :] = np.array([
-            logtau_mapper(orig_arr=geom_atm[ix, iy, :], 
-                          corresp_logtau=geom_logtau[ix, iy, :], 
-                          new_logtau=new_logtau)
-            for iy in range(muram.ny)
-        ])
+        for iy in range(muram.ny):
+            # Create and apply interpolation function directly
+            mapper = interp1d(
+                x=geom_logtau[ix, iy, :], 
+                y=geom_atm[ix, iy, :], 
+                kind="linear", 
+                bounds_error=False, 
+                fill_value="extrapolate"
+            )
+            new_muram_quantity[ix, iy, :] = mapper(new_logtau)
     
     return new_muram_quantity
 ##############################################################

@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import SimpleLinearModel, SimpleCNN1DModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation
 
 
 def main():
@@ -73,6 +73,8 @@ def main():
     if not images_path.exists():
       images_path.mkdir(parents=True)
 
+    filename = filenames[0]
+
     for i in range(len(nn_models.keys())):
             
       model = nn_models[models_names[i]]
@@ -104,49 +106,50 @@ def main():
       
       
       
-      plot_surface_generated_atm(
-                          atm_generated = atm_generated,
-                          atm_original = atm_data_original,
-                          images_dir = images_path,
-                          model_subdir = model_name,
-                          image_name = "low_atm_surface.png",
-                          titles = mags_names,
-                          itau = 19
-                        )
-      plot_surface_generated_atm(
-                          atm_generated = atm_generated,
-                          atm_original = atm_data_original,
-                          images_dir = images_path,
-                          model_subdir = model_name,
-                          image_name = "high_atm_surface.png",
-                          titles = mags_names,
-                          itau = 8
-                        )
-    
-      #OD plots
-      
       plot_od_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
                         images_dir = images_path,
+                        filename=filename,
                         model_subdir = model_name,
                         image_name = "mean_OD.png",
                         titles = mags_names
                         )
       
       #Density bars
-      tau_indices = range(0,20)
+      tau_indices = range(20)
       for itau in tau_indices:
+        plot_surface_generated_atm(
+                          atm_generated = atm_generated,
+                          atm_original = atm_data_original,
+                          filename=filename,
+                          images_dir = images_path,
+                          model_subdir = model_name,
+                          surface_subdir= "surface_plots",
+                          image_name = f"OD_surface.png",
+                          titles = mags_names,
+                          itau = itau
+                        )
         plot_density_bars(
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
-                dense_diag_subdir= "density_plots",
+                filename=filename,
                 images_dir = images_path,
+                dense_diag_subdir= "density_plots",
                 model_subdir = model_name,
                 image_name = "OD_density.png",
                 tau_index = itau,
-                titles = mags_names,
-                num_bars = 100)
+                titles = mags_names)
+        plot_correlation(
+                atm_generated = atm_generated,
+                atm_original = atm_data_original,
+                filename=filename,
+                images_dir = images_path,
+                corr_diag_subdir= "correlation_plots",
+                model_subdir = model_name,
+                image_name = "OD_correlation.png",
+                tau_index = itau,
+                titles = mags_names)
         
         
       print("Done!")

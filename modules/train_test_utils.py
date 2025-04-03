@@ -292,7 +292,7 @@ def train(model: torch.nn.Module,
             writer.close()
         else:
             pass
-
+    
     # Return the filled results at the end of the epochs
     return results
 def save_model(model: torch.nn.Module,
@@ -384,7 +384,7 @@ def generate_results(model: torch.nn.Module,
   return atm_generated
 
 ### VISUALIZATION UTILITIES ###
-  
+
 def plot_od_generated_atm(
        atm_generated: np.ndarray,
        atm_original: np.ndarray,
@@ -404,7 +404,7 @@ def plot_od_generated_atm(
   params = [
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
-  (2, 'v', 'km/s')
+  (2, 'v', 'km/s'),
   (3, 'Bq', 'G'),
   (4, 'Bu', 'G'),
   (5, 'Bv', 'G'),
@@ -461,7 +461,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   params = [
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
-    (2, 'v', 'km/s')
+    (2, 'v', 'km/s'),
     (3, 'Bq', 'G'),
     (4, 'Bu', 'G'),
     (5, 'Bv', 'G'),
