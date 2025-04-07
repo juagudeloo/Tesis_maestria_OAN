@@ -322,10 +322,10 @@ class MURaM:
         print("Scaling the quantities...")
         # Atmosphere magnitudes scale factors
         self.phys_maxmin = {
-            "T": [6.5e3, 4e3],
-            "B": [3e3, -3e3],
-            "Rho": [-5, -10],
-            "V": [1e6, -1e6]
+            "T": [8e3, 4e3], # K
+            "B": [2e3, -2e3], # G
+            "Rho": [-7, -6], # g/cm^3 log 
+            "V": [1e6, -1e6] #cm/s
         }
 
         # maxmin normalization function
