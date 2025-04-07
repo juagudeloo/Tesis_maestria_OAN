@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import root_mean_squared_error
+from scipy.stats import pearsonr
 import numpy as np
 
 import torch
@@ -558,7 +559,7 @@ def plot_density_bars(atm_generated: np.ndarray,
       num_bars = min(num_bars, 100)
     
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
-    smape_res = smape(gen_values, orig_values)
+    rmse = root_mean_squared_error(gen_values, orig_values)
     
     # Define units for each parameter
     units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
@@ -566,7 +567,7 @@ def plot_density_bars(atm_generated: np.ndarray,
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[row, col].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[row, col].set_title(f"smape = {smape_res:.2f}")
+    axs[row, col].set_title(f"rmse = {rmse:.2f}")
     axs[row, col].set_xlabel(f'{titles[j]} ({units[j]})')
     axs[row, col].legend(loc='upper right')
     axs[row, col].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
@@ -618,10 +619,10 @@ def plot_correlation(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    smape_res = smape(gen_values, orig_values)
+    pears = pearsonr(gen_values, orig_values)[0]
     # Plot correlation
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
-    axs[row, col].set_title(f"{titles[j]} smape = {smape_res:.2f}")
+    axs[row, col].set_title(f"{titles[j]} pearson = {pears:.2f}")
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)
