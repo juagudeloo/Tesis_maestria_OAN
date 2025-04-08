@@ -138,7 +138,7 @@ class MURaM:
                       """)
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$"]
+        self.mags_names = [r"$T$", r"$\log(\rho)$", r"$v_{\text{\LOS}}$", r"$B_{x}$", r"$B_{y}$", r"$B_{z}$"]
         self.output_names = ["mtpr","mrho", "mvzz", "mbxx", "mbyy", "mbzz"]
         self.atm_quant = np.array([mtpr, mrho, mvzz, mbxx, mbyy, mbzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
@@ -215,7 +215,7 @@ class MURaM:
             print("atm logtau shape:", self.atm_quant.shape)
                     
     def modified_components(self) -> None:
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$"]
+        self.mags_names = [r"$T$", r"$\log(\rho$)", r"$v_{\text{\LOS}}$", r"$B_{U}$", r"$B_{Q}$", r"$B_{V}$"]
         
         # Magnetic field components
         mbxx = self.atm_quant[..., 3]

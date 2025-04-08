@@ -54,17 +54,18 @@ def main():
     
     # Load models
     nn_models = {models_names[0]: SimpleLinearModel(36*4,6*20,hidden_units=2048).to(device), 
-                 models_names[1]: SimpleCNN1DModel(36,6*20,hidden_units=1024, signal_length=4).to(device),
-                 models_names[2]: SimpleCNN1DModel(4,6*20,hidden_units=72, signal_length=36).to(device),
+                 models_names[1]: SimpleCNN1DModel(36,6*20,hidden_units=4096, signal_length=4).to(device),
+                 models_names[2]: SimpleCNN1DModel(4,6*20,hidden_units=1024, signal_length=36).to(device),
                  }
     
     models_names = list(nn_models.keys())
     
     # Weights paths
     target_dir = Path("models/first_experiment")
-    weight_names = [models_names[0] + "_2048_hidden_units_1_epochs.pth", 
-                   models_names[1] + "_1024_hidden_units_1_epochs.pth",
-                   models_names[2] + "_72_hidden_units_1_epochs.pth"]
+    weight_names = [models_names[0] + "_2048_hidden_units_10_epochs.pth", 
+                   models_names[1] + "_4096_hidden_units_10_epochs.pth",
+                   models_names[2] + "_1024_hidden_units_10_epochs.pth",
+                   ]
     
     #########################################################################################
     # Generation

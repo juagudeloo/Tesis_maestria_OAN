@@ -480,13 +480,18 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
       vmin = orig_q5
       vmax = orig_q95
 
-    im = axs[0, i].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    gen_values = atm_generated[:, :, itau, param_idx]
+    orig_values = atm_original[:, :, itau, param_idx]
+    if param_idx == 2:
+      gen_values = gen_values / 1e5
+      orig_values = orig_values / 1e5
+    im = axs[0, i].imshow(gen_values, cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
     axs[0, i].set_title(f'Generated {titles[i]}')
     axs[0, i].axis('off')
     cbar = fig.colorbar(im, ax=axs[0, i])
     cbar.set_label(unit)
 
-    im = axs[1, i].imshow(atm_original[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    im = axs[1, i].imshow(orig_values, cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
     axs[1, i].set_title(f'Original {titles[i]}')
     axs[1, i].axis('off')
     cbar = fig.colorbar(im, ax=axs[1, i])
@@ -534,13 +539,17 @@ def plot_density_bars(atm_generated: np.ndarray,
 
   fig, axs = plt.subplots(2, num_rows, figsize=(3.5 * num_rows, 3 * 2))
   fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
+  # Define units for each parameter
+  units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
 
   for j in range(num_params):
     row = j // 3
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-
+    if j == 2:
+      gen_values = gen_values / 1e5
+      orig_values = orig_values / 1e5
     # Calculate quantiles for xlim
     gen_q5, gen_q95 = np.quantile(gen_values, [0.05, 0.95])
     orig_q5, orig_q95 = np.quantile(orig_values, [0.05, 0.95])
@@ -561,13 +570,11 @@ def plot_density_bars(atm_generated: np.ndarray,
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
     rmse = root_mean_squared_error(gen_values, orig_values)
     
-    # Define units for each parameter
-    units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
     
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[row, col].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[row, col].set_title(f"rmse = {rmse:.2f}")
+    axs[row, col].set_title(f"rmse = {rmse:.2f} {units[j]}")
     axs[row, col].set_xlabel(f'{titles[j]} ({units[j]})')
     axs[row, col].legend(loc='upper right')
     axs[row, col].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
@@ -620,6 +627,9 @@ def plot_correlation(atm_generated: np.ndarray,
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
     pears = pearsonr(gen_values, orig_values)[0]
+    if j == 2:
+      gen_values = gen_values / 1e5
+      orig_values = orig_values / 1e5
     # Plot correlation
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
     axs[row, col].set_title(f"{titles[j]} pearson = {pears:.2f}")
