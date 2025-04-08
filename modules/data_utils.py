@@ -147,7 +147,7 @@ class MURaM:
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
-                                   images_dir = "images/first_experiment",
+                                   images_dir = "images/second_experiment",
                                    image_name=f"{self.filename}_atm_quantities",
                                    height_index=180)
         print("Created!")
@@ -182,13 +182,13 @@ class MURaM:
         print("Done!")
         
         # Plotting the optical depth stratification
-        image_path = Path("images/first_experiment/atmosphere")
+        image_path = Path("images/second_experiment/atmosphere")
         if not image_path.exists():
             image_path.mkdir(parents=True)
         fig, ax = plt.subplots(1,2,figsize=(10,5))
         ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
-        fig.savefig("images/first_experiment/atmosphere/optical_depth.png")
+        fig.savefig("images/second_experiment/atmosphere/optical_depth.png")
         
          # New optical depth stratification array.
         self.n_logtau = new_logtau.shape[0]
@@ -237,7 +237,7 @@ class MURaM:
         
         plot_atmosphere_quantities(atm_quant=self.atm_quant, 
                                    titles = self.mags_names,
-                                   images_dir = "images/first_experiment/",
+                                   images_dir = "images/second_experiment/",
                                    image_name=f"{self.filename}_modified_atm_quantities")
         print("Created!")
         if self.verbose:

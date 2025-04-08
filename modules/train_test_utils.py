@@ -193,9 +193,9 @@ def create_writer(experiment_name: str,
 
     if extra:
         # Create log directory path
-        log_dir = os.path.join("runs", "first_experiment", timestamp, experiment_name, model_name, extra)
+        log_dir = os.path.join("runs", "second_experiment", timestamp, experiment_name, model_name, extra)
     else:
-        log_dir = os.path.join("runs", "first_experiment", timestamp, experiment_name, model_name)
+        log_dir = os.path.join("runs", "second_experiment", timestamp, experiment_name, model_name)
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)
@@ -482,9 +482,6 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 
     gen_values = atm_generated[:, :, itau, param_idx]
     orig_values = atm_original[:, :, itau, param_idx]
-    if param_idx == 2:
-      gen_values = gen_values / 1e5
-      orig_values = orig_values / 1e5
     im = axs[0, i].imshow(gen_values, cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
     axs[0, i].set_title(f'Generated {titles[i]}')
     axs[0, i].axis('off')
@@ -547,10 +544,6 @@ def plot_density_bars(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    if j == 2:
-      gen_values = gen_values / 1e5
-      orig_values = orig_values / 1e5
-    # Calculate quantiles for xlim
     gen_q5, gen_q95 = np.quantile(gen_values, [0.05, 0.95])
     orig_q5, orig_q95 = np.quantile(orig_values, [0.05, 0.95])
     xlim_min = min(gen_q5, orig_q5)
@@ -627,10 +620,6 @@ def plot_correlation(atm_generated: np.ndarray,
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
     pears = pearsonr(gen_values, orig_values)[0]
-    if j == 2:
-      gen_values = gen_values / 1e5
-      orig_values = orig_values / 1e5
-    # Plot correlation
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
     axs[row, col].set_title(f"{titles[j]} pearson = {pears:.2f}")
     axs[row, col].set_xlabel('Original')

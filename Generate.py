@@ -20,6 +20,7 @@ def main():
     
     # Filenames of the snapshots to be calculated
     filenames = ["175000"]
+    filename = filenames[0]
     
     # Load data
     test_spectral_res = [36, 
@@ -35,10 +36,16 @@ def main():
     print(f"Tensors stored in: {device}")
     
     # Weights paths
-    target_dir = Path("models")      
+    target_dir = Path("models/second_experiment")      
     #########################################################################################
     # Generation
     #########################################################################################
+
+    images_path = Path("images/second_experiment")
+    if not images_path.exists():
+      images_path.mkdir(parents=True)
+
+
     models_types = [
       "linear", 
       "cnn1d_4channels"
@@ -85,52 +92,61 @@ def main():
         atm_data_original[..., 5] /= 1e5
       
         ##################################
-        # Plot generated atmospheres  
-        ##################################
-        
-        print("Plotting generated atmospheres...")
-        #Suface plots
-        plot_surface_generated_atm(
-                            atm_generated = atm_generated,
-                            atm_original = atm_data_original,
-                            model_subdir = model_name,
-                            image_name = "low_atm_surface.png",
-                            titles = mags_names,
-                            itau = 19
-                          )
-        plot_surface_generated_atm(
-                            atm_generated = atm_generated,
-                            atm_original = atm_data_original,
-                            model_subdir = model_name,
-                            image_name = "high_atm_surface.png",
-                            titles = mags_names,
-                            itau = 8
-                          )
+      # Plot generated atmospheres  
+      ##################################
       
-        #OD plots
-        
-        plot_od_generated_atm(
+      print("Plotting generated atmospheres...")
+      #Suface plots
+      
+      
+      
+      plot_od_generated_atm(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        images_dir = images_path,
+                        filename=filename,
+                        model_subdir = model_name,
+                        image_name = "mean_OD.png",
+                        titles = mags_names
+                        )
+      
+      #Density bars
+      tau_indices = range(20)
+      for itau in tau_indices:
+        plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
+                          filename=filename,
+                          images_dir = images_path,
                           model_subdir = model_name,
-                          image_name = "mean_OD.png",
-                          titles = mags_names
-                          )
+                          surface_subdir= "surface_plots",
+                          image_name = f"OD_surface.png",
+                          titles = mags_names,
+                          itau = itau
+                        )
+        plot_density_bars(
+                atm_generated = atm_generated,
+                atm_original = atm_data_original,
+                filename=filename,
+                images_dir = images_path,
+                dense_diag_subdir= "density_plots",
+                model_subdir = model_name,
+                image_name = "OD_density.png",
+                tau_index = itau,
+                titles = mags_names)
+        plot_correlation(
+                atm_generated = atm_generated,
+                atm_original = atm_data_original,
+                filename=filename,
+                images_dir = images_path,
+                corr_diag_subdir= "correlation_plots",
+                model_subdir = model_name,
+                image_name = "OD_correlation.png",
+                tau_index = itau,
+                titles = mags_names)
         
-        #Density bars
-        tau_indices = range(0,20)
-        for itau in tau_indices:
-          plot_density_bars(
-                  atm_generated = atm_generated,
-                  atm_original = atm_data_original,
-                  dense_diag_subdir= "density_plots",
-                  model_subdir = model_name,
-                  image_name = "OD_density.png",
-                  tau_index = itau,
-                  titles = mags_names,
-                  num_bars = 100)
         
-    print("Done!")
+      print("Done!")
     
 if __name__ == "__main__":
     main()

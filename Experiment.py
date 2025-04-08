@@ -94,7 +94,7 @@ def main():
             #Save the model to file so we can get back the best model
             save_filepath = f"{m_type}_{n_spec_points}_spectral_points.pth"
             save_model(model=model,
-                    target_dir="models",
+                    target_dir="models/second_experiment",
                     model_name=save_filepath)
             print("-"*50 + "\n")
 
