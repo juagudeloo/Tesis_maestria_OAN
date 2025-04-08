@@ -88,8 +88,8 @@ def main():
                                         )      
         
         # Convert velocity component from cm/s to km/s
-        atm_generated[..., 5] /= 1e5
-        atm_data_original[..., 5] /= 1e5
+        atm_generated[..., 2] /= 1e5
+        atm_data_original[..., 2] /= 1e5
       
         ##################################
       # Plot generated atmospheres  
