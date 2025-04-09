@@ -62,8 +62,8 @@ def main():
     
     # Weights paths
     target_dir = Path("models/first_experiment")
-    weight_names = [models_names[0] + "_2048_hidden_units_10_epochs.pth", 
-                   models_names[1] + "_4096_hidden_units_10_epochs.pth",
+    weight_names = [models_names[0] + "_1024_hidden_units_10_epochs.pth", 
+                   models_names[1] + "_2048_hidden_units_10_epochs.pth",
                    models_names[2] + "_1024_hidden_units_10_epochs.pth",
                    ]
     
