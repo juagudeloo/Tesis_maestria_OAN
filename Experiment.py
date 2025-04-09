@@ -31,10 +31,12 @@ def main():
     
     model_types = [
         "linear",
-        "cnn1d_4channels"]
+        "cnn1d_4channels",
+        "cnn1d_36channels"
+        ]
     epochs = 10
     lr = 1e-3
-    test_spectral_res = [36, 58, 90, 114]
+    test_spectral_res = [36, 75, 114]
     
     #1. Loop through spectral resolutions
     for n_spec_points in test_spectral_res:
@@ -59,6 +61,8 @@ def main():
                             device = device,
                             batch_size = 80,
                             linear = True)
+                hu = 2048
+                model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
             elif m_type == "cnn1d_4channels":
                 train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
                             atm_data = atm_data,
@@ -66,13 +70,18 @@ def main():
                             batch_size = 80,
                             stokes_as_channels=True,
                             linear = False)
-            #Creating the model
-            if m_type == "linear":
-                hu = 2048
-                model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
-            elif m_type == "cnn1d_4channels":
-                hu = 72
+                hu = 1024
                 model = CNN1DModel(4,6*20,hidden_units=hu, signal_length=n_spec_points).to(device)
+            elif m_type == "cnn1d_36channels":
+                train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
+                            atm_data = atm_data,
+                            device = device,
+                            batch_size = 80,
+                            stokes_as_channels=False,
+                            linear = False)
+                hu = 4096
+                model = CNN1DModel(n_spec_points,6*20,hidden_units=hu, signal_length=4).to(device)
+            #Creating the model
             model = model.float()
             #Loss function
             loss_fn = nn.MSELoss() # this is also called "criterion"/"cost function" in some places

@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import LinearModel, CNN1DModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation
 
 
 def main():
@@ -19,7 +19,7 @@ def main():
     #########################################################################################
     
     # Filenames of the snapshots to be calculated
-    filenames = ["175000"]
+    filenames = ["085000", "087000"]
     filename = filenames[0]
     
     # Load data
@@ -47,6 +47,7 @@ def main():
 
 
     models_types = [
+      "cnn1d_36channels",
       "linear", 
       "cnn1d_4channels"
       ]
@@ -67,7 +68,10 @@ def main():
         if model_type == "cnn1d_4channels":
           stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
           stokes_data =  np.moveaxis(stokes_data, 2, 1)
-          model = CNN1DModel(4,6*20,hidden_units=72, signal_length=n_spec_points).to(device)
+          model = CNN1DModel(4,6*20,hidden_units=1024, signal_length=n_spec_points).to(device)
+        if model_type == "cnn1d_36channels":
+          stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
+          model = CNN1DModel(n_spec_points,6*20,hidden_units=4096, signal_length=4).to(device)
         
         model_name = model_type+"_"+str(n_spec_points)
         weights_name = model_name + "_spectral_points.pth"
@@ -82,6 +86,7 @@ def main():
         #Generate results
         print(f"Generating results for {model_name}...")
         atm_generated = generate_results(model = model,
+                                         atm_shape=  (480, 480, 20, 6),
                                           stokes_data = stokes_data,
                                           maxmin = phys_maxmin,
                                           device = device
