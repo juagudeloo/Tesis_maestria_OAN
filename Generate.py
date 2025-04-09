@@ -53,8 +53,8 @@ def main():
     print(f"Tensors stored in: {device}")
     
     # Load models
-    nn_models = {models_names[0]: SimpleLinearModel(36*4,6*20,hidden_units=2048).to(device), 
-                 models_names[1]: SimpleCNN1DModel(36,6*20,hidden_units=4096, signal_length=4).to(device),
+    nn_models = {models_names[0]: SimpleLinearModel(36*4,6*20,hidden_units=1024).to(device), 
+                 models_names[1]: SimpleCNN1DModel(36,6*20,hidden_units=2048, signal_length=4).to(device),
                  models_names[2]: SimpleCNN1DModel(4,6*20,hidden_units=1024, signal_length=36).to(device),
                  }
     
