@@ -32,6 +32,7 @@ def main():
     #----------------------------------------------
     atm_data_original = np.reshape(np.copy(atm_data[0]), (480,480,20,6))
     atm_data_original = descale_atm(atm_data_original, phys_maxmin)
+    atm_data_original[..., 2] /= 1e5
     #----------------------------------------------
     
     # Model subdirectories names for the plots
@@ -107,8 +108,6 @@ def main():
 
       # Convert velocity component from cm/s to km/s
       atm_generated[..., 2] /= 1e5
-      atm_data_original[..., 2] /= 1e5
-      
       
       plot_od_generated_atm(
                         atm_generated = atm_generated,
