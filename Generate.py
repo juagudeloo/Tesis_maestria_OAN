@@ -47,9 +47,9 @@ def main():
 
 
     models_types = [
-      "cnn1d_36channels",
+      #"cnn1d_36channels",
       "linear", 
-      "cnn1d_4channels"
+      #"cnn1d_4channels"
       ]
     
     for model_type in models_types:
@@ -64,14 +64,14 @@ def main():
         # Load model and charge corresponding stokes data
         if model_type == "linear":
           stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2]*stokes_data[0].shape[3]))
-          model = LinearModel(n_spec_points*4,6*20,hidden_units=2048).to(device)
+          model = LinearModel(n_spec_points*4,6*20,hidden_units=1024).to(device)
         if model_type == "cnn1d_4channels":
           stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
           stokes_data =  np.moveaxis(stokes_data, 2, 1)
           model = CNN1DModel(4,6*20,hidden_units=1024, signal_length=n_spec_points).to(device)
         if model_type == "cnn1d_36channels":
           stokes_data =  np.reshape(np.copy(stokes_data[0]), (stokes_data[0].shape[0]*stokes_data[0].shape[1], stokes_data[0].shape[2],stokes_data[0].shape[3]))
-          model = CNN1DModel(n_spec_points,6*20,hidden_units=4096, signal_length=4).to(device)
+          model = CNN1DModel(n_spec_points,6*20,hidden_units=2048, signal_length=4).to(device)
         
         model_name = model_type+"_"+str(n_spec_points)
         weights_name = model_name + "_spectral_points.pth"
