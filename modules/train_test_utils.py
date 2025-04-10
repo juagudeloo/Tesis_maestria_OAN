@@ -544,7 +544,8 @@ def plot_density_bars(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    gen_q5, gen_q95 = np.quantile(gen_values, [0.05, 0.95])
+    gen_q5, gen_q95 = np.quantile(
+       gen_values, [0.05, 0.95])
     orig_q5, orig_q95 = np.quantile(orig_values, [0.05, 0.95])
     xlim_min = min(gen_q5, orig_q5)
     xlim_max = max(gen_q95, orig_q95)

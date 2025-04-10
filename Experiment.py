@@ -36,7 +36,7 @@ def main():
         ]
     epochs = 10
     lr = 1e-3
-    test_spectral_res = [36, 75, 114]
+    test_spectral_res = [36, 75, 112]
     
     #1. Loop through spectral resolutions
     for n_spec_points in test_spectral_res:
@@ -61,7 +61,7 @@ def main():
                             device = device,
                             batch_size = 80,
                             linear = True)
-                hu = 2048
+                hu = 1024
                 model = LinearModel(n_spec_points*4,6*20,hidden_units=hu).to(device)
             elif m_type == "cnn1d_4channels":
                 train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
@@ -79,7 +79,7 @@ def main():
                             batch_size = 80,
                             stokes_as_channels=False,
                             linear = False)
-                hu = 4096
+                hu = 2048
                 model = CNN1DModel(n_spec_points,6*20,hidden_units=hu, signal_length=4).to(device)
             #Creating the model
             model = model.float()
