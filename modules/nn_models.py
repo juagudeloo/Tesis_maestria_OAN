@@ -33,19 +33,31 @@ class CNN1DModel(nn.Module):
         stride = 1
         
         # Model
+        # Calculate the output length after each Conv1d layer
+        def calculate_conv_output_length(input_length, kernel_size, stride, padding):
+            return ((input_length - kernel_size + 2 * padding) // stride) + 1
+
+        conv1_output_length = calculate_conv_output_length(signal_length, kernel_size, stride, padding)
+        conv2_output_length = calculate_conv_output_length(conv1_output_length, kernel_size, stride, padding)
+        conv3_output_length = calculate_conv_output_length(conv2_output_length, kernel_size, stride, padding)
+        conv4_output_length = calculate_conv_output_length(conv3_output_length, kernel_size, stride, padding)
+        conv5_output_length = calculate_conv_output_length(conv4_output_length, kernel_size, stride, padding)
+        
+        # Model
         self.simple_conv = nn.Sequential(
             nn.Conv1d(in_channels=in_shape, out_channels=hidden_units, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.ReLU(),
-            nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units*2, kernel_size=kernel_size, stride=stride, padding=padding),
+            nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.ReLU(),
-            nn.Conv1d(in_channels=hidden_units*2, out_channels=hidden_units*4, kernel_size=kernel_size, stride=stride, padding=padding),
+            nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.ReLU(),
-            nn.Conv1d(in_channels=hidden_units*4, out_channels=hidden_units*8, kernel_size=kernel_size, stride=stride, padding=padding),
+            nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.ReLU(),
-            nn.AdaptiveAvgPool1d(1),  # Ensure the output size is fixed to 1
+            nn.Conv1d(in_channels=hidden_units, out_channels=hidden_units, kernel_size=kernel_size, stride=stride, padding=padding),
+            nn.ReLU(),
             nn.Flatten(),
             nn.Dropout(p=0.5, inplace=False),
-            nn.Linear(in_features=hidden_units*8, out_features=out_shape)
+            nn.Linear(in_features=hidden_units * conv5_output_length, out_features=out_shape)
         )
     
     def forward(self, x):
