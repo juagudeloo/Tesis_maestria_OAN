@@ -10,10 +10,10 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 
-from scipy.stats import pearsonr
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import root_mean_squared_error
+from scipy.stats import pearsonr
 import numpy as np
 
 import torch
@@ -193,9 +193,9 @@ def create_writer(experiment_name: str,
 
     if extra:
         # Create log directory path
-        log_dir = os.path.join("runs", timestamp, experiment_name, model_name, extra)
+        log_dir = os.path.join("runs", "fourth_experiment", timestamp, experiment_name, model_name, extra)
     else:
-        log_dir = os.path.join("runs", timestamp, experiment_name, model_name)
+        log_dir = os.path.join("runs", "fourth_experiment", timestamp, experiment_name, model_name)
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)
@@ -293,7 +293,7 @@ def train(model: torch.nn.Module,
             writer.close()
         else:
             pass
-
+    
     # Return the filled results at the end of the epochs
     return results
 def save_model(model: torch.nn.Module,
@@ -363,7 +363,6 @@ def descale_atm(atm_generated: np.ndarray,
       atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["gamma"])
     
     return atm_generated
-  
 def generate_results(model: torch.nn.Module,
                      stokes_data: np.ndarray,
                      atm_shape: tuple[int, int, int, int],
@@ -399,7 +398,7 @@ def generate_results(model: torch.nn.Module,
   return atm_generated
 
 ### VISUALIZATION UTILITIES ###
-  
+
 def plot_od_generated_atm(
        atm_generated: np.ndarray,
        atm_original: np.ndarray,
@@ -411,6 +410,8 @@ def plot_od_generated_atm(
        filename: str = None
        ):
 
+  print("atm_generated shape:", atm_generated.shape)
+  print("atm_original shape:", atm_original.shape)
   fig, axs = plt.subplots(2, 3, figsize=(3.5*3, 3*2))
   
   # Define the parameters for the plots
@@ -418,9 +419,9 @@ def plot_od_generated_atm(
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
   (2, 'v', 'km/s'),
-  (3, 'B', 'G'),
-  (4, 'azimuth', 'deg'),
-  (5, 'zenith', 'deg'),
+  (3, 'Bq', 'G'),
+  (4, 'Bu', 'G'),
+  (5, 'Bv', 'G'),
   ]
 
   # Plot generated and original atmosphere
@@ -442,7 +443,6 @@ def plot_od_generated_atm(
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, image_name)
   fig.savefig(image_path)
-  plt.close(fig)
   
   print(f"Saved image to: {image_path}")
 def plot_surface_generated_atm(atm_generated: np.ndarray,
@@ -457,7 +457,9 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
        filename: str = None,
        ):
 
-  fig, axs = plt.subplots(3, 4, figsize=(4*4, 4*3))
+  print("atm_generated shape:", atm_generated.shape)
+  print("atm_original shape:", atm_original.shape)
+  fig, axs = plt.subplots(2, 6, figsize=(3.5*6, 3*2))
   
   tau_value = tau[itau]
   fig.suptitle(r'$\log \tau$'+f' = {tau_value:.2f}')
@@ -467,21 +469,19 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   vmax = [atm_original[:, :, itau, i].max() for i in range(6)]
 
   # Define colormaps
-  cmaps = ['inferno', 'cividis', 'bwr_r', "Spectral_r", "RdYlGn_r", "PiYG"]
+  cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
 
   # Plot generated and original atmosphere
   params = [
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
     (2, 'v', 'km/s'),
-    (3, 'B', 'G'),
-    (4, 'azimuth', 'deg'),
-    (5, 'zenith', 'deg'),
+    (3, 'Bq', 'G'),
+    (4, 'Bu', 'G'),
+    (5, 'Bv', 'G'),
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
-    row = i // 2
-    col = (i % 2) * 2
 
     if param_idx in [2, 3, 4, 5]:  # Magnetic field components and velocity need symmetric colorbars
       orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
@@ -492,23 +492,21 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
       orig_q5, orig_q95 = np.quantile(atm_original[:, :, itau, param_idx], [0.05, 0.95])
       vmin = orig_q5
       vmax = orig_q95
-    if param_idx == 4:
-      vmin = 0
-      vmax = 180
-    if param_idx == 5:
-      vmin = -90
-      vmax = 90
 
-    im = axs[row, col].imshow(atm_original[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[row, col].set_title(f'Original {title}')
-    axs[row, col].axis('off')
-    cbar = fig.colorbar(im, ax=axs[row, col])
+    gen_values = atm_generated[:, :, itau, param_idx]
+    orig_values = atm_original[:, :, itau, param_idx]
+    im = axs[0, i].imshow(gen_values, cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    axs[0, i].set_title(f'Generated {titles[i]}')
+    axs[0, i].axis('off')
+    cbar = fig.colorbar(im, ax=axs[0, i])
     cbar.set_label(unit)
-    im = axs[row, col + 1].imshow(atm_generated[:, :, itau, param_idx], cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
-    axs[row, col + 1].set_title(f'Generated {title}')
-    axs[row, col + 1].axis('off')
-    cbar = fig.colorbar(im, ax=axs[row, col + 1])
+
+    im = axs[1, i].imshow(orig_values, cmap=cmaps[i], interpolation='nearest', vmin=vmin, vmax=vmax)
+    axs[1, i].set_title(f'Original {titles[i]}')
+    axs[1, i].axis('off')
+    cbar = fig.colorbar(im, ax=axs[1, i])
     cbar.set_label(unit)
+  
   fig.tight_layout()
   
   print(images_dir, filename, model_subdir, surface_subdir)
@@ -517,7 +515,6 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[itau]:.2f}_{image_name}")
   fig.savefig(image_path)
-  plt.close(fig)
   
   print(f"Saved image to: {image_path}")
 def plot_density_bars(atm_generated: np.ndarray,
@@ -552,15 +549,16 @@ def plot_density_bars(atm_generated: np.ndarray,
 
   fig, axs = plt.subplots(2, num_rows, figsize=(3.5 * num_rows, 3 * 2))
   fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
+  # Define units for each parameter
+  units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
 
   for j in range(num_params):
     row = j // 3
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-
-    # Calculate quantiles for xlim
-    gen_q5, gen_q95 = np.quantile(gen_values, [0.05, 0.95])
+    gen_q5, gen_q95 = np.quantile(
+       gen_values, [0.05, 0.95])
     orig_q5, orig_q95 = np.quantile(orig_values, [0.05, 0.95])
     xlim_min = min(gen_q5, orig_q5)
     xlim_max = max(gen_q95, orig_q95)
@@ -577,15 +575,13 @@ def plot_density_bars(atm_generated: np.ndarray,
       num_bars = min(num_bars, 100)
     
     bins = np.linspace(xlim_min, xlim_max, num_bars + 1)
-    smape_res = smape(gen_values, orig_values)
+    rmse = root_mean_squared_error(gen_values, orig_values)
     
-    # Define units for each parameter
-    units = ['K', r'g/cm$^3$', 'km/s', 'G', 'deg', 'deg']
     
     # Plot histograms
     axs[row, col].hist(gen_values, bins=bins, alpha=0.5, label='Generated', color='orangered')
     axs[row, col].hist(orig_values, bins=bins, alpha=0.5, label='Original', color='navy')
-    axs[row, col].set_title(f"smape = {smape_res:.2f}")
+    axs[row, col].set_title(f"rmse = {rmse:.2f} {units[j]}")
     axs[row, col].set_xlabel(f'{titles[j]} ({units[j]})')
     axs[row, col].legend(loc='upper right')
     axs[row, col].set_xlim([xlim_min, xlim_max])  # Set xlim based on quantiles
@@ -601,7 +597,6 @@ def plot_density_bars(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
   fig.savefig(image_path)
-  plt.close(fig)
 
   print(f"Saved image to: {image_path}")
 def plot_correlation(atm_generated: np.ndarray,
@@ -638,16 +633,12 @@ def plot_correlation(atm_generated: np.ndarray,
     col = j % 3
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
-    pearson_corr, _ = pearsonr(gen_values, orig_values)
-    # Plot correlation
+    pears = pearsonr(gen_values, orig_values)[0]
     axs[row, col].scatter(orig_values, gen_values, alpha=0.5, color='orangered', s=2)
-    axs[row, col].set_title(f"{titles[j]} pearson = {pearson_corr:.2f}")
+    axs[row, col].set_title(f"{titles[j]} pearson = {pears:.2f}")
     axs[row, col].set_xlabel('Original')
     axs[row, col].set_ylabel('Generated')
     axs[row, col].plot([orig_values.min(), orig_values.max()], [orig_values.min(), orig_values.max()], 'k--', lw=2)
-    if titles[j] == r'$B$':
-      axs[row, col].set_xlim(0,2000)
-      axs[row, col].set_xlim(0,2000)
 
   # Remove any empty subplots
   if num_params % 2 != 0:
@@ -660,7 +651,6 @@ def plot_correlation(atm_generated: np.ndarray,
     os.makedirs(images_dir)
   image_path = os.path.join(images_dir, f"{tau[tau_index]:.2f}_{image_name}")
   fig.savefig(image_path)
-  plt.close(fig)
 
   print(f"Saved image to: {image_path}")
 

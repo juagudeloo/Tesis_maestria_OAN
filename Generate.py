@@ -19,8 +19,8 @@ def main():
     #########################################################################################
     
     # Filenames of the snapshots to be calculated
-    filenames = ["080000", 
-                 "175000"
+    filenames = [
+                 "087000"
                  ]
     
     #########################################################################################
@@ -32,20 +32,19 @@ def main():
     print(f"Tensors stored in: {device}")
     
     # Weights paths
-    target_dir = Path("models")      
+    target_dir = Path("models/fourth_experiment")      
     #########################################################################################
     # Generation
     #########################################################################################
-    model_type = "linear"
+    model_type = "hybrid"
     nx = 480
     ny = 480
-    n_spec_points = 114
-    new_logtau = np.array([-2.0, -0.8, 0.0])
-    stokes_weights = [1,7,7,2]
+    n_spec_points = 112
+    new_logtau = np.arange(-2.0, 0+0.1, 0.1)
+    stokes_weights = [1,100,100,10]
     
     # Load data
     atm_data, stokes_data, mags_names, phys_maxmin = load_data_cubes(filenames, 
-                                                                      ptm = "/scratchsan/observatorio/juagudeloo/data",
                                                                       n_spectral_points=n_spec_points,
                                                                       new_logtau=new_logtau,
                                                                       stokes_weights=stokes_weights)
@@ -64,7 +63,9 @@ def main():
       print("Running experiment: ", thermody_experiment_name)
       thermody_model = InversionModel(scales=scales, 
                             nwl_points=n_spec_points,
-                            n_outputs=3*len(new_logtau)).to(device).float()
+                            n_outputs=3*len(new_logtau),
+                            c1_filters=32,
+                            c2_filters=64).to(device).float()
       thermody_model.name = "thermodynamic"
       
       thermody_weights_name = thermody_experiment_name + ".pth"
@@ -89,7 +90,9 @@ def main():
       magn_experiment_name = f"magnetic_field_unique"
       magn_model = InversionModel(scales=scales, 
                             nwl_points=n_spec_points,
-                            n_outputs=3*len(new_logtau)).to(device).float()
+                            n_outputs=3*len(new_logtau),
+                           c1_filters=32,
+                           c2_filters=64).to(device).float()
       magn_model.name = "magnetic_field"
       magn_weights_name = magn_experiment_name + ".pth"
       
@@ -126,12 +129,18 @@ def main():
       ##################################
       
       print("Plotting generated atmospheres...")
+      images_path = Path("images/fourth_experiment")
+      if not images_path.exists():
+          images_path.mkdir(parents=True)
       #Suface plots
       model_subdir = "Two models"
       #OD plots
+    
+
       plot_od_generated_atm(
                         atm_generated = atm_generated,
                         atm_original = atm_data_original,
+                        images_dir=images_path,
                         filename=filename,
                         model_subdir = model_subdir,
                         image_name = "mean_OD.png",
@@ -145,6 +154,7 @@ def main():
         plot_surface_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
+                          images_dir=images_path,
                           filename=filename,
                           model_subdir = model_subdir,
                           surface_subdir= "surface_plots",
@@ -156,6 +166,7 @@ def main():
         plot_density_bars(
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
+                images_dir=images_path,
                 filename=filename,
                 dense_diag_subdir= "density_plots",
                 model_subdir = model_subdir,
@@ -166,6 +177,7 @@ def main():
         plot_correlation(
                 atm_generated = atm_generated,
                 atm_original = atm_data_original,
+                images_dir=images_path,
                 filename=filename,
                 corr_diag_subdir= "correlation_plots",
                 model_subdir = model_subdir,

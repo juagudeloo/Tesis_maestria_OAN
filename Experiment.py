@@ -24,7 +24,9 @@ def main():
     #filenames.append("099000")
     #for i in range(100, 113):
     #    filenames.append(f"{i}000")
-    filenames = ["080000", "085000", "090000"] #for initital testings
+    filenames = ["080000", 
+                 "085000", "090000"
+                 ] #for initital testings
         
     # Setup device agnostic code
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -33,18 +35,16 @@ def main():
     ### Checking linear vs convolutional 1d models ###
     
     m_type = "hybrid"
-    epochs = 20
+    epochs = 10
     lr = 1e-3
     n_spec_points = 112
-    new_logtau = np.array([-2.0, -0.8, 0.0])
-    noise_level = 0.1
+    new_logtau = np.arange(-2.0, 0+0.1, 0.1)
+    noise_level = 0
     
-    stokes_weights = [1,7,7,2]
+    stokes_weights = [1,100,100,10]
     
     #1. Loop through stokes weights
     atm_data, stokes_data, wl_points = load_training_data(filenames, 
-                                                          ptm = "/scratchsan/observatorio/juagudeloo/data",
-                                                            noise_level=noise_level,
                                                             n_spectral_points=n_spec_points,
                                                             new_logtau=new_logtau,
                                                             stokes_weights=stokes_weights)
@@ -52,6 +52,7 @@ def main():
     
     plot_stokes(stokes=stokes_data[0], 
                 wl_points = wl_points,
+                images_dir="images/fourth_experiment",
                 image_name = "example_stokes",)
     
     #2. Create dataloaders
@@ -71,12 +72,16 @@ def main():
     scales = [1,2,4]
     thermody_model = InversionModel(scales=scales, 
                            nwl_points=len(wl_points),
-                           n_outputs=3*len(new_logtau)).to(device).float()
+                           n_outputs=3*len(new_logtau),
+                           c1_filters=32,
+                           c2_filters=64).to(device).float()
     thermody_model.name = "thermodynamic"
     
     magn_model = InversionModel(scales=scales, 
                            nwl_points=len(wl_points),
-                           n_outputs=3*len(new_logtau)).to(device).float()
+                           n_outputs=3*len(new_logtau),
+                           c1_filters=32,
+                           c2_filters=64).to(device).float()
     magn_model.name = "magnetic_field"
 
     #4. Set hyperparameters
@@ -106,7 +111,7 @@ def main():
     #Save the model to file so we can get back the best model
     save_filepath = thermody_experiment_name + ".pth"
     save_model(model=thermody_model,
-            target_dir="models",
+            target_dir="models/fourth_experiment/",
             model_name=save_filepath)
     print("-"*50 + "\n")
     
@@ -127,7 +132,7 @@ def main():
     #Save the model to file so we can get back the best model
     save_filepath = magn_experiment_name + ".pth"
     save_model(model=magn_model,
-            target_dir="models",
+            target_dir="models/fourth_experiment/",
             model_name=save_filepath)
     print("-"*50 + "\n")
     
