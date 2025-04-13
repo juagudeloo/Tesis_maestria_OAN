@@ -376,7 +376,7 @@ def generate_results(model: torch.nn.Module,
   print(f"stokes data shape for generation:", stokes_data.size())
   
   # Reduce batch size
-  batch_size = 25600  # Adjust this value based on your GPU memory
+  batch_size = 256  # Adjust this value based on your GPU memory
   atm_generated = []
   for i in range(0, stokes_data.shape[0], batch_size):
       batch_data = stokes_data[i:i+batch_size].to(device)
@@ -419,9 +419,9 @@ def plot_od_generated_atm(
   (0, 'Temperature', 'K'),
   (1, 'Density', r'g/cm$^3$'),
   (2, 'v', 'km/s'),
-  (3, 'Bq', 'G'),
-  (4, 'Bu', 'G'),
-  (5, 'Bv', 'G'),
+  (3, 'B', 'G'),
+  (4, 'varphi', r'$^\circ$'),
+  (5, 'gamma', r'$^\circ$'),
   ]
 
   # Plot generated and original atmosphere
@@ -476,9 +476,9 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
     (0, 'Temperature', 'K'),
     (1, 'Density', r'g/cm$^3$'),
     (2, 'v', 'km/s'),
-    (3, 'Bq', 'G'),
-    (4, 'Bu', 'G'),
-    (5, 'Bv', 'G'),
+    (3, 'B', 'G'),
+    (4, 'varphi', r'$^\circ$'),
+    (5, 'gamma', r'$^\circ$'),
   ]
 
   for i, (param_idx, title, unit) in enumerate(params):
@@ -550,7 +550,7 @@ def plot_density_bars(atm_generated: np.ndarray,
   fig, axs = plt.subplots(2, num_rows, figsize=(3.5 * num_rows, 3 * 2))
   fig.suptitle(r'$\log \tau$'+f' = {tau[tau_index]:.2f}')
   # Define units for each parameter
-  units = ['K', r'g/cm$^3$', 'km/s', 'G', 'G', 'G']
+  units = ['K', r'g/cm$^3$', 'km/s', 'B', r'$^\circ$', r'$^\circ$']
 
   for j in range(num_params):
     row = j // 3
