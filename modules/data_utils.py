@@ -2,14 +2,18 @@ import numpy as np
 
 import pandas as pd
 
+from astropy.io import fits
+
 from skimage import filters
 
 from scipy.interpolate import interp1d, RegularGridInterpolator
 from scipy.integrate import simpson
+from scipy.signal import fftconvolve, convolve1d
 
 from sklearn.model_selection import train_test_split
 
 import torch
+from torchvision import transforms
 from torch.utils.data import TensorDataset, DataLoader
 
 import os
@@ -17,7 +21,7 @@ import os
 from tqdm import tqdm 
 
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from pathlib import Path
 
@@ -70,7 +74,6 @@ class MURaM:
         self.nx = 480
         self.nz = 256
         self.ny = 480
-
     def charge_quantities(self) -> None:
         """
         Load and process the atmospheric and Stokes quantities from the data files.
@@ -127,7 +130,7 @@ class MURaM:
                       """)
 
         print("Creating atmosphere quantities array...")
-        self.mags_names = [r"$T$", r"$\log(\rho)$", r"$v_{\text{LOS}}$", r"$B_{\text{LOS}}$"]
+        self.mags_names = [r"$T$", r"$\log(\rho)$", r"$v_{\text{LOS}}$", r"$B_x$", r"$B_y$", r"$B_z$"]
         self.output_names = ["mtpr","mrho", "mvzz", "mbxx", "mbyy", "mbzz"]
         self.atm_quant = np.array([mtpr, mrho, mvzz, mbzz])
         self.atm_quant = np.moveaxis(self.atm_quant, 0, 1)
@@ -148,6 +151,14 @@ class MURaM:
         print("Charged!")
         if self.verbose:
             print("stokes shape", self.stokes.shape)
+    def just_LOS_components(self) -> None:
+        """
+        Keep only the LOS component of the magnetic field.
+        """
+        print("Keeping only the LOS component of the magnetic field...")
+        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_\text{LOS}$"]
+        self.atm_quant = self.atm_quant[...,0:4]
+        print("atm_quant shape:", self.atm_quant.shape)
     def optical_depth_stratification(self, new_logtau: np.ndarray[float]) -> None:
         
         # Geom data path
@@ -158,8 +169,7 @@ class MURaM:
             print("Calculating optical depth stratification...")
             muram_logtau = calculate_logtau(muram = self, 
                                     save_path = geom_path,
-                                    save_name=logtau_name,
-                                    verbose=self.verbose)
+                                    save_name=logtau_name)
             print(f"Saved to {geom_path / logtau_name}")
         else:
             print("Loading optical depth stratification...")
@@ -170,13 +180,14 @@ class MURaM:
             print("muram logtau shape", muram_logtau.shape)
         print("Done!")
         
+        # Plotting the optical depth stratification
+        image_path = Path("images/first_experiment/atmosphere")
+        if not image_path.exists():
+            image_path.mkdir(parents=True)
         fig, ax = plt.subplots(1,2,figsize=(10,5))
         ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
         ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
-        fig.savefig("images/atmosphere/optical_depth.png")
-        
-        # Opt data path
-        opt_path = self.ptm / "opt_depth"
+        fig.savefig("images/first_experiment/atmosphere/optical_depth.png")
         
          # New optical depth stratification array.
         self.n_logtau = new_logtau.shape[0]
@@ -185,32 +196,22 @@ class MURaM:
         atm_to_logtau = np.zeros((self.nx,self.ny,self.n_logtau,self.atm_quant.shape[-1]))
         print(f"Mapping to new optical depth stratification...")
         for imur in range(self.atm_quant.shape[-1]):
-            out_map_name = f"{self.output_names[imur]}_logtau_{self.filename}_{self.n_logtau}_nodes.npy"
-            # Check if the file exists
-            if not os.path.exists(opt_path / out_map_name):
-                # Calculate the new optical depth stratification
-                muram_quantity = self.atm_quant[..., imur]
-                
-                new_muram_quantity = map_to_logtau(muram = self, 
-                                                   geom_atm=muram_quantity,
-                                                   geom_logtau=muram_logtau,
-                                                   new_logtau=new_logtau,
-                                                   save_path=opt_path,
-                                                   save_name=out_map_name)
-                print(f"Saved to {opt_path / out_map_name}")
-                atm_to_logtau[...,imur] = new_muram_quantity
-            else:
-                # Load the file
-                atm_to_logtau[...,imur] = np.load(opt_path / out_map_name)
-                print(f"Loaded {self.output_names[imur]} from {opt_path / out_map_name}")
-                
+            # Calculate the new optical depth stratification
+            muram_quantity = self.atm_quant[..., imur]
+            
+            new_muram_quantity = map_to_logtau(muram = self, 
+                                                geom_atm=muram_quantity,
+                                                geom_logtau=muram_logtau,
+                                                new_logtau=new_logtau)
+            atm_to_logtau[...,imur] = new_muram_quantity
+            
         print("Loaded!")
 
         self.atm_quant = atm_to_logtau
         del atm_to_logtau
         
         if self.verbose:
-            print("atm logtau shape:", self.atm_quant.shape)                  
+            print("atm logtau shape:", self.atm_quant.shape)               
     def modified_components(self) -> None:
         if not r"$B_x$" in self.mags_names or not r"$B_y$" in self.mags_names:
             raise ValueError("All magnetic field components must be loaded before modifying.")
@@ -248,7 +249,7 @@ class MURaM:
             print("atm modified components shape:", self.atm_quant.shape)
             
         self.modified_flag = True
-    def degrade_spec_resol(self, spatial_then_lsf: bool = False) -> None:
+    def spatial_convolution(self) -> None:
         """
         Degrade the spectral resolution of the Stokes parameters.
 
@@ -257,12 +258,99 @@ class MURaM:
         new_points : int, optional
             Number of new spectral points after degradation (default is 36).
         """
+
+        ###########################################
+        # Spatial convolution
+        ###########################################
+        with fits.open(self.ptm / "hinode-MODEST" / "PSFs" / "hinode_psf_bin.0.16.fits") as hdul:
+            psf = hdul[0].data #This PSF is already normalized.
+
+        psf = psf / psf.sum()
+
+        stokes_spatially_convolved = np.zeros_like(self.stokes)
+        for i in range(self.stokes.shape[-1]):
+            for j in tqdm(range(self.stokes.shape[2])):
+                stokes_spatially_convolved[:, :, j, i] = fftconvolve(self.stokes[:, :, j, i], psf, mode='same')
+
+        self.stokes = stokes_spatially_convolved    
+    def spectral_convolution(self) -> None:
+
+        wl = (np.arange(300) * 0.01  + 6300) # angstroms
+
+        lsf_hinode = pd.read_csv(self.ptm / "hinode-MODEST" / "PSFs" / "hinode_sp.spline.psf", sep = "\s+", header = None)
+
+        lsf_wavelengths = lsf_hinode[0].values
+        lsf_values = lsf_hinode[1].values
+        lsf_interp = interp1d(lsf_wavelengths, lsf_values, kind = "cubic") 
+
+        lsf_wl_min = np.round(lsf_wavelengths.min()+0.010, 3)
+        lsf_wl_max = np.round(lsf_wavelengths.max()-0.010, 3)
+
+        step = wl[1] - wl[0]
+        new_kernel_wl = np.arange(lsf_wl_min, lsf_wl_max+step, step) #We are assuming that the values of the LSF are presented in amstrongs.
+        new_kernel_values = lsf_interp(new_kernel_wl)
+
+        lsf_values = lsf_values / lsf_values.sum()
+        new_kernel_values = new_kernel_values / new_kernel_values.sum()
+
+
+        stokes_sptrl_convolved = np.zeros_like(self.stokes)
+
+        # Apply convolution for each Stokes parameter efficiently
+        for stk in tqdm(range(self.stokes.shape[-1])):
+            stokes_sptrl_convolved[..., stk] = convolve1d(
+                self.stokes[..., stk],               # Input: (nx, ny, n_lambda)
+                weights=new_kernel_values,     # Kernel
+                axis=-1,                       # Apply along wavelength axis
+                mode='wrap'                    # Mimic periodic boundary as before
+            )
+
+        self.stokes = stokes_sptrl_convolved
+    def spectral_sampling(self) -> None:
+        # Parameters from Hinode/SP FITS header (typical values)
+        NAXIS1 = 112
+        CRVAL1 = 6302.0    # Ångstroms
+        CDELT1 = 0.0215    # Å/pixel
+        CRPIX1 = 57        # Reference pixel
+
+        # Wavelength array calculation
+        self.wl = (np.arange(300) * 0.01  + 6300) # angstroms
+        self.new_wl = CRVAL1 + (np.arange(1, NAXIS1 + 1) - CRPIX1) * CDELT1
+
+        print("Interpolating Stokes parameters to Hinode/SP wavelengths...")
+        # Reshape stokes array for vectorized interpolation
+        stokes_reshaped = self.stokes.reshape(-1, self.stokes.shape[2], self.stokes.shape[3])
+
+        # Create an array to store the interpolated values
+        stokes_to_hinode_wl = np.zeros((self.nx, self.ny, NAXIS1, self.stokes.shape[-1]))
+
+        # Perform vectorized interpolation
+        for stk in tqdm(range(self.stokes.shape[-1])):
+            stokes_sptrl_interp = interp1d(self.wl, stokes_reshaped[:, :, stk], kind="cubic", axis=1)
+            stokes_to_hinode_wl[..., stk] = stokes_sptrl_interp(self.new_wl).reshape(self.nx, self.ny, NAXIS1)
         
-        if spatial_then_lsf:
+        self.stokes = stokes_to_hinode_wl
+    def surface_pixel_sampling(self) -> None:
 
-        else:
+        # Target pixel size:
+        target_pixel_size_km = 116
+        current_pixel_size_km = 25
+        scaling_factor = current_pixel_size_km / target_pixel_size_km
+        
+        target_size = int(480 * scaling_factor)  # ~103 pixels
 
-            
+        resize = transforms.Resize((target_size, target_size), interpolation=transforms.InterpolationMode.BICUBIC)
+        new_image_dimensions = resize.size
+        print("atm surface pixel sampling...")
+        resampled_atm = np.zeros((new_image_dimensions[0], new_image_dimensions[1], self.atm_quant.shape[2], self.atm_quant.shape[3]))
+        for atm_mag in tqdm(range(self.atm_quant.shape[-1])):
+            for itau in range(self.atm_quant.shape[2]):
+                resampled_atm[..., itau, atm_mag] = resize(torch.tensor(self.atm_quant[..., itau, atm_mag]).unsqueeze(0).unsqueeze(0)).numpy().squeeze()
+        print("stokes surface pixel sampling...")
+        resampled_stokes = np.zeros((new_image_dimensions[0], new_image_dimensions[1], self.stokes.shape[2], self.stokes.shape[3]))
+        for stk in tqdm(range(self.stokes.shape[-1])):
+            for iwl in range(self.stokes.shape[2]):
+                resampled_stokes[..., iwl, stk] = resize(torch.tensor(self.stokes[..., iwl, stk]).unsqueeze(0).unsqueeze(0)).numpy().squeeze()
     def scale_quantities(self, stokes_weigths: list[int]) -> None:
         """
         Scale the atmospheric and Stokes quantities.
@@ -301,12 +389,10 @@ class MURaM:
         print("Scaling the quantities...")
         # Atmosphere magnitudes scale factors
         self.phys_maxmin = {
-            "T": [6.5e3, 4e3],
-            "Rho": [-5.6, -7],
-            "V": [1e6, -1e6],
-            "B": [1e3, -1e3],
-            "varphi": [0, 180],
-            "gamma": [-90, 90]
+            "T": [8e3, 4e3], # K
+            "B": [2e3, -2e3], # G
+            "Rho": [-7, -6], # g/cm^3 log 
+            "V": [1e6, -1e6], #cm/s
         }
 
         # maxmin normalization function
@@ -320,53 +406,26 @@ class MURaM:
         self.atm_quant[:, :, :, 1] = norm_func(self.atm_quant[:, :, :, 1], self.phys_maxmin["Rho"])
         self.atm_quant[:, :, :, 2] = norm_func(self.atm_quant[:, :, :, 2], self.phys_maxmin["V"])
         self.atm_quant[:, :, :, 3] = norm_func(self.atm_quant[:, :, :, 3], self.phys_maxmin["B"])
-        self.atm_quant[:, :, :, 4] = norm_func(self.atm_quant[:, :, :, 4], self.phys_maxmin["varphi"])
-        self.atm_quant[:, :, :, 5] = norm_func(self.atm_quant[:, :, :, 5], self.phys_maxmin["gamma"])
-        
-        # Stokes parameter normalization by the continuum
-        scaled_dir = self.ptm / "scaled_stokes_with_noise"
-        if not os.path.exists(scaled_dir):
-            os.makedirs(scaled_dir)
-        mean_continuum_dir = self.ptm / "mean_continuum"
-        if not os.path.exists(mean_continuum_dir):
-            os.makedirs(mean_continuum_dir)
         
         print("Normalizing the Stokes parameters by the continuum...")
-        scaled_out = scaled_dir / f"scaled_stokes_{self.filename}_sr{self.new_points}_wl_points.npy"
-        mean_continuum_out = mean_continuum_dir / f"mean_continuum_{self.filename}_sr{self.new_points}_wl_points.npy"
-        if not os.path.exists(scaled_out):
-            # Continuum calculation
-            scaled_stokes = np.ones_like(self.stokes)
-            mean_continuum = np.ones_like(self.stokes[...,0,0])
-            cont_indices = [0, 1, int(len(self.new_wl) / 2) - 1, int(len(self.new_wl) / 2), int(len(self.new_wl) / 2) + 1, -2, -1]
-            wl_cont_values = self.new_wl[cont_indices]  # corresponding wavelength values to the selected continuum indices
-            print("calculating the continuum...")
-            for jx in tqdm(range(self.nx)):
-                for jy in range(self.ny):
-                    for i in range(self.stokes.shape[-1]):
-                        cont_values = self.stokes[jx, jy, cont_indices, 0]  # corresponding intensity values to the selected continuum indices
-                        cont_model = interp1d(wl_cont_values, cont_values, kind="cubic")  # Interpolation applied over the assumed continuum values
-                        scaled_stokes[jx, jy, :, i] = self.stokes[jx, jy, :, i] / cont_model(self.new_wl)
-                        mean_continuum[jx, jy] = cont_model(self.new_wl).mean()
-            np.save(scaled_out, scaled_stokes)
-            np.save(mean_continuum_out, mean_continuum)
-            print("Saved normalized stokes to", scaled_out)
-            print("Saved mean continuum to", mean_continuum_out)
-        else:
-            scaled_stokes = np.load(scaled_out)
-            mean_continuum = np.load(mean_continuum_out)
-            print("Loaded normalized stoks from", scaled_out)
-            print("Loaded mean continuum from", mean_continuum_out)
-            
+        # Continuum calculation
+        scaled_stokes = np.ones_like(self.stokes)
+
+        # Took the first 10 values in the continuum and calculated the mean value to obtain the I_c
+        print("calculating the continuum...")
+        wl_cont_values = self.new_wl[:10]  
+        cont_values = self.stokes[:, :, :10, 0]  # Extract continuum values for all spatial points
+        cont_model = interp1d(wl_cont_values, cont_values, kind="linear", axis=-1, bounds_error=False, fill_value="extrapolate")  # Vectorized interpolation
+        Ic = cont_model(self.new_wl).flatten().mean()  # Interpolated continuum values
+        scaled_stokes = self.stokes / Ic # Apply continuum normalization
+
         self.stokes = scaled_stokes
         del scaled_stokes
         # Stokes parameter weighting
         for i in range(len(stokes_weigths)):
             self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weigths[i]
-            print("Scaled!")
-
-        # Continuum normalization
-        self.mean_continuum = norm_func(mean_continuum, [mean_continuum.max(), mean_continuum.min()])
+            
+        print("Scaled!")
 
         if self.verbose:
             print(f""" self.stokes:
@@ -395,7 +454,25 @@ class MURaM:
             mvzz min = {np.min(self.atm_quant[:, :, :, 2])}
             mbzz min = {np.min(self.atm_quant[:, :, :, 3])}
                 """) 
-    def gran_intergran_balance(self) -> None:
+    def spectral_noise(self, level_of_noise: float) -> None:
+        norm_stokes_with_noise = np.zeros_like(self.stokes)
+
+
+        for jx in tqdm(range(self.stokes.shape[0])):
+            for jy in range(self.stokes.shape[1]):
+                for stk in range(self.stokes.shape[-1]):
+                    new_points = int(np.random.poisson(1))
+                    norm_stokes_with_noise[jx, jy, :, stk] = self.stokes[jx, jy, :, stk] + level_of_noise * np.random.randn(len(self.new_wl)) 
+        
+        self.stokes = norm_stokes_with_noise
+
+        # Plot
+        plot_polarizations(self.stokes, self.new_wl,
+                            image_path = "images/fifth_experiment")
+        plot_stokes(self.stokes, self.new_wl, 
+                    image_name=f"{self.filename}_stokes_with_noise", 
+                    images_dir="images/fifth_experiment")
+    def intergran_gran_polariz_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
         """
@@ -620,10 +697,48 @@ def map_to_logtau(muram: MURaM,
     np.save(save_path / save_name, new_muram_quantity)
             
     return new_muram_quantity
+def continuum_normalization(spectral_cube: np.ndarray, wl_array: np.ndarray) -> np.ndarray:
+    """
+    Function to normalize the spectral cube by continuum normalization.
+    Args:
+        spectral_cube(np.ndarray): Spectral cube to be normalized.
+        wl_array(np.ndarray): Wavelength array.
+    Returns:
+        (np.ndarray) Normalized spectral
+    """
+
+    # Vectorized interpolation for speedup
+    # cont_values = spectral_cube[:, :, cont_indices, 0].mean(axis = 2).flatten().mean()  # corresponding intensity values to the selected continuum indices
+    # cont_model = interp1d(wl_cont_values, cont_values, kind="linear", axis=2)  # Interpolation applied over the assumed continuum values
+    I_c =  spectral_cube[:, :, :10, 0].mean(axis = 2).flatten().mean()
+    # Apply the normalization
+    norm_spectral_cube = np.zeros_like(spectral_cube)
+    #mean_continuum_image = cont_model(wl_array).mean(axis=2)
+    mean_continuum_image = spectral_cube[:, :, :10, 0].mean(axis = 2)
+    for i in range(spectral_cube.shape[-1]):
+        norm_spectral_cube[..., i] = spectral_cube[..., i]/ I_c
+
+    mean_continuum_image /= I_c
+    return norm_spectral_cube, mean_continuum_image
+def spectropolarimetry(stokes: np.ndarray) -> np.ndarray:
+    """
+    Function to calculate the polarization degree and angle from the Stokes parameters.
+    Args:
+        stokes(np.ndarray): Array containing the Stokes parameters.
+    Returns:
+        (np.ndarray) Array containing the polarization degree and angle.
+    """
+    Q, U, V = stokes[..., 1], stokes[..., 2], stokes[..., 3]
+    nwl_points = stokes.shape[-2]
+
+    mean_continuum = np.mean(stokes[..., 0], axis = -1)
+    linear_polarization = np.sum(np.sqrt(Q**2 + U**2), axis = -1) / nwl_points
+    circular_polarization = np.sum(np.abs(V),axis=-1) / nwl_points
+    return mean_continuum, linear_polarization, circular_polarization
+
 ##############################################################
 # Plot utils
 ##############################################################
-
 def plot_stokes(stokes: np.ndarray, 
                 wl_points: np.ndarray, 
                 image_name: str,
@@ -655,7 +770,7 @@ def plot_stokes(stokes: np.ndarray,
     images_dir = os.path.join(images_dir, stokes_subdir)
     if not os.path.exists(images_dir):
         os.makedirs(images_dir)
-    image_path = os.path.join(images_dir, f"{image_name}_{len(wl_points)}_wl_points.pdf")
+    image_path = os.path.join(images_dir, f"{image_name}.pdf")
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
@@ -696,14 +811,67 @@ def plot_atmosphere_quantities(atm_quant: np.ndarray,
     fig.savefig(image_path)
 
     print(f"Saved image to: {image_path}")
+def plot_polarizations(stokes: np.ndarray, wl: np.ndarray,image_path: str = "images", image_name: str = "polarizations.pdf") -> None:
+    """
+    Function to plot the mean continuum, linear polarization, and circular polarization.
+    Args:
+        mean_continuum_data(np.ndarray): Array containing the mean continuum.
+        linear_polarization_data(np.ndarray): Array containing the linear polarization.
+        circular_polarization_data(np.ndarray): Array containing the circular polarization.
+        filename(str): Name of the file to save the plot.
+    Returns:
+        None
+    """
 
+    mean_continuum_data, linear_polarization_data, circular_polarization_data = spectropolarimetry(stokes, wl)
+    # Calculate the root mean square (RMS) of the data
+    def rms_calculation(data: np.ndarray) -> float:
+        return np.sqrt(np.mean((data - data.mean())**2))/data.mean()
+    
+    rms = [rms_calculation(mean_continuum_data),
+           rms_calculation(linear_polarization_data),
+           rms_calculation(circular_polarization_data)]
+
+    fig, ax = plt.subplots(1, 3, figsize=(3*4.3, 4.3))
+
+    # Plot mean_continuum
+    im1 = ax[0].imshow(mean_continuum_data, cmap='inferno')
+    divider1 = make_axes_locatable(ax[0])
+    cax1 = divider1.append_axes("right", size="5%", pad=0.05)
+    fig.colorbar(im1, cax=cax1)
+
+    # Plot old_norm_linear_polarization
+    q_low, q_high = np.percentile(linear_polarization_data, [0, 100])
+    im2 = ax[1].imshow(linear_polarization_data, cmap='RdYlGn_r', vmin=q_low, vmax=q_high)
+    divider2 = make_axes_locatable(ax[1])
+    cax2 = divider2.append_axes("right", size="5%", pad=0.05)
+    fig.colorbar(im2, cax=cax2)
+
+    # Plot old_norm_circular_polarization
+    q_low, q_high= np.percentile(circular_polarization_data, [0, 100])
+    im3 = ax[2].imshow(circular_polarization_data, cmap="PiYG", vmin=q_low, vmax=q_high)
+    divider3 = make_axes_locatable(ax[2])
+    cax3 = divider3.append_axes("right", size="5%", pad=0.05)
+    fig.colorbar(im3, cax=cax3)
+
+    if rms:
+        ax[0].set_title(f'Continuum (rms = {rms[0]:.2f})')
+        ax[1].set_title(f'Linear Pol.(rms = {rms[1]:.2f})')
+        ax[2].set_title(f'Circular Pol. (rms = {rms[2]:.2f})')
+    else:
+        ax[0].set_title('Continuum')
+        ax[1].set_title('Linear Pol.')
+        ax[2].set_title('Circular Pol.')
+        
+
+    plt.tight_layout()
+    fig.savefig(image_path / image_name)
 ##############################################################
 # loading utils
 ##############################################################
 def load_training_data(filenames: list[str], 
                        ptm: str = "./data",
-                       noise_level: float = 0.01,
-                       n_spectral_points: int = 36,
+                       noise_level: float = 5.9e-4, #Hinode noise
                        new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                        stokes_weights: list[int] = [1,10,10,10],
                        verbose: bool = False,
@@ -728,11 +896,15 @@ def load_training_data(filenames: list[str],
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
         muram.charge_quantities()
+        muram.just_LOS_components()
         muram.optical_depth_stratification(new_logtau=new_logtau)
-        muram.modified_components()
-        muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.spatial_convolution()
+        muram.spectral_convolution()
+        muram.spectral_sampling()
+        muram.surface_pixel_sampling()
         muram.scale_quantities(stokes_weigths=stokes_weights)
-        muram.gran_intergran_balance()
+        muram.spectral_noise(level_of_noise=noise_level)
+        muram.intergran_gran_polariz_balance()
 
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
@@ -743,8 +915,7 @@ def load_training_data(filenames: list[str],
     return atm_data, stokes_data, muram.new_wl
 def load_data_cubes(filenames: list[str], 
                     ptm = "./data",
-                    n_spectral_points: int = 36,
-                    noise_level: float = 0.01,
+                    noise_level: float = 5.9e-4, #Hinode noise
                     new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                     stokes_weights: list[int] = [1,10,10,10],
                     verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -768,10 +939,16 @@ def load_data_cubes(filenames: list[str],
         #Creation of the MURaM object for each filename for charging the data.
         muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
         muram.charge_quantities()
+        muram.just_LOS_components()
         muram.optical_depth_stratification(new_logtau=new_logtau)
-        muram.modified_components()
-        muram.degrade_spec_resol(new_points=n_spectral_points)
+        muram.spatial_convolution()
+        muram.spectral_convolution()
+        muram.spectral_sampling()
+        muram.surface_pixel_sampling()
         muram.scale_quantities(stokes_weigths=stokes_weights)
+        muram.spectral_noise(level_of_noise=noise_level)
+        muram.intergran_gran_polariz_balance()
+
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
     

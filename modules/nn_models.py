@@ -4,7 +4,7 @@ from torch import nn
 
 
 class InversionModel(nn.Module):
-    def __init__(self, scales: list[int], nwl_points: int, in_channels: int = 4, c1_filters: int = 16, c2_filters: int = 32, kernel_size: int = 5, stride: int = 1, padding: int = 0, pool_size: int = 2, n_outputs: int = 5):
+    def __init__(self, scales: list[int], nwl_points: int, in_channels: int = 4, c1_filters: int = 32, c2_filters: int = 64, kernel_size: int = 5, stride: int = 1, padding: int = 0, pool_size: int = 2, n_outputs: int = 5):
         super(InversionModel, self).__init__()
         # 1. Multi-scale feature mapping
         self.multi_scale_feature_mapping = MultiScaleFeatureMapping(scales=scales, in_channels=in_channels, c1_filters=c1_filters, c2_filters=c2_filters, kernel_size=kernel_size, stride=stride, padding=padding, pool_size=pool_size)

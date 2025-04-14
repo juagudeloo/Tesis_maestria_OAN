@@ -36,10 +36,10 @@ def main():
     epochs = 20
     lr = 1e-3
     n_spec_points = 112
-    new_logtau = np.array([-2.0, -0.8, 0.0])
-    noise_level = 0.1
+    new_logtau = np.arange(-2.0, 0+0.1, 0.1)
+    noise_level = 5.9e-4 #Hinode noise level (2016 - A. Lagg)
     
-    stokes_weights = [1,7,7,2]
+    stokes_weights = [1,100,100,10]
     
     #1. Loop through stokes weights
     atm_data, stokes_data, wl_points = load_training_data(filenames, 
@@ -95,7 +95,7 @@ def main():
     #Save the model to file so we can get back the best model
     save_filepath = experiment_name + ".pth"
     save_model(model=los_model,
-            target_dir="models",
+            target_dir="models/fifth_experiment",
             model_name=save_filepath)
     print("-"*50 + "\n")
 
