@@ -35,7 +35,6 @@ def main():
     m_type = "hybrid"
     epochs = 20
     lr = 1e-3
-    n_spec_points = 112
     new_logtau = np.arange(-2.0, 0+0.1, 0.1)
     noise_level = 5.9e-4 #Hinode noise level (2016 - A. Lagg)
     
@@ -45,14 +44,10 @@ def main():
     atm_data, stokes_data, wl_points = load_training_data(filenames, 
                                                           ptm = "/scratchsan/observatorio/juagudeloo/data",
                                                             noise_level=noise_level,
-                                                            n_spectral_points=n_spec_points,
                                                             new_logtau=new_logtau,
                                                             stokes_weights=stokes_weights)
     stokes_data = np.moveaxis(stokes_data, 1, 2)
     
-    plot_stokes(stokes=stokes_data[0], 
-                wl_points = wl_points,
-                image_name = "example_stokes",)
     #2. Create models
     scales = [1,2,4]
     los_model = InversionModel(scales=scales, 

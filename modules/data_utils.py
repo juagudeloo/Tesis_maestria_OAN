@@ -465,13 +465,6 @@ class MURaM:
                     norm_stokes_with_noise[jx, jy, :, stk] = self.stokes[jx, jy, :, stk] + level_of_noise * np.random.randn(len(self.new_wl)) 
         
         self.stokes = norm_stokes_with_noise
-
-        # Plot
-        plot_polarizations(self.stokes, self.new_wl,
-                            image_path = "images/fifth_experiment")
-        plot_stokes(self.stokes, self.new_wl, 
-                    image_name=f"{self.filename}_stokes_with_noise", 
-                    images_dir="images/fifth_experiment")
     def intergran_gran_polariz_balance(self) -> None:
         """
         Balance the quantities of data from the granular and intergranular zones.
@@ -904,6 +897,12 @@ def load_training_data(filenames: list[str],
         muram.surface_pixel_sampling()
         muram.scale_quantities(stokes_weigths=stokes_weights)
         muram.spectral_noise(level_of_noise=noise_level)
+        # Plot
+        plot_polarizations(muram.stokes, muram.new_wl,
+                            image_path = "images/fifth_experiment")
+        plot_stokes(muram.stokes, muram.new_wl, 
+                    image_name=f"{muram.filename}_stokes_with_noise", 
+                    images_dir="images/fifth_experiment")
         muram.intergran_gran_polariz_balance()
 
         atm_data.append(muram.atm_quant)
