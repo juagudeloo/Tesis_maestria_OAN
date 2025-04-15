@@ -367,7 +367,7 @@ class MURaM:
         print("surface pixel sampling done!")
         print(f"atm shape: {self.atm_quant.shape}")
         print(f"stokes shape: {self.stokes.shape}")
-    def scale_quantities(self, stokes_weigths: list[int]) -> None:
+    def scale_quantities(self, stokes_weights: list[int]) -> None:
         """
         Scale the atmospheric and Stokes quantities.
         """
@@ -436,8 +436,8 @@ class MURaM:
         self.stokes = scaled_stokes
         del scaled_stokes
         # Stokes parameter weighting
-        for i in range(len(stokes_weigths)):
-            self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weigths[i]
+        for i in range(len(stokes_weights)):
+            self.stokes[:, :, :, i] = self.stokes[:, :, :, i] * stokes_weights[i]
             
         print("Scaled!")
 
@@ -909,7 +909,7 @@ def load_training_data(filenames: list[str],
         muram.spectral_convolution()
         muram.spectral_sampling()
         muram.surface_pixel_sampling()
-        muram.scale_quantities(stokes_weigths=stokes_weights)
+        muram.scale_quantities(stokes_weights=stokes_weights)
         muram.spectral_noise(level_of_noise=noise_level)
         # Plot
         plot_polarizations(muram.stokes, muram.new_wl,
@@ -965,7 +965,7 @@ def load_data_cubes(filenames: list[str],
         muram.spectral_convolution()
         muram.spectral_sampling()
         muram.surface_pixel_sampling()
-        muram.scale_quantities(stokes_weigths=stokes_weights)
+        muram.scale_quantities(stokes_weights=stokes_weights)
         muram.spectral_noise(level_of_noise=noise_level)
         # Plot
         plot_polarizations(muram.stokes, muram.new_wl,
