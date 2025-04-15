@@ -252,14 +252,18 @@ def train(model: torch.nn.Module,
     # Loop through training and testing steps for a number of epochs
     for epoch in tqdm(range(epochs)):
         train_loss, train_acc = train_step(model=model,
-                                          dataloader=train_dataloader,
-                                          loss_fn=loss_fn,
-                                          optimizer=optimizer,
-                                          device=device)
+                  dataloader=train_dataloader,
+                  loss_fn=loss_fn,
+                  optimizer=optimizer,
+                  device=device)
         test_loss, test_acc = test_step(model=model,
           dataloader=test_dataloader,
           loss_fn=loss_fn,
           device=device)
+
+        # Check for NaN values in train_loss or test_loss
+        if np.isnan(train_loss) or np.isnan(test_loss):
+            raise ValueError(f"NaN value detected in losses: train_loss={train_loss}, test_loss={test_loss}")
 
         # Print out what's happening
         print(
@@ -345,22 +349,10 @@ def descale_atm(atm_generated: np.ndarray,
         max_val = maxmin[0]
         min_val = maxmin[1]
         return arr*(max_val-min_val)+min_val
-    
-    if type_of_quantity == 1: #Thermodynamical
-        atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
-        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
-    elif type_of_quantity == 2: #Magnetic field
-        atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["B"])
-        atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["varphi"])
-        atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["gamma"])
-    elif type_of_quantity == 3:
-      atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
-      atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
-      atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
-      atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
-      atm_generated[:,:,:,4] = denorm_func(atm_generated[:,:,:,4], maxmin["varphi"])
-      atm_generated[:,:,:,5] = denorm_func(atm_generated[:,:,:,5], maxmin["gamma"])
+    atm_generated[:,:,:,0] = denorm_func(atm_generated[:,:,:,0], maxmin["T"])
+    atm_generated[:,:,:,1] = denorm_func(atm_generated[:,:,:,1], maxmin["Rho"])
+    atm_generated[:,:,:,2] = denorm_func(atm_generated[:,:,:,2], maxmin["V"])
+    atm_generated[:,:,:,3] = denorm_func(atm_generated[:,:,:,3], maxmin["B"])
     
     return atm_generated
 def generate_results(model: torch.nn.Module,
@@ -457,14 +449,15 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
 
   print("atm_generated shape:", atm_generated.shape)
   print("atm_original shape:", atm_original.shape)
-  fig, axs = plt.subplots(2, 6, figsize=(3.5*6, 3*2))
+  n_mags = atm_original.shape[-1]
+  fig, axs = plt.subplots(2, n_mags, figsize=(3.5*6, 3*2))
   
   tau_value = tau[itau]
   fig.suptitle(r'$\log \tau$'+f' = {tau_value:.2f}')
 
   # Define colorbar limits based on atm_original
-  vmin = [atm_original[:, :, itau, i].min() for i in range(6)]
-  vmax = [atm_original[:, :, itau, i].max() for i in range(6)]
+  vmin = [atm_original[:, :, itau, i].min() for i in range(n_mags)]
+  vmax = [atm_original[:, :, itau, i].max() for i in range(n_mags)]
 
   # Define colormaps
   cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
@@ -549,8 +542,8 @@ def plot_density_bars(atm_generated: np.ndarray,
   units = ['K', r'g/cm$^3$', 'km/s', 'G']
 
   for j in range(num_params):
-    row = j // 3
-    col = j % 3
+    row = j // 2
+    col = j % 2
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
     gen_q5, gen_q95 = np.quantile(
@@ -625,8 +618,8 @@ def plot_correlation(atm_generated: np.ndarray,
   fig.suptitle(r'$\log \tau$' + f' = {tau[tau_index]:.2f}')
 
   for j in range(num_params):
-    row = j // 3
-    col = j % 3
+    row = j // 2
+    col = j % 2
     gen_values = atm_generated[:, :, tau_index, j].flatten()
     orig_values = atm_original[:, :, tau_index, j].flatten()
     pears = pearsonr(gen_values, orig_values)[0]

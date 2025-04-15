@@ -20,9 +20,12 @@ def main():
     #filenames to be readed for creating the dataset
     filenames = []
     for i in range(80, 97):
-       filenames.append(f"0{i}000")
+        if i in [87, 94, 97, 98]:
+            continue
+        else:
+            filenames.append(f"0{i}000")
     filenames.append("099000")
-    for i in range(100, 113):
+    for i in range(100, 111):
         filenames.append(f"{i}000")
     #filenames = ["080000", "085000", "090000"] #for initital testings
         
@@ -53,7 +56,7 @@ def main():
     los_model = InversionModel(scales=scales, 
                            nwl_points=len(wl_points),
                            n_outputs=atm_data.shape[-1]*len(new_logtau)).to(device).float()
-    los_model.name = "LOS_model"
+    los_model.name = "only_LOS"
 
     #3. Set hyperparameters
     set_seeds()
@@ -65,7 +68,7 @@ def main():
     #4. Train models
     
     # ----------------- General model -----------------
-    experiment_name = f"only_LOS"
+    experiment_name = f"Hinode_"+los_model.name
 
     #5. Create dataloaders
     train_dataloader, test_dataloader = create_dataloaders(stokes_data = stokes_data,
