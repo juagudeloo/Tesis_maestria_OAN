@@ -82,7 +82,7 @@ def train_step(model: torch.nn.Module,
   model.train()
 
   # Setup train loss and train accuracy values
-  train_loss, train_acc = 0, 0
+  train_total_loss, train_base_loss, train_wfa_loss = 0, 0, 0
 
   # Loop through data loader data batches
   for batch, (X, y) in enumerate(dataloader):
@@ -93,25 +93,28 @@ def train_step(model: torch.nn.Module,
       y_pred = model(X)
 
       # 2. Calculate  and accumulate loss
-      loss = loss_fn(y_pred, y)
-      train_loss += loss.item() 
+      total_loss, base_loss, wfa_loss = loss_fn(input_stokes=X,
+                                                predicted_atm=y_pred,
+                                                target_atm=y)
+      train_total_loss += total_loss.item()
+      train_base_loss += base_loss.item()
+      train_wfa_loss += wfa_loss.item()
 
       # 3. Optimizer zero grad
       optimizer.zero_grad()
 
       # 4. Loss backward
-      loss.backward()
+      total_loss.backward()
 
       # 5. Optimizer step
       optimizer.step()
 
-      # Calculate and accumulate accuracy metric across all batches
-      train_acc += (y_pred == y).sum().item()/len(y_pred)
-
   # Adjust metrics to get average loss and accuracy per batch 
-  train_loss = train_loss / len(dataloader)
-  train_acc = train_acc / len(dataloader)
-  return train_loss, train_acc
+  train_total_loss /= len(dataloader)
+  train_base_loss /= len(dataloader)
+  train_wfa_loss /= len(dataloader)
+
+  return train_total_loss, train_base_loss, train_wfa_loss
 def test_step(model: torch.nn.Module, 
               dataloader: torch.utils.data.DataLoader, 
               loss_fn: torch.nn.Module,
@@ -137,7 +140,7 @@ def test_step(model: torch.nn.Module,
   model.eval() 
 
   # Setup test loss and test accuracy values
-  test_loss, test_acc = 0, 0
+  test_total_loss, test_base_loss, test_wfa_loss = 0, 0, 0
 
   # Turn on inference context manager
   with torch.inference_mode():
@@ -150,16 +153,16 @@ def test_step(model: torch.nn.Module,
           test_pred = model(X)
 
           # 2. Calculate and accumulate loss
-          loss = loss_fn(test_pred, y)
-          test_loss += loss.item()
-
-          # Calculate and accumulate accuracy
-          test_acc += ((test_pred == y).sum().item()/len(test_pred))
+          total_loss, base_loss, wfa_loss = loss_fn(X, test_pred, y)
+          test_total_loss += total_loss.item()
+          test_base_loss += base_loss.item()
+          test_wfa_loss += wfa_loss.item()
 
   # Adjust metrics to get average loss and accuracy per batch 
-  test_loss = test_loss / len(dataloader)
-  test_acc = test_acc / len(dataloader)
-  return test_loss, test_acc
+  test_total_loss /= len(dataloader)
+  test_base_loss /= len(dataloader)
+  test_wfa_loss /= len(dataloader)
+  return test_total_loss, test_base_loss, test_wfa_loss
 def create_writer(experiment_name: str, 
                   model_name: str, 
                   extra: str=None) -> torch.utils.tensorboard.writer.SummaryWriter():
@@ -193,9 +196,9 @@ def create_writer(experiment_name: str,
 
     if extra:
         # Create log directory path
-        log_dir = os.path.join("runs", "fourth_experiment", timestamp, experiment_name, model_name, extra)
+        log_dir = os.path.join("runs", "fifth_experiment", timestamp, experiment_name, model_name, extra)
     else:
-        log_dir = os.path.join("runs", "fourth_experiment", timestamp, experiment_name, model_name)
+        log_dir = os.path.join("runs", "fifth_experiment", timestamp, experiment_name, model_name)
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)
@@ -229,68 +232,63 @@ def train(model: torch.nn.Module,
       writer: A SummaryWriter() instance to log model results to.
 
     Returns:
-      A dictionary of training and testing loss as well as training and
-      testing accuracy metrics. Each metric has a value in a list for 
+      A dictionary of training and testing total loss, base loss and WFA loss. Each metric has a value in a list for 
       each epoch.
-      In the form: {train_loss: [...],
-                train_acc: [...],
-                test_loss: [...],
-                test_acc: [...]} 
-      For example if training for epochs=2: 
-              {train_loss: [2.0616, 1.0537],
-                train_acc: [0.3945, 0.3945],
-                test_loss: [1.2641, 1.5706],
-                test_acc: [0.3400, 0.2973]} 
     """
     # Create empty results dictionary
-    results = {"train_loss": [],
-               "train_acc": [],
-               "test_loss": [],
-               "test_acc": []
-    }
+    results = {"train_total_loss": [],
+               "train_base_loss": [],
+               "train_wfa_loss": [],
+               "test_total_loss": [],
+                "test_base_loss": [],
+                "test_wfa_loss": []
+                }
 
     # Loop through training and testing steps for a number of epochs
     for epoch in tqdm(range(epochs)):
-        train_loss, train_acc = train_step(model=model,
+        train_total_loss, train_base_loss, train_wfa_loss = train_step(model=model,
                   dataloader=train_dataloader,
                   loss_fn=loss_fn,
                   optimizer=optimizer,
                   device=device)
-        test_loss, test_acc = test_step(model=model,
+        test_total_loss, test_base_loss, test_wfa_loss = test_step(model=model,
           dataloader=test_dataloader,
           loss_fn=loss_fn,
           device=device)
 
         # Check for NaN values in train_loss or test_loss
-        if np.isnan(train_loss) or np.isnan(test_loss):
-            raise ValueError(f"NaN value detected in losses: train_loss={train_loss}, test_loss={test_loss}")
+        if np.isnan(train_total_loss) or np.isnan(test_total_loss):
+            raise ValueError(f"NaN value detected in losses: train_loss={train_total_loss}, test_loss={test_total_loss}")
 
         # Print out what's happening
-        print(
-          f"Epoch: {epoch+1} | "
-          f"train_loss: {train_loss:.4f} | "
-          f"train_acc: {train_acc:.4f} | "
-          f"test_loss: {test_loss:.4f} | "
-          f"test_acc: {test_acc:.4f}"
-        )
+        print(f"Epoch: {epoch+1} | "
+              f"train_total_loss: {train_total_loss:.4f} | "
+              f"train_base_loss: {train_base_loss:.4f} | "
+              f"train_wfa_loss: {train_wfa_loss:.4f} | "
+              f"test_total_loss: {test_total_loss:.4f} | "
+              f"test_base_loss: {test_base_loss:.4f} | "
+              f"test_wfa_loss: {test_wfa_loss:.4f} | ")
 
         # Update results dictionary
-        results["train_loss"].append(train_loss)
-        results["train_acc"].append(train_acc)
-        results["test_loss"].append(test_loss)
-        results["test_acc"].append(test_acc)
-
+        results["train_total_loss"].append(train_total_loss)
+        results["train_base_loss"].append(train_base_loss)
+        results["train_wfa_loss"].append(train_wfa_loss)
+        results["test_total_loss"].append(test_total_loss)
+        results["test_base_loss"].append(test_base_loss)
+        results["test_wfa_loss"].append(test_wfa_loss)
 
         # See if there's a writer, if so, log to it
         if writer:
             # Add results to SummaryWriter
-            writer.add_scalars(main_tag="Loss", 
-                               tag_scalar_dict={"train_loss": train_loss,
-                                                "test_loss": test_loss},
+            writer.add_scalars(main_tag="Total Loss", 
+                               tag_scalar_dict={"train_loss": train_total_loss,
+                                                "test_loss": test_total_loss},
                                global_step=epoch)
-            writer.add_scalars(main_tag="Accuracy", 
-                               tag_scalar_dict={"train_acc": train_acc,
-                                                "test_acc": test_acc}, 
+            writer.add_scalars(main_tag="Partial_losses", 
+                               tag_scalar_dict={"train_base_loss": train_base_loss,
+                                                "train_wfa_loss": train_wfa_loss,
+                                                "test_base_loss": test_base_loss,
+                                                "test_wfa_loss": test_wfa_loss},
                                global_step=epoch)
 
             # Close the writer

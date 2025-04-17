@@ -49,7 +49,7 @@ def main():
                                                                       new_logtau=new_logtau,
                                                                       stokes_weights=stokes_weights)
     
-    images_path = Path("images/fifth_experiment")
+    images_path = Path("images/fifth_experiment/PhysicsInformed")
     if not images_path.exists():
         images_path.mkdir(parents=True)
     for i, filename in enumerate(filenames):
@@ -62,94 +62,97 @@ def main():
       stokes_data_original =  np.reshape(np.copy(stokes_data[i]), (stokes_data[i].shape[0]*stokes_data[i].shape[1], stokes_data[i].shape[2],stokes_data[i].shape[3]))
       stokes_data_original = np.moveaxis(stokes_data_original, 1, 2)
       
-      #2. Create models
-      scales = [1,2,4]
-      los_model = InversionModel(scales=scales, 
-                            nwl_points=stokes_data_original.shape[-1],
-                            n_outputs=atm_data_original.shape[-1]*len(new_logtau)).to(device).float()
-      los_model.name = "only_LOS"
+      wfa_weigths = [0,1e-4, 1e-3, 1e-2, 0.1, 0.5]
+      for wfa_weight in wfa_weigths:
+        #2. Create models
+        scales = [1,2,4]
+        los_model = InversionModel(scales=scales, 
+                              nwl_points=stokes_data_original.shape[-1],
+                              n_outputs=atm_data_original.shape[-1]*len(new_logtau)).to(device).float()
+        los_model.name = "only_LOS"
 
-      experiment_name = "Hinode_"+los_model.name
-      weights_name = f"{experiment_name}.pth"
+        base_loss_threshold = 0.0004  # Threshold for base loss (in Gauss)
+        experiment_name = f"Hinode_"+los_model.name+"_WFA_constraint"+f"_wfa_weight_{wfa_weight}_base_loss_threshold_{base_loss_threshold}"
+        weights_name = f"{experiment_name}.pth"
 
-      print(f"Charging weights from {experiment_name}...")
-      charge_weights(model = los_model,
-                      target_dir = target_dir,
-                      weights_name = weights_name
-                  )
+        print(f"Charging weights from {experiment_name}...")
+        charge_weights(model = los_model,
+                        target_dir = target_dir,
+                        weights_name = weights_name
+                    )
+        
+        #Generate results
+        print(f"Generating results for {experiment_name}...")
+        atm_generated = generate_results(model = los_model,
+                                          stokes_data = stokes_data_original,
+                                          atm_shape=(new_nx,new_ny,new_logtau.shape[0],atm_data_original.shape[-1]),
+                                          maxmin = phys_maxmin,
+                                          type_of_quantity=1,
+                                          device = device
+                                        )      
+        
+        atm_generated[..., 2] /= 1e5
       
-      #Generate results
-      print(f"Generating results for {experiment_name}...")
-      atm_generated = generate_results(model = los_model,
-                                        stokes_data = stokes_data_original,
-                                        atm_shape=(new_nx,new_ny,new_logtau.shape[0],atm_data_original.shape[-1]),
-                                        maxmin = phys_maxmin,
-                                        type_of_quantity=1,
-                                        device = device
-                                      )      
-      
-      atm_generated[..., 2] /= 1e5
-    
-      ##################################
-      # Plot generated atmospheres  
-      ##################################
-      
-      print("Plotting generated atmospheres...")
-      
-      #OD plots
+        ##################################
+        # Plot generated atmospheres  
+        ##################################
+        
+        print("Plotting generated atmospheres...")
+        
+        #OD plots
 
-      model_subdir = experiment_name
+        model_subdir = experiment_name
 
-      plot_od_generated_atm(
-                        atm_generated = atm_generated,
-                        atm_original = atm_data_original,
-                        images_dir=images_path,
-                        filename=filename,
-                        model_subdir = model_subdir,
-                        image_name = "mean_OD.png",
-                        titles = mags_names,
-                        tau=new_logtau,
-                        )
-      
-      #Density bars
-      tau_indices = range(0,new_logtau.shape[0])
-      for itau in tau_indices:
-        plot_surface_generated_atm(
+        plot_od_generated_atm(
                           atm_generated = atm_generated,
                           atm_original = atm_data_original,
                           images_dir=images_path,
                           filename=filename,
                           model_subdir = model_subdir,
-                          surface_subdir= "surface_plots",
-                          image_name = f"OD_surface.png",
+                          image_name = "mean_OD.png",
                           titles = mags_names,
-                          tau = new_logtau,
-                          itau = itau
-                        )
-        plot_density_bars(
-                atm_generated = atm_generated,
-                atm_original = atm_data_original,
-                images_dir=images_path,
-                filename=filename,
-                dense_diag_subdir= "density_plots",
-                model_subdir = model_subdir,
-                image_name = "OD_density.png",
-                tau_index = itau,
-                tau=new_logtau,
-                titles = mags_names)
-        plot_correlation(
-                atm_generated = atm_generated,
-                atm_original = atm_data_original,
-                images_dir=images_path,
-                filename=filename,
-                corr_diag_subdir= "correlation_plots",
-                model_subdir = model_subdir,
-                image_name = "OD_correlation.png",
-                tau=new_logtau,
-                tau_index = itau,
-                titles = mags_names)
+                          tau=new_logtau,
+                          )
         
-      print("Done!")
+        #Density bars
+        tau_indices = range(0,new_logtau.shape[0])
+        for itau in tau_indices:
+          plot_surface_generated_atm(
+                            atm_generated = atm_generated,
+                            atm_original = atm_data_original,
+                            images_dir=images_path,
+                            filename=filename,
+                            model_subdir = model_subdir,
+                            surface_subdir= "surface_plots",
+                            image_name = f"OD_surface.png",
+                            titles = mags_names,
+                            tau = new_logtau,
+                            itau = itau
+                          )
+          plot_density_bars(
+                  atm_generated = atm_generated,
+                  atm_original = atm_data_original,
+                  images_dir=images_path,
+                  filename=filename,
+                  dense_diag_subdir= "density_plots",
+                  model_subdir = model_subdir,
+                  image_name = "OD_density.png",
+                  tau_index = itau,
+                  tau=new_logtau,
+                  titles = mags_names)
+          plot_correlation(
+                  atm_generated = atm_generated,
+                  atm_original = atm_data_original,
+                  images_dir=images_path,
+                  filename=filename,
+                  corr_diag_subdir= "correlation_plots",
+                  model_subdir = model_subdir,
+                  image_name = "OD_correlation.png",
+                  tau=new_logtau,
+                  tau_index = itau,
+                  titles = mags_names)
+          
+        print("Done!")
 
 if __name__ == "__main__":
     main()

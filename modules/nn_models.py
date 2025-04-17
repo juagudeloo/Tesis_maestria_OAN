@@ -8,7 +8,7 @@ class InversionModel(nn.Module):
         super(InversionModel, self).__init__()
         # 1. Multi-scale feature mapping
         self.multi_scale_feature_mapping = MultiScaleFeatureMapping(scales=scales, in_channels=in_channels, c1_filters=c1_filters, c2_filters=c2_filters, kernel_size=kernel_size, stride=stride, padding=padding, pool_size=pool_size)
-        # 2. Flatten layer
+        # 2. Flatten layer0
         self.flatten_layer = nn.Flatten()
         # 3. Flatten size calculation layers
         def get_output_shape(input_size: int, kernel_size: int, stride: int = 1, padding: int = 0) -> int:
