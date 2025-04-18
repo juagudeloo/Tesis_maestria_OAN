@@ -665,7 +665,7 @@ def plot_correlation_along_od(atm_generated: np.ndarray,
   fig, axs = plt.subplots(1, num_params, figsize=(5 * num_params, 5))
   for j in range(num_params):
     axs[j].plot(tau, correlations[:, j], marker='o', color='orangered')
-    axs[j].set_title(f"{titles[j]} Correlation")
+    axs[j].set_title(f"{titles[j]}")
     axs[j].set_xlabel(r'$\log \tau$')
     axs[j].set_ylabel('Pearson Correlation')
     axs[j].grid(True)
@@ -706,7 +706,7 @@ def plot_rmse_along_od(atm_generated: np.ndarray,
   fig, axs = plt.subplots(1, num_params, figsize=(5 * num_params, 5))
   for j in range(num_params):
     axs[j].plot(tau, rmse_values[:, j], marker='o', color='orangered')
-    axs[j].set_title(f"{titles[j]} RMSE")
+    axs[j].set_title(f"{titles[j]}")
     axs[j].set_xlabel(r'$\log \tau$')
     axs[j].set_ylabel(f'RMSE ({units[j]})')
     axs[j].grid(True)
