@@ -64,7 +64,7 @@ class MURaM:
         """
 
         
-        self.ptm = Path("../data")
+        self.ptm = Path("/scratchsan/observatorio/juagudeloo/data")
         self.filename = filename
         self.verbose = verbose
         
@@ -683,7 +683,6 @@ def load_training_data(filenames: list[str],
     stokes_data = np.concatenate(stokes_data, axis=0)
     
     return atm_data, stokes_data, muram.new_wl
-
 def load_data_cubes(filenames: list[str], 
                     n_spectral_points: int = 36,
                     new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
