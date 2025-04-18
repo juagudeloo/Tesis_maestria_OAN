@@ -8,7 +8,7 @@ import sys
 sys.path.append("../modules")
 from modules.data_utils import load_data_cubes
 from modules.nn_models import InversionModel
-from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation
+from modules.train_test_utils import charge_weights, generate_results, descale_atm, plot_surface_generated_atm, plot_od_generated_atm, plot_density_bars, plot_correlation, plot_correlation_along_od, plot_rmse_along_od
 
 
 def main():
@@ -110,6 +110,30 @@ def main():
                         titles = mags_names,
                         tau=new_logtau,
                         )
+      
+      plot_correlation_along_od(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        images_dir=images_path,
+                        corr_diag_subdir= "metrics_in_OD_plots",
+                        filename=filename,
+                        model_subdir = model_subdir,
+                        image_name = "mean_OD_correlation.png",
+                        titles = mags_names,
+                        tau=new_logtau,
+                        )
+      plot_rmse_along_od(
+                        atm_generated = atm_generated,
+                        atm_original = atm_data_original,
+                        images_dir=images_path,
+                        rmse_diag_subdir= "metrics_in_OD_plots",
+                        filename=filename,
+                        model_subdir = model_subdir,
+                        image_name = "mean_OD_rmse.png",
+                        titles = mags_names,
+                        tau=new_logtau,
+                        )
+
       
       #Density bars
       tau_indices = range(0,new_logtau.shape[0])

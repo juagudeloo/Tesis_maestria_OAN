@@ -643,6 +643,86 @@ def plot_correlation(atm_generated: np.ndarray,
 
   print(f"Saved image to: {image_path}")
 
+def plot_correlation_along_od(atm_generated: np.ndarray,
+           atm_original: np.ndarray,
+           model_subdir: str,
+           corr_diag_subdir: str,
+           image_name: str,
+           titles: list,
+           tau: np.ndarray = np.linspace(-2.5,0,20),
+           images_dir: str = "images",
+           filename: str = None):
+   
+  num_params = atm_generated.shape[3]
+  correlations = np.zeros((len(tau), num_params))
+
+  for i, tau_value in enumerate(tau):
+    for j in range(num_params):
+      gen_values = atm_generated[:, :, i, j].flatten()
+      orig_values = atm_original[:, :, i, j].flatten()
+      correlations[i, j] = pearsonr(gen_values, orig_values)[0]
+
+  fig, axs = plt.subplots(1, num_params, figsize=(5 * num_params, 5))
+  for j in range(num_params):
+    axs[j].plot(tau, correlations[:, j], marker='o', color='orangered')
+    axs[j].set_title(f"{titles[j]} Correlation")
+    axs[j].set_xlabel(r'$\log \tau$')
+    axs[j].set_ylabel('Pearson Correlation')
+    axs[j].grid(True)
+    axs[j].set_ylim(0, 1)  # Set y-axis limits to [-1, 1]
+
+  fig.tight_layout()
+
+  images_dir = os.path.join(images_dir, filename, model_subdir, corr_diag_subdir)
+  if not os.path.exists(images_dir):
+     os.makedirs(images_dir)
+  image_path = os.path.join(images_dir, image_name)
+  fig.savefig(image_path)
+
+  print(f"Saved image to: {image_path}")
+
+def plot_rmse_along_od(atm_generated: np.ndarray,
+        atm_original: np.ndarray,
+        model_subdir: str,
+        rmse_diag_subdir: str,
+        image_name: str,
+        titles: list,
+        tau: np.ndarray = np.linspace(-2.5,0,20),
+        images_dir: str = "images",
+        filename: str = None):
+    
+  num_params = atm_generated.shape[3]
+  rmse_values = np.zeros((len(tau), num_params))
+
+  for i, tau_value in enumerate(tau):
+    for j in range(num_params):
+      gen_values = atm_generated[:, :, i, j].flatten()
+      orig_values = atm_original[:, :, i, j].flatten()
+      rmse_values[i, j] = root_mean_squared_error(orig_values, gen_values)
+
+  # Define units for each parameter
+  units = ['K', r'g/cm$^3$', 'km/s', 'G']
+
+  fig, axs = plt.subplots(1, num_params, figsize=(5 * num_params, 5))
+  for j in range(num_params):
+    axs[j].plot(tau, rmse_values[:, j], marker='o', color='orangered')
+    axs[j].set_title(f"{titles[j]} RMSE")
+    axs[j].set_xlabel(r'$\log \tau$')
+    axs[j].set_ylabel(f'RMSE ({units[j]})')
+    axs[j].grid(True)
+    axs[j].set_ylim(0, np.max(rmse_values[:, j]) * 1.1)  # Set y-axis limits to [0, max_rmse * 1.1]
+
+  fig.tight_layout()
+
+  images_dir = os.path.join(images_dir, filename, model_subdir, rmse_diag_subdir)
+  if not os.path.exists(images_dir):
+    os.makedirs(images_dir)
+  image_path = os.path.join(images_dir, image_name)
+  fig.savefig(image_path)
+
+  print(f"Saved image to: {image_path}")
+
+
 ##########################################################3
 #metrics utils
 ###########################################################

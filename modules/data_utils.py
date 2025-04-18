@@ -161,7 +161,7 @@ class MURaM:
         Keep only the LOS component of the magnetic field.
         """
         print("Keeping only the LOS component of the magnetic field...")
-        self.mags_names = [r"$T$", r"$\rho$", r"$v_{z}$", r"$B_\text{LOS}$"]
+        self.mags_names = [r"$T$", r"$\log(\rho$)", r"$v_{z}$", r"$B_\text{LOS}$"]
         self.atm_quant[..., 3] = self.atm_quant[..., -1] # Bz
         self.atm_quant = self.atm_quant[...,0:4]
         self.just_LOS_flag = True
