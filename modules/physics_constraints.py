@@ -136,8 +136,8 @@ class WFAConstrainedLoss(nn.Module):
         wfa_blos = self.compute_wfa_blos(input_stokes)
         # Create threshold mask - only apply WFA constraint for stronger fields
         # Using abs() since we care about field strength, not polarity
-        threshold_mask = (torch.abs(wfa_blos) < self.blos_threshold)
         
+        threshold_mask = (torch.abs(wfa_blos) < self.blos_threshold)
         # If no pixels exceed threshold, just return base loss
         if not torch.any(threshold_mask):
             return base_loss, base_loss, torch.tensor(0.0, device=base_loss.device)
