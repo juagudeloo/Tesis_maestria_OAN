@@ -15,7 +15,7 @@ data/
 __pycache__/
 *.py[cod]
 *$py.class
-
+loss_netrics*
 # C extensions
 *.so
 
