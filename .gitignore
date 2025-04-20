@@ -14,7 +14,7 @@ data/
 __pycache__/
 *.py[cod]
 *$py.class
-
+loss_metrics*
 # C extensions
 *.so
 
