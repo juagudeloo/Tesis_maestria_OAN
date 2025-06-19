@@ -459,7 +459,7 @@ def plot_surface_generated_atm(atm_generated: np.ndarray,
   vmax = [atm_original[:, :, itau, i].max() for i in range(n_mags)]
 
   # Define colormaps
-  cmaps = ['inferno', 'spring', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
+  cmaps = ['inferno', 'summer', 'PuOr', 'PuOr', 'PuOr', 'seismic_r']
 
   # Plot generated and original atmosphere
   params = [
