@@ -54,9 +54,11 @@ class MURaM:
         Array to store new wavelength values after spectral resolution degradation.
     I_63005 : np.ndarray
         Intensity map used for balancing intergranular and granular regions.
+    make_plots : bool
+        Whether to generate plots during processing.
     """
 
-    def __init__(self, filename: str, verbose: bool = False, ptm: str = "./data"):
+    def __init__(self, filename: str, verbose: bool = False, ptm: str = "./data", make_plots: bool = True):
         """
         Initialize the MURaM object with the given filename.
 
@@ -64,12 +66,19 @@ class MURaM:
         -----------
         filename : str
             Name of the file to be processed.
+        verbose : bool
+            Whether to print verbose output.
+        ptm : str
+            Path to the data directory.
+        make_plots : bool
+            Whether to generate plots during processing.
         """
 
         
         self.ptm = Path(ptm)
         self.filename = filename
         self.verbose = verbose
+        self.make_plots = make_plots
         
         self.nlam = 300  # this parameter is useful when managing the self.stokes parameters
         self.nx = 480
@@ -142,10 +151,11 @@ class MURaM:
         self.atm_quant = np.reshape(self.atm_quant, (self.nx, self.nz, self.ny, self.atm_quant.shape[-1]))
         self.atm_quant = np.moveaxis(self.atm_quant, 1, 2)
         
-        plot_atmosphere_quantities(atm_quant=self.atm_quant, 
-                                   titles = self.mags_names,
-                                   image_name=f"{self.filename}_atm_quantities",
-                                   height_index=180)
+        if self.make_plots:
+            plot_atmosphere_quantities(atm_quant=self.atm_quant, 
+                                       titles = self.mags_names,
+                                       image_name=f"{self.filename}_atm_quantities",
+                                       height_index=180)
         print("Created!")
         if self.verbose:
             print("atm geom height shape:", self.atm_quant.shape)
@@ -188,13 +198,14 @@ class MURaM:
         print("Done!")
         
         # Plotting the optical depth stratification
-        image_path = Path("images/first_experiment/atmosphere")
-        if not image_path.exists():
-            image_path.mkdir(parents=True)
-        fig, ax = plt.subplots(1,2,figsize=(10,5))
-        ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
-        ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
-        fig.savefig("images/first_experiment/atmosphere/optical_depth.png")
+        if self.make_plots:
+            image_path = Path("images/first_experiment/atmosphere")
+            if not image_path.exists():
+                image_path.mkdir(parents=True)
+            fig, ax = plt.subplots(1,2,figsize=(10,5))
+            ax[0].imshow(muram_logtau[:,:,180], cmap = "gist_gray")
+            ax[1].plot(muram_logtau.mean(axis = (0,1)),self.atm_quant[...,0].mean(axis = (0,1)))
+            fig.savefig("images/first_experiment/atmosphere/optical_depth.png")
         
          # New optical depth stratification array.
         self.n_logtau = new_logtau.shape[0]
@@ -248,9 +259,10 @@ class MURaM:
         self.atm_quant[..., 4] = azimuth
         self.atm_quant[..., 5] = zenith
         
-        plot_atmosphere_quantities(atm_quant=self.atm_quant, 
-                                   titles = self.mags_names,
-                                   image_name=f"{self.filename}_modified_atm_quantities")
+        if self.make_plots:
+            plot_atmosphere_quantities(atm_quant=self.atm_quant, 
+                                       titles = self.mags_names,
+                                       image_name=f"{self.filename}_modified_atm_quantities")
         print("Created!")
         if self.verbose:
             print("atm modified components shape:", self.atm_quant.shape)
@@ -258,21 +270,50 @@ class MURaM:
         self.modified_flag = True
     def spatial_convolution(self) -> None:
         """
-        Degrade the spectral resolution of the Stokes parameters.
-
-        Parameters:
-        -----------
-        new_points : int, optional
-            Number of new spectral points after degradation (default is 36).
+        Degrade the spatial resolution of the Stokes parameters by applying Hinode PSF.
+        The PSF is resampled to match MuRAM's pixel scale before convolution.
         """
 
         ###########################################
-        # Spatial convolution
+        # Load and resample the Hinode PSF to MuRAM pixel scale
         ###########################################
         with fits.open(self.ptm / "hinode-MODEST" / "PSFs" / "hinode_psf_bin.0.16.fits") as hdul:
-            psf = hdul[0].data #This PSF is already normalized.
+            psf_header = hdul[0].header
+            original_psf = hdul[0].data
 
-        psf = psf / psf.sum()
+        # Fix byte order issue - ensure native byte order
+        original_psf = np.ascontiguousarray(original_psf, dtype=np.float32)
+
+        # Get PSF parameters from header
+        psf_pixel_scale = psf_header.get('CDELT1', 0.16)  # arcsec per pixel
+        psf_size_arcsec = psf_pixel_scale * original_psf.shape[0]
+
+        # Calculate MuRAM pixel scale in arcsec
+        # MuRAM: 25 km/pixel, 1 arcsec ≈ 725 km at disk center
+        muram_pixel_scale_arcsec = 25 / 725  # ≈ 0.0345 arcsec per pixel
+
+        # Calculate scaling factor for PSF resampling
+        psf_scaling_factor = psf_pixel_scale / muram_pixel_scale_arcsec
+        target_psf_size = int(original_psf.shape[0] * psf_scaling_factor)
+
+        if self.verbose:
+            print(f"Original PSF size: {original_psf.shape[0]}x{original_psf.shape[0]} pixels at {psf_pixel_scale} arcsec/pixel")
+            print(f"MuRAM pixel scale: {muram_pixel_scale_arcsec:.4f} arcsec/pixel")
+            print(f"PSF scaling factor: {psf_scaling_factor:.2f}")
+            print(f"Target PSF size: {target_psf_size}x{target_psf_size} pixels")
+
+        # Resample PSF to MuRAM pixel scale using PyTorch resize
+        psf_tensor = torch.tensor(original_psf).unsqueeze(0).unsqueeze(0).float()
+        resize_psf = transforms.Resize((target_psf_size, target_psf_size), 
+                                       interpolation=transforms.InterpolationMode.BICUBIC)
+        resampled_psf = resize_psf(psf_tensor).squeeze().numpy()
+
+        # Ensure PSF is properly normalized
+        psf = resampled_psf / resampled_psf.sum()
+
+        if self.verbose:
+            print(f"Resampled PSF shape: {psf.shape}")
+            print(f"PSF sum (should be ~1.0): {psf.sum():.6f}")
 
         print("Spatially convolving the Stokes parameters...")
         stokes_spatially_convolved = np.zeros_like(self.stokes)
@@ -349,15 +390,15 @@ class MURaM:
 
         resize = transforms.Resize((target_size, target_size), interpolation=transforms.InterpolationMode.BICUBIC)
         new_image_dimensions = resize.size
-        self.new_nx = new_image_dimensions[0]
-        self.new_ny = new_image_dimensions[1]
+        self.nx = new_image_dimensions[0]
+        self.ny = new_image_dimensions[1]
         print("atm surface pixel sampling...")
-        resampled_atm = np.zeros((self.new_nx, self.new_ny, self.atm_quant.shape[2], self.atm_quant.shape[3]))
+        resampled_atm = np.zeros((self.nx, self.ny, self.atm_quant.shape[2], self.atm_quant.shape[3]))
         for atm_mag in tqdm(range(self.atm_quant.shape[-1])):
             for itau in range(self.atm_quant.shape[2]):
                 resampled_atm[..., itau, atm_mag] = resize(torch.tensor(self.atm_quant[..., itau, atm_mag]).unsqueeze(0).unsqueeze(0)).numpy().squeeze()
         print("stokes surface pixel sampling...")
-        resampled_stokes = np.zeros((self.new_nx, self.new_ny, self.stokes.shape[2], self.stokes.shape[3]))
+        resampled_stokes = np.zeros((self.nx, self.ny, self.stokes.shape[2], self.stokes.shape[3]))
         for stk in tqdm(range(self.stokes.shape[-1])):
             for iwl in range(self.stokes.shape[2]):
                 resampled_stokes[..., iwl, stk] = resize(torch.tensor(self.stokes[..., iwl, stk]).unsqueeze(0).unsqueeze(0)).numpy().squeeze()
@@ -876,12 +917,14 @@ def plot_polarizations(stokes: np.ndarray, wl: np.ndarray,image_path: str = "ima
 ##############################################################
 # loading utils
 ##############################################################
-def load_training_data(filenames: list[str], 
+
+def load_training_data_no_spatial(filenames: list[str], 
                        ptm: str = "./data",
                        noise_level: float = 5.9e-4, #Hinode noise
                        new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                        stokes_weights: list[int] = [1,10,10,10],
                        verbose: bool = False,
+                       make_plots: bool = True,
                        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load and preprocess training data from a list of filenames.
@@ -901,29 +944,34 @@ def load_training_data(filenames: list[str],
 
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm, make_plots=make_plots)
         muram.charge_quantities()
         muram.just_LOS_components()
         muram.optical_depth_stratification(new_logtau=new_logtau)
-        muram.spatial_convolution()
-        muram.spectral_convolution()
-        muram.spectral_sampling()
-        muram.surface_pixel_sampling()
+
+        # Convolutions and sampling to Stokes profiles
+        ###############################################################################
+        muram.spectral_convolution() # application of the spectral PSF
+        muram.spectral_sampling() # application of the spectral sampling of Hinode
+        ###############################################################################
+
+
         muram.scale_quantities(stokes_weights=stokes_weights)
         muram.spectral_noise(level_of_noise=noise_level)
         # Plot
-        plot_polarizations(muram.stokes, muram.new_wl,
-                            image_path = "images/fifth_experiment/stokes",
-                            image_name= f"{muram.filename}_polarization_with_noise")
-        
-        pixel_x = 282
-        pixel_y = 432
-        resampled_pixel_x = int(pixel_x * muram.stokes.shape[0] / muram.nx)
-        resampled_pixel_y = int(pixel_y * muram.stokes.shape[1] / muram.ny)
-        plot_stokes(muram.stokes[resampled_pixel_x,resampled_pixel_y], muram.new_wl, 
-                    stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
-                    image_name=f"{muram.filename}_stokes_with_noise", 
-                    images_dir="images/fifth_experiment")
+        if make_plots:
+            plot_polarizations(muram.stokes, muram.new_wl,
+                                image_path = "images/seventh_experiment/stokes",
+                                image_name= f"{muram.filename}_polarization_with_noise_no_spatial_conv")
+            
+            pixel_x = 282
+            pixel_y = 432
+            plot_stokes(muram.stokes[pixel_x, pixel_y], muram.new_wl, 
+                        stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
+                        image_name=f"{muram.filename}_stokes_with_noise_no_spatial_conv", 
+                        images_dir="images/seventh_experiment")
+        # ...existing code...
+
         muram.intergran_gran_polariz_balance()
 
         atm_data.append(muram.atm_quant)
@@ -933,12 +981,77 @@ def load_training_data(filenames: list[str],
     stokes_data = np.concatenate(stokes_data, axis=0)
     
     return atm_data, stokes_data, muram.new_wl
-def load_data_cubes(filenames: list[str], 
+def load_training_data_complete_hinode(filenames: list[str], 
+                       ptm: str = "./data",
+                       noise_level: float = 5.9e-4, #Hinode noise
+                       new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
+                       stokes_weights: list[int] = [1,10,10,10],
+                       verbose: bool = False,
+                       make_plots: bool = True,
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load and preprocess training data from a list of filenames.
+    This function reads data from multiple files, processes it, and returns the processed data.
+    Parameters:
+        filenames (list[str]): List of file paths to load data from.
+        n_spectral_points (int): Number of new points for spectral resolution degradation.
+    Returns:
+    tuple[np.ndarray, np.ndarray, np.ndarray]: A tuple containing:
+        - atm_data (np.ndarray): Array of atmospheric quantities.
+        - stokes_data (np.ndarray): Array of Stokes parameters.
+        - mags_names (np.ndarray): Array of magnetic field names.
+    """
+    #Arrays for saving the whole dataset
+    atm_data = []
+    stokes_data = []
+
+    for fln in filenames:
+        #Creation of the MURaM object for each filename for charging the data.
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm, make_plots=make_plots)
+        muram.charge_quantities()
+        muram.just_LOS_components()
+        muram.optical_depth_stratification(new_logtau=new_logtau)
+
+        # Convolutions and sampling to Stokes profiles
+        ###############################################################################
+        muram.spatial_convolution() # application of the spatial PSF
+        muram.spectral_convolution() # application of the spectral PSF
+        muram.spectral_sampling() # application of the spectral sampling of Hinode
+        ###############################################################################
+
+
+        muram.scale_quantities(stokes_weights=stokes_weights)
+        muram.spectral_noise(level_of_noise=noise_level)
+        # Plot
+        if make_plots:
+            plot_polarizations(muram.stokes, muram.new_wl,
+                                image_path = "images/seventh_experiment/stokes",
+                                image_name= f"{muram.filename}_polarization_with_noise")
+            
+            pixel_x = 282
+            pixel_y = 432
+            plot_stokes(muram.stokes[pixel_x, pixel_y], muram.new_wl, 
+                        stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
+                        image_name=f"{muram.filename}_stokes_with_noise", 
+                        images_dir="images/seventh_experiment")
+        # ...existing code...
+
+        muram.intergran_gran_polariz_balance()
+
+        atm_data.append(muram.atm_quant)
+        stokes_data.append(muram.stokes)
+
+    atm_data = np.concatenate(atm_data, axis=0)
+    stokes_data = np.concatenate(stokes_data, axis=0)
+    
+    return atm_data, stokes_data, muram.new_wl
+def load_data_cubes_no_spatial(filenames: list[str], 
                     ptm = "./data",
                     noise_level: float = 5.9e-4, #Hinode noise
                     new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
                     stokes_weights: list[int] = [1,10,10,10],
-                    verbose: bool = False) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                    verbose: bool = False,
+                    make_plots: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Loads data cubes from a list of filenames and processes them using the MURaM class.
     Args:
@@ -957,34 +1070,85 @@ def load_data_cubes(filenames: list[str],
     print("new_logtau:", new_logtau)
     for fln in filenames:
         #Creation of the MURaM object for each filename for charging the data.
-        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm)
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm, make_plots=make_plots)
+        muram.charge_quantities()
+        muram.just_LOS_components()
+        muram.optical_depth_stratification(new_logtau=new_logtau)
+        muram.spectral_convolution()
+        muram.spectral_sampling()
+        muram.scale_quantities(stokes_weights=stokes_weights)
+        muram.spectral_noise(level_of_noise=noise_level)
+        # Plot
+        if make_plots:
+            plot_polarizations(muram.stokes, muram.new_wl,
+                                image_path = "images/seventh_experiment/stokes",
+                                image_name= f"{muram.filename}_polarization_with_noise_no_spatial_conv")
+            
+            pixel_x = 282
+            pixel_y = 432
+            plot_stokes(muram.stokes[pixel_x,pixel_y], muram.new_wl, 
+                        stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
+                        image_name=f"{muram.filename}_stokes_with_noise_no_spatial_conv", 
+                        images_dir="images/seventh_experiment")
+        # ...existing code...
+
+        atm_data.append(muram.atm_quant)
+        stokes_data.append(muram.stokes)
+    
+    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin, muram.nx, muram.ny
+def load_data_cubes_complete_hinode(filenames: list[str], 
+                    ptm = "./data",
+                    noise_level: float = 5.9e-4, #Hinode noise
+                    new_logtau: np.ndarray[float] = np.linspace(-2.5, 0, 20),
+                    stokes_weights: list[int] = [1,10,10,10],
+                    verbose: bool = False,
+                    make_plots: bool = True) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Loads data cubes from a list of filenames and processes them using the MURaM class.
+    Args:
+        filenames (list[str]): List of file paths to load data from.
+    Returns:
+        tuple: A tuple containing:
+            - atm_data (list[np.ndarray]): List of atmospheric data arrays.
+            - stokes_data (list[np.ndarray]): List of Stokes parameter data arrays.
+            - mags_names (np.ndarray): Array of magnetic field names.
+            - phys_maxmin (np.ndarray): Array of physical maximum and minimum values.
+    """
+    #Arrays for saving the whole dataset
+    atm_data = []
+    stokes_data = []
+
+    print("new_logtau:", new_logtau)
+    for fln in filenames:
+        #Creation of the MURaM object for each filename for charging the data.
+        muram = MURaM(filename=fln, verbose = verbose, ptm = ptm, make_plots=make_plots)
         muram.charge_quantities()
         muram.just_LOS_components()
         muram.optical_depth_stratification(new_logtau=new_logtau)
         muram.spatial_convolution()
         muram.spectral_convolution()
         muram.spectral_sampling()
-        muram.surface_pixel_sampling()
         muram.scale_quantities(stokes_weights=stokes_weights)
         muram.spectral_noise(level_of_noise=noise_level)
         # Plot
-        plot_polarizations(muram.stokes, muram.new_wl,
-                            image_path = "images/fifth_experiment/stokes",
-                            image_name= f"{muram.filename}_polarization_with_noise")
-        
-        pixel_x = 282
-        pixel_y = 432
-        resampled_pixel_x = int(pixel_x * muram.stokes.shape[0] / muram.nx)
-        resampled_pixel_y = int(pixel_y * muram.stokes.shape[1] / muram.ny)
-        plot_stokes(muram.stokes[resampled_pixel_x,resampled_pixel_y], muram.new_wl, 
-                    stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
-                    image_name=f"{muram.filename}_stokes_with_noise", 
-                    images_dir="images/fifth_experiment")
+        if make_plots:
+            plot_polarizations(muram.stokes, muram.new_wl,
+                                image_path = "images/seventh_experiment/stokes",
+                                image_name= f"{muram.filename}_polarization_with_noise")
+            
+            pixel_x = 282
+            pixel_y = 432
+            plot_stokes(muram.stokes[pixel_x,pixel_y], muram.new_wl, 
+                        stokes_titles = [r"$I/I_c$", r"$Q/I_c$", r"$U/I_c$", r"$V/I_c$"],
+                        image_name=f"{muram.filename}_stokes_with_noise", 
+                        images_dir="images/seventh_experiment")
+        # ...existing code...
 
         atm_data.append(muram.atm_quant)
         stokes_data.append(muram.stokes)
     
-    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin, muram.new_nx, muram.new_ny
+    return atm_data, stokes_data, muram.mags_names, muram.phys_maxmin, muram.nx, muram.ny
+
 def create_dataloaders(stokes_data: np.ndarray,
                        atm_data: np.ndarray,
                        device: str,
@@ -1051,7 +1215,7 @@ def create_dataloaders(stokes_data: np.ndarray,
 
     #Train and test dataloaders
     train_dataloader = DataLoader(train_dataset,
-            batch_size=batch_size, # how manz samples per batch? 
+            batch_size=batch_size, # how many samples per batch? 
             shuffle=True # shuffle data every epoch?
     )
 

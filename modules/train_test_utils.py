@@ -196,9 +196,9 @@ def create_writer(experiment_name: str,
 
     if extra:
         # Create log directory path
-        log_dir = os.path.join("runs", "fifth_experiment", timestamp, experiment_name, model_name, extra)
+        log_dir = os.path.join("runs", "seventh_experiment", timestamp, experiment_name, model_name, extra)
     else:
-        log_dir = os.path.join("runs", "fifth_experiment", timestamp, experiment_name, model_name)
+        log_dir = os.path.join("runs", "seventh_experiment", timestamp, experiment_name, model_name)
         
     print(f"[INFO] Created SummaryWriter, saving to: {log_dir}...")
     return SummaryWriter(log_dir=log_dir)

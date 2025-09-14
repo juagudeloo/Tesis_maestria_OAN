@@ -11,13 +11,13 @@ class WFAConstrainedLoss(nn.Module):
     
     The WFA states: V ≈ -e/(4πm_e*c) * λ₀² * g_eff * B_LOS * dI/dλ
     """
-    
+
     def __init__(self, wavelengths, lambda0, g_factor, wfa_weight=0.5, stokes_v_index=3,
-         wavelength_range=None, base_loss="mae", blos_threshold=100.0, 
-         base_loss_threshold=0.0004):  # Add this parameter
+                 wavelength_range=None, base_loss="mae", blos_threshold=100.0,
+                 base_loss_threshold=0.0004, tau_indices=None, n_logtau=21, n_mags=4, blos_index=-1):
         """
         Initialize the WFA constrained loss function.
-        
+
         Args:
             wavelengths (torch.Tensor): Wavelength array in Angstroms
             lambda0 (float): Rest wavelength of the spectral line in Angstroms
@@ -27,93 +27,98 @@ class WFAConstrainedLoss(nn.Module):
             wavelength_range (tuple): (start_idx, end_idx) for fitting the WFA
             base_loss (str): Base loss function ("mse" or "mae")
             blos_threshold (float): Threshold (in Gauss) below which WFA constraint is not applied
+            base_loss_threshold (float): Threshold for base loss below which WFA is applied
+            tau_indices (int, list, or tuple): Tau level(s) to use for B_LOS calculation
+            n_logtau (int): Number of tau levels in the atmosphere model
+            n_mags (int): Number of magnetic parameters in the atmosphere model
+            blos_index (int): Index of B_LOS in the magnetic parameters
         """
         super(WFAConstrainedLoss, self).__init__()
-        
+
         self.wavelengths = wavelengths.clone().detach()
         self.lambda0 = lambda0
         self.g_factor = g_factor
         self.wfa_weight = wfa_weight
         self.stokes_v_index = stokes_v_index
         self.blos_threshold = blos_threshold
-        self.base_loss_threshold = base_loss_threshold  # Store the threshold
-        
+        self.base_loss_threshold = base_loss_threshold
+
+        self.n_logtau = n_logtau
+        self.n_mags = n_mags
+        self.blos_index = blos_index
+
+        if tau_indices is None:
+            self.tau_indices = list(range(0, 3))
+        elif isinstance(tau_indices, int):
+            self.tau_indices = [tau_indices]
+        elif isinstance(tau_indices, (list, tuple)):
+            self.tau_indices = list(tau_indices)
+        else:
+            raise ValueError("tau_indices must be int, list, tuple, or None")
+
         # Calculate WFA constant with proper unit conversion
         wfa_constant_si = e.si / (4 * np.pi) / m_e / c
-        # Convert to 1/(G·Å) - needed for proper units
-        self.wfa_constant = float(wfa_constant_si.to(1 / u.G / u.Angstrom).value)
-        
-        # Store wavelength range for fitting
+        self.wfa_constant = wfa_constant_si.to(1 / u.G / u.Angstrom)
+
         if wavelength_range is None:
-            # Default to full range
             self.start_idx = 0
             self.end_idx = len(wavelengths) - 1
         else:
             self.start_idx, self.end_idx = wavelength_range
-            
-        # Set base loss
+
         if base_loss.lower() == "mse":
             self.base_criterion = nn.MSELoss(reduction='none')
         elif base_loss.lower() == "mae":
             self.base_criterion = nn.L1Loss(reduction='none')
         else:
             raise ValueError(f"Unsupported base loss: {base_loss}")
-            
+
     def compute_wfa_blos(self, stokes):
         """
-        Compute B_LOS using the WFA for each pixel in the batch.
-        
+        Compute B_LOS using the WFA for each pixel in the batch, with units.
+
         Args:
             stokes (torch.Tensor): Tensor of shape [batch_size, n_wavelengths, 4]
                                   containing the Stokes parameters
-        
+
         Returns:
-            torch.Tensor: Estimated B_LOS values
+            astropy.units.Quantity: Estimated B_LOS values with units of Gauss
         """
         batch_size = stokes.shape[0]
         device = stokes.device
-        
-        # Extract wavelength range of interest
-        wl_range = self.wavelengths[self.start_idx:self.end_idx].to(device)
-        
-        # Initialize B_LOS tensor
-        B_LOS = torch.zeros(batch_size, device=device)
-        
-        # For each sample in the batch
+
+        # Extract wavelength range of interest and attach units
+        wl_range = self.wavelengths[self.start_idx:self.end_idx].to(device).cpu().numpy() * u.Angstrom
+
+        B_LOS = np.zeros(batch_size) * u.G
+
         for b in range(batch_size):
-            # Extract Stokes I and V within the wavelength range
-            I = stokes[b, 0, self.start_idx:self.end_idx]  # Stokes I
-            V = stokes[b, self.stokes_v_index, self.start_idx:self.end_idx, ]  # Stokes V
-            
-            # Calculate dI/dλ using finite differences
-            dI_dl = torch.gradient(I)[0]/torch.gradient(wl_range)[0]
-            
-            # Set up least-squares problem: V = -C * λ₀² * g * B_LOS * dI/dλ
+            I = stokes[b, 0, self.start_idx:self.end_idx].cpu().numpy()
+            V = stokes[b, self.stokes_v_index, self.start_idx:self.end_idx].cpu().numpy()
+
+            # Calculate dI/dλ using finite differences, with units
+            dI_dl = np.gradient(I) / np.gradient(wl_range.value)
+            dI_dl = dI_dl / u.Angstrom
+
             # Design matrix for least squares
-            A = torch.zeros((self.end_idx - self.start_idx, 2), device=device)
-            A[:, 0] = dI_dl
-            A[:, 1] = 1.0  # Constant term to account for offsets
-            
+            A = np.zeros((len(dI_dl), 2))
+            A[:, 0] = dI_dl.value
+            A[:, 1] = 1.0
             b_vec = V
-            
-            # Solve the least squares problem using QR decomposition for stability
-            result = torch.linalg.lstsq(A, b_vec, rcond=None)
-            solution = result[0] if isinstance(result, tuple) else result.solution
-            
-            # Extract the coefficient and calculate B_LOS
-            coef = solution[0]
-            B_LOS[b] = -coef / (self.wfa_constant * self.lambda0**2 * self.g_factor)
-        
+
+            # Least squares solution (pseudo-inverse)
+            p = np.linalg.pinv(A) @ b_vec
+
+            # Compute B_LOS with units
+            B = -p[0] * u.Angstrom / (self.wfa_constant * (self.lambda0 * u.Angstrom)**2 * self.g_factor)
+            B_LOS[b] = B.to(u.G)
+
         return B_LOS
-    
-    def forward(self, input_stokes, predicted_atm, target_atm, target_blos=None,
-            itau_bottom:int = 0, itau_top:int = 3, 
-            blos_index:int = -1,
-            n_logtau:int = 21,
-            n_mags:int = 4):
+
+    def forward(self, input_stokes, predicted_atm, target_atm, target_blos=None):
         """
         Calculate the combined loss with thresholding for the WFA constraint.
-        
+
         Args:
             input_stokes (torch.Tensor): Input Stokes parameters
             predicted_atm (torch.Tensor): Predicted atmospheric parameters
@@ -122,39 +127,29 @@ class WFAConstrainedLoss(nn.Module):
         Returns:
             torch.Tensor: Loss value
         """
-        # Basic MSE/MAE loss between predicted and target atmospheric parameters
         base_loss = torch.mean(self.base_criterion(predicted_atm, target_atm))
-        # Check if base_loss is below threshold
         if base_loss >= self.base_loss_threshold:
-            # If not below threshold, just return base_loss with zero WFA contribution
             return base_loss, base_loss, torch.tensor(0.0, device=base_loss.device)
-        # Mean B_LOS for optical depths associated with the generation of the absorption line
-        reshaped_predicted_atm = predicted_atm.view(predicted_atm.shape[0], n_logtau, n_mags)
-        predicted_blos = reshaped_predicted_atm[:,itau_bottom:itau_top,blos_index].mean(dim=1) 
-        
-        # Calculate WFA-based B_LOS from Stokes profiles
+
+        reshaped_predicted_atm = predicted_atm.view(predicted_atm.shape[0], self.n_logtau, self.n_mags)
+        predicted_blos = reshaped_predicted_atm[:, self.tau_indices, self.blos_index].mean(dim=1)
+
+        # Calculate WFA-based B_LOS from Stokes profiles (with units)
         wfa_blos = self.compute_wfa_blos(input_stokes)
-        # Create threshold mask - only apply WFA constraint for stronger fields
-        # Using abs() since we care about field strength, not polarity
-        
-        threshold_mask = (torch.abs(wfa_blos) < self.blos_threshold)
-        # If no pixels exceed threshold, just return base loss
+        wfa_blos_tensor = torch.tensor(wfa_blos.value, device=base_loss.device)
+
+        threshold_mask = (torch.abs(wfa_blos_tensor) < self.blos_threshold)
         if not torch.any(threshold_mask):
             return base_loss, base_loss, torch.tensor(0.0, device=base_loss.device)
-        
-        # Convert to log scale to handle order of magnitude differences
-        # Add small epsilon to avoid log(0)
+
         epsilon = 1e-10
         log_abs_predicted_blos = torch.log10(torch.abs(predicted_blos) + epsilon)
-        log_abs_wfa_blos = torch.log10(torch.abs(wfa_blos) + epsilon)
-        
-        # Apply mask to only consider values above threshold
+        log_abs_wfa_blos = torch.log10(torch.abs(wfa_blos_tensor) + epsilon)
+
         masked_predicted_blos = log_abs_predicted_blos[threshold_mask]
         masked_wfa_blos = log_abs_wfa_blos[threshold_mask]
-        # Calculate WFA loss on the masked values
         wfa_loss = torch.mean(self.base_criterion(masked_predicted_blos, masked_wfa_blos))
-        
-        # Combine losses 
+
         total_loss = (1 - self.wfa_weight) * base_loss + self.wfa_weight * wfa_loss
-        
+
         return total_loss, base_loss, wfa_loss

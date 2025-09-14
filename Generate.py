@@ -32,7 +32,7 @@ def main():
     print(f"Tensors stored in: {device}")
     
     # Weights paths
-    target_dir = Path("models/fifth_experiment")      
+    target_dir = Path("models/seventh_experiment")      
     #########################################################################################
     # Generation
     #########################################################################################
@@ -49,7 +49,7 @@ def main():
                                                                       new_logtau=new_logtau,
                                                                       stokes_weights=stokes_weights)
     
-    images_path = Path("images/fifth_experiment/PhysicsInformed")
+    images_path = Path("images/seventh_experiment/PhysicsInformed")
     if not images_path.exists():
         images_path.mkdir(parents=True)
     for i, filename in enumerate(filenames):
