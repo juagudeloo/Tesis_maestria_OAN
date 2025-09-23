@@ -1,2 +1,3 @@
-# SpectropolarInvDL
-1D inversion procedure using convolutional neural networks and applying physical analysis
+# MUISCA
+
+Multi-Scale Convolutional Neural Network for inverting the Stokes Parameters in the solar context.
