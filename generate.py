@@ -197,57 +197,57 @@ def main():
     all_wstr = []
     all_tau_vals = None
 
-    # for weight_path in model_weights:
-    #     w_str = weight_path.stem.split("_w_")[1].replace(".pth", "")
-    #     model = get_model(device="cpu")
-    #     model.load_state_dict(torch.load(weight_path, map_location="cpu"))
-    #     model.eval()
+    for weight_path in model_weights:
+        w_str = weight_path.stem.split("_w_")[1].replace(".pth", "")
+        model = get_model(device="cpu")
+        model.load_state_dict(torch.load(weight_path, map_location="cpu"))
+        model.eval()
 
-    #     for fname in test_files:
-    #         stokes = test_data[fname]["stokes_reshaped"]  # shape: (nx*ny, n_stokes, n_wl)
-    #         muram = test_data[fname]["muram_reshaped"]    # shape: (nx*ny, n_logtau*n_params)
-    #         nx, ny = 480, 480
-    #         n_params = muram.shape[1] // n_logtau
+        for fname in test_files:
+            stokes = test_data[fname]["stokes_reshaped"]  # shape: (nx*ny, n_stokes, n_wl)
+            muram = test_data[fname]["muram_reshaped"]    # shape: (nx*ny, n_logtau*n_params)
+            nx, ny = 480, 480
+            n_params = muram.shape[1] // n_logtau
 
-    #         # Generate predictions
-    #         with torch.no_grad():
-    #             stokes_tensor = torch.tensor(stokes, dtype=torch.float32)
-    #             pred = model(stokes_tensor).numpy()
-    #             pred = pred.reshape(nx, ny, n_logtau, n_params)
+            # Generate predictions
+            with torch.no_grad():
+                stokes_tensor = torch.tensor(stokes, dtype=torch.float32)
+                pred = model(stokes_tensor).numpy()
+                pred = pred.reshape(nx, ny, n_logtau, n_params)
 
-    #         quantities = [
-    #             (0, r"$T$", "K", "hot"),
-    #             (1, r"$v_{\text{LOS}}$", "km/s", "bwr_r"),
-    #             (2, r"$B_{\text{LOS}}$", "G", "PiYG"),
-    #         ]
-    #         true = muram.reshape(nx, ny, n_logtau, n_params)
+            quantities = [
+                (0, r"$T$", "K", "hot"),
+                (1, r"$v_{\text{LOS}}$", "km/s", "bwr_r"),
+                (2, r"$B_{\text{LOS}}$", "G", "PiYG"),
+            ]
+            true = muram.reshape(nx, ny, n_logtau, n_params)
 
-    #         # Prepare arrays to store metrics for summary plots
-    #         rrmse_arr = np.zeros((n_logtau, 3))
-    #         pearson_arr = np.zeros((n_logtau, 3))
-    #         ssim_arr = np.zeros((n_logtau, 3))
-    #         tau_vals = np.array([data_charger.new_logtau[tau_idx] for tau_idx in range(n_logtau)])
-    #         all_tau_vals = tau_vals  # Save for summary plots
+            # Prepare arrays to store metrics for summary plots
+            rrmse_arr = np.zeros((n_logtau, 3))
+            pearson_arr = np.zeros((n_logtau, 3))
+            ssim_arr = np.zeros((n_logtau, 3))
+            tau_vals = np.array([data_charger.new_logtau[tau_idx] for tau_idx in range(n_logtau)])
+            all_tau_vals = tau_vals  # Save for summary plots
 
-    #         # Loop over each optical depth
-    #         for tau_idx in range(n_logtau):
-    #             tau_val = tau_vals[tau_idx]
-    #             tau_str = f"tau_{tau_val:.2f}"
-    #             tau_scatter_dir = scatter_dir / tau_str
-    #             tau_imshow_dir = imshow_dir / tau_str
-    #             tau_hist_dir = hist_dir / tau_str
-    #             tau_scatter_dir.mkdir(parents=True, exist_ok=True)
-    #             tau_imshow_dir.mkdir(parents=True, exist_ok=True)
-    #             tau_hist_dir.mkdir(parents=True, exist_ok=True)
-    #             plot_per_tau_metrics(pred, true, tau_idx, tau_val, tau_str, quantities, fname, w_str, tau_imshow_dir, tau_scatter_dir, tau_hist_dir, rrmse_arr, pearson_arr, ssim_arr)
-    #         # Save metrics for summary plots
-    #         all_rrmse.append(rrmse_arr)
-    #         all_pearson.append(pearson_arr)
-    #         all_ssim.append(ssim_arr)
-    #         all_wstr.append(w_str)
-    #         plot_model_summary_metrics(tau_vals, rrmse_arr, pearson_arr, ssim_arr, quantities, fname, w_str, hist_dir, scatter_dir, imshow_dir)
-    # plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all_tau_vals, quantities, hist_dir, scatter_dir, imshow_dir)
-    # print(f"Images saved in {images_dir}")
+            # Loop over each optical depth
+            for tau_idx in range(n_logtau):
+                tau_val = tau_vals[tau_idx]
+                tau_str = f"tau_{tau_val:.2f}"
+                tau_scatter_dir = scatter_dir / tau_str
+                tau_imshow_dir = imshow_dir / tau_str
+                tau_hist_dir = hist_dir / tau_str
+                tau_scatter_dir.mkdir(parents=True, exist_ok=True)
+                tau_imshow_dir.mkdir(parents=True, exist_ok=True)
+                tau_hist_dir.mkdir(parents=True, exist_ok=True)
+                plot_per_tau_metrics(pred, true, tau_idx, tau_val, tau_str, quantities, fname, w_str, tau_imshow_dir, tau_scatter_dir, tau_hist_dir, rrmse_arr, pearson_arr, ssim_arr)
+            # Save metrics for summary plots
+            all_rrmse.append(rrmse_arr)
+            all_pearson.append(pearson_arr)
+            all_ssim.append(ssim_arr)
+            all_wstr.append(w_str)
+            plot_model_summary_metrics(tau_vals, rrmse_arr, pearson_arr, ssim_arr, quantities, fname, w_str, hist_dir, scatter_dir, imshow_dir)
+    plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all_tau_vals, quantities, hist_dir, scatter_dir, imshow_dir)
+    print(f"Images saved in {images_dir}")
     
 
 if __name__ == "__main__":
