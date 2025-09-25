@@ -277,12 +277,41 @@ class DataCharger:
                     
         return norm_stokes_with_noise, mean_continuum_with_noise
         
-    def charge_single_file(self, filename, normalize_atmosphere=True):
+    def _apply_spectral_observational_conditions(self, stokes, add_noise=True):
+        """
+        Apply spectral observational conditions: LSF convolution, wavelength resampling, and noise addition.
+        
+        Args:
+            stokes (np.ndarray): Input Stokes parameters
+            add_noise (bool): Whether to add noise to the data
+            
+        Returns:
+            tuple: (processed_stokes, mean_continuum_with_noise)
+        """
+        # Apply LSF convolution
+        stokes = self._apply_lsf_convolution(stokes)
+        
+        # Resample to Hinode wavelengths
+        stokes = self._resample_to_hinode_wavelengths(stokes)
+        
+        # Normalize by continuum (always applied)
+        norm_stokes, mean_continuum_image = self._continuum_normalization(stokes)
+        
+        # Add noise if requested
+        if add_noise:
+            norm_stokes_with_noise, mean_continuum_with_noise = self._add_noise(norm_stokes, mean_continuum_image)
+            return norm_stokes_with_noise, mean_continuum_with_noise
+        else:
+            return norm_stokes, mean_continuum_image
+
+    def charge_single_file(self, filename, normalize_atmosphere=True, apply_spectral_conditions=True, add_noise=True):
         """Charge and process data for a single file.
         
         Args:
             filename (str): Filename to process
             normalize_atmosphere (bool): Whether to normalize atmospheric parameters
+            apply_spectral_conditions (bool): Whether to apply spectral observational conditions
+            add_noise (bool): Whether to add noise to the data
         """
         print(f"Processing file: {filename}")
         
@@ -321,15 +350,13 @@ class DataCharger:
         stokes = np.array([stokes[..., 0], stokes[..., 3]])  # I and V only
         stokes = np.transpose(stokes, (1, 2, 3, 0))
         
-        # Apply Hinode adaptations
-        # stokes = self._apply_psf_convolution(stokes)
-        stokes = self._apply_lsf_convolution(stokes)
-        stokes = self._resample_to_hinode_wavelengths(stokes)
-        
-        # Normalize and add noise
-        norm_stokes, mean_continuum_image = self._continuum_normalization(stokes)
-        norm_stokes, mean_continuum_with_noise = self._add_noise(norm_stokes, mean_continuum_image)
-        
+        # Apply spectral observational conditions if requested
+        if apply_spectral_conditions:
+            norm_stokes, mean_continuum_with_noise = self._apply_spectral_observational_conditions(stokes, add_noise=add_noise)
+        else:
+            # Always apply continuum normalization even without spectral conditions
+            norm_stokes, mean_continuum_image = self._continuum_normalization(stokes)
+
         # Initialize the scaler
         scaler = MinMaxScaler()
         start_wl = 20
@@ -383,7 +410,7 @@ class DataCharger:
             min_rrmse_logtau
         )
 
-    def charge_all_files(self, normalize_atmosphere=True):
+    def charge_all_files(self, normalize_atmosphere=True, apply_spectral_conditions=True, add_noise=True):
         """Charge and process all files, returning a dictionary per file."""
         print(f"Charging {self.n_files} files...")
 
@@ -397,7 +424,9 @@ class DataCharger:
                 best_muram_B_minmax_scaler,
                 min_rrmse_idx_normalized,
                 min_rrmse_logtau
-            ) = self.charge_single_file(filename, normalize_atmosphere=normalize_atmosphere)
+            ) = self.charge_single_file(filename, normalize_atmosphere=normalize_atmosphere, 
+                                       apply_spectral_conditions=apply_spectral_conditions, 
+                                       add_noise=add_noise)
 
             self.data_per_file[filename] = {
                 "muram_box": muram_box,

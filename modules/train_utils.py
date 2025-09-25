@@ -16,7 +16,7 @@ def set_seed(seed=42):
 def get_device():
     return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-def load_data(filenames, nx=480, ny=480, nz=256, data_path="/scratchsan/observatorio/juagudeloo/data"):
+def load_data(filenames, nx=480, ny=480, nz=256, data_path="/scratchsan/observatorio/juagudeloo/data", apply_spectral_conditions=True, add_noise=True):
     sys.path.append('./modules_2')
     from charge_data import DataCharger
     data_charger = DataCharger(
@@ -26,12 +26,16 @@ def load_data(filenames, nx=480, ny=480, nz=256, data_path="/scratchsan/observat
         ny=ny,
         nz=nz
     )
-    data_charger.charge_all_files()
+    data_charger.charge_all_files(
+        normalize_atmosphere=True, 
+        apply_spectral_conditions=apply_spectral_conditions,
+        add_noise=add_noise
+    )
     data_per_file = data_charger.reshape_for_training()
     return data_per_file
 
 def get_model(scales=[1,2,3], in_channels=2, c1_filters=16, c2_filters=32, kernel_size=5, stride=1, padding=0, pool_size=2, n_linear_layers=4, output_features=3*21, device=None):
-    sys.path.append('./modules_2')
+    sys.path.append('./modules')
     from nn_inversion_model import MSCNNInversionModel
     model = MSCNNInversionModel(
         scales=scales,
@@ -49,11 +53,22 @@ def get_model(scales=[1,2,3], in_channels=2, c1_filters=16, c2_filters=32, kerne
         model = model.to(device)
     return model
 
-def custom_loss(output, target, blos_pred, blos_true, w):
+def custom_loss(output, target, blos_pred, blos_true, w, wfa_mask=None):
     mse = nn.MSELoss()
     loss1 = mse(output, target)
-    loss2 = mse(blos_pred, blos_true)
-    total_loss = (1-w) * loss1 + w * loss2
+    
+    if wfa_mask is not None and wfa_mask.sum() > 0:
+        # Only compute WFA loss for pixels where mask is True
+        masked_blos_pred = blos_pred[wfa_mask]
+        masked_blos_true = blos_true[wfa_mask]
+        loss2 = mse(masked_blos_pred, masked_blos_true)
+        # Scale the WFA loss by the fraction of pixels that use it
+        wfa_fraction = wfa_mask.float().mean()
+        total_loss = (1-w) * loss1 + w * loss2 * wfa_fraction
+    else:
+        loss2 = torch.tensor(0.0, device=output.device)
+        total_loss = loss1
+    
     return total_loss, loss1, loss2
 
 def train_model(model, data_per_file, filenames, num_epochs=10, batch_size=128, w=0.5, device=None):
@@ -76,6 +91,9 @@ def train_model(model, data_per_file, filenames, num_epochs=10, batch_size=128, 
                 batch_wfa_blos = wfa_blos[i:i+batch_size]
                 batch_best_muram_b = best_muram_b[i:i+batch_size]
 
+                # Create mask for WFA BLOS < 200 Gauss
+                wfa_mask = torch.abs(batch_wfa_blos.squeeze()) < 200.0
+
                 optimizer.zero_grad()
                 output = model(batch_stokes)
                 output_reshaped = output.view(-1, 3, 21)
@@ -83,7 +101,7 @@ def train_model(model, data_per_file, filenames, num_epochs=10, batch_size=128, 
                 pred_blos = output_reshaped[:, 2, min_rrmse_idx].unsqueeze(1)
                 pred_blos_np = pred_blos.detach().cpu().numpy()
                 pred_blos_scaled = torch.tensor(scaler.transform(pred_blos_np), dtype=torch.float32).to(device)
-                loss, _, _ = custom_loss(output, target, pred_blos_scaled, batch_wfa_blos, w=w)
+                loss, _, _ = custom_loss(output, target, pred_blos_scaled, batch_wfa_blos, w=w, wfa_mask=wfa_mask)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * batch_stokes.size(0)
@@ -120,6 +138,9 @@ def train_model_with_logging(model, data_per_file, filenames, num_epochs=10, bat
                 batch_wfa_blos = wfa_blos[i:i+batch_size]
                 batch_best_muram_b = best_muram_b[i:i+batch_size]
 
+                # Create mask for WFA BLOS < 200 Gauss
+                wfa_mask = torch.abs(batch_wfa_blos.squeeze()) < 200.0
+
                 optimizer.zero_grad()
                 output = model(batch_stokes)
                 output_reshaped = output.view(-1, 3, 21)
@@ -127,7 +148,7 @@ def train_model_with_logging(model, data_per_file, filenames, num_epochs=10, bat
                 pred_blos = output_reshaped[:, 2, min_rrmse_idx].unsqueeze(1)
                 pred_blos_np = pred_blos.detach().cpu().numpy()
                 pred_blos_scaled = torch.tensor(scaler.transform(pred_blos_np), dtype=torch.float32).to(device)
-                loss, loss1, loss2 = custom_loss(output, target, pred_blos_scaled, batch_wfa_blos, w=w)
+                loss, loss1, loss2 = custom_loss(output, target, pred_blos_scaled, batch_wfa_blos, w=w, wfa_mask=wfa_mask)
                 loss.backward()
                 optimizer.step()
                 total_loss += loss.item() * batch_stokes.size(0)

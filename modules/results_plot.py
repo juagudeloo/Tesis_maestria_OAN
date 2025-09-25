@@ -40,16 +40,41 @@ def load_modest_region(modest_loader):
     arrow_dx = x_disk_offset_pixels/10
     arrow_dy = y_disk_offset_pixels/10
 
-    # --- 4. Select region and sample pixel ---
+    # --- 4. Select region ---
     region_continuum = continuum[y_start:y_end, x_start:x_end]
-    min_idx = np.unravel_index(np.argmin(region_continuum), region_continuum.shape)
-    sample_y, sample_x = min_idx
+    
+    # --- 5. Find sample pixels based on different criteria ---
+    # Load observed Stokes data for circular polarization analysis
+    obs_stokes = modest_loader.load_obs_stokes()
+    obs_stokes_region = obs_stokes[y_start:y_end, x_start:x_end, :, :]
+    
+    # Calculate mean circular polarization (Stokes V) over wavelength
+    mean_circular_pol = np.mean(np.abs(obs_stokes_region[:, :, 1, :]), axis=2)
+    
+    # Find pixels based on criteria
+    sample_pixels = {}
+    
+    # 1. Highest continuum intensity
+    max_cont_idx = np.unravel_index(np.argmax(region_continuum), region_continuum.shape)
+    sample_pixels['max_continuum'] = {'y': max_cont_idx[0], 'x': max_cont_idx[1], 'label': 'Max Continuum'}
+    
+    # 2. Lowest continuum intensity
+    min_cont_idx = np.unravel_index(np.argmin(region_continuum), region_continuum.shape)
+    sample_pixels['min_continuum'] = {'y': min_cont_idx[0], 'x': min_cont_idx[1], 'label': 'Min Continuum'}
+    
+    # 3. Highest circular polarization
+    max_pol_idx = np.unravel_index(np.argmax(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['max_polarization'] = {'y': max_pol_idx[0], 'x': max_pol_idx[1], 'label': 'Max |Stokes V|'}
+    
+    # 4. Lowest circular polarization
+    min_pol_idx = np.unravel_index(np.argmin(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['min_polarization'] = {'y': min_pol_idx[0], 'x': min_pol_idx[1], 'label': 'Min |Stokes V|'}
 
-    return (continuum, cont_header, y_start, y_end, x_start, x_end, sample_x, sample_y,
+    return (continuum, cont_header, y_start, y_end, x_start, x_end, sample_pixels,
             x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
             arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, region_continuum)
 
-def plot_modest_continuum(modest_loader, y_start, y_end, x_start, x_end, sample_x, sample_y,
+def plot_modest_continuum(modest_loader, y_start, y_end, x_start, x_end, sample_pixels,
                           x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
                           arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, region_continuum, modest_images_dir):
     continuum = modest_loader.continuum
@@ -64,13 +89,21 @@ def plot_modest_continuum(modest_loader, y_start, y_end, x_start, x_end, sample_
         ax1.arrow(arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, head_width=20, head_length=20, fc='blue', ec='blue', linewidth=3, label='Solar Disk Center')
     ax1.legend()
     ax1.set_xticks([]); ax1.set_yticks([]); ax1.set_title("AR11967 - Full view")
+    
     ax2.imshow(region_continuum, cmap='gray', origin='lower')
     textstr = f'AR11967\nFOV Center\n(16.0, -126.0)\nZürich: Fkc\nMagnetic: βγδ\nμ=0.99'
     props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8)
     ax1.text(0.05, 0.05, textstr, transform=ax1.transAxes, fontsize=11, verticalalignment='bottom', bbox=props)
     ax2.set_xticks([]); ax2.set_yticks([]); ax2.set_title("AR11967 - Selected region")
-    ax2.plot(sample_x, sample_y, 'rx', markersize=10, markeredgewidth=2, label='Sample pixel')
+    
+    # Plot all sample pixels with different colors/markers
+    colors = ['red', 'blue', 'green', 'orange']
+    markers = ['x', 'o', 's', '^']
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        ax2.plot(pixel_info['x'], pixel_info['y'], markers[i], color=colors[i], 
+                markersize=8, markeredgewidth=2, label=pixel_info['label'])
     ax2.legend()
+    
     con1 = ConnectionPatch(xyA=(0, 0), coordsA=ax2.transData, xyB=(x_start, y_start), coordsB=ax1.transData, color='r', linestyle='-', linewidth=2.0, alpha=0.8)
     con2 = ConnectionPatch(xyA=(0, y_end-y_start), coordsA=ax2.transData, xyB=(x_start, y_end), coordsB=ax1.transData, color='r', linestyle='-', linewidth=2.0, alpha=0.8)
     fig.add_artist(con1); fig.add_artist(con2)
@@ -112,93 +145,145 @@ def load_and_deconvolve_stokes(modest_loader, y_start, y_end, x_start, x_end):
     deconvolved_obs_stokes_region = deconvolved_obs_stokes[y_start:y_end, x_start:x_end, :, :]
     return deconvolved_obs_stokes_region
 
-def plot_modest_stokes_profiles(modest_loader, deconvolved_obs_stokes_region, sample_x, sample_y, modest_images_dir):
+def plot_modest_stokes_profiles(modest_loader, deconvolved_obs_stokes_region, sample_pixels, modest_images_dir):
     wl = modest_loader.wl
     stokes_labels = ['Stokes I', 'Stokes V']
-    sample_pixel_stokes = deconvolved_obs_stokes_region[sample_y, sample_x, :, :]
-    sample_wavelength_idx = np.argmin(sample_pixel_stokes[0, :])-6
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    for col, label in enumerate(stokes_labels):
-        ax = axes[col]
-        ax.plot(wl, sample_pixel_stokes[col, :], 'b-', linewidth=1.5)
-        ax.plot(wl[sample_wavelength_idx], sample_pixel_stokes[col, sample_wavelength_idx], 'ro', markersize=6)
-        ax.set_title(f'{label}', fontsize=12)
-        ax.set_ylabel('Intensity')
-        ax.set_xlabel('Wavelength [Å]')
-        ax.grid(True, alpha=0.3)
-    plt.suptitle(f'MODEST Stokes Profiles - Sample Pixel ({sample_x}, {sample_y}) [no_spatial]', fontsize=15)
+    
+    # Create a 2x4 subplot for all sample pixels
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    
+    sample_wavelength_indices = {}
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        sample_x, sample_y = pixel_info['x'], pixel_info['y']
+        sample_pixel_stokes = deconvolved_obs_stokes_region[sample_y, sample_x, :, :]
+        sample_wavelength_idx = np.argmin(sample_pixel_stokes[0, :]) - 6
+        sample_wavelength_indices[key] = sample_wavelength_idx
+        
+        # Plot Stokes I and V for this pixel
+        for col, label in enumerate(stokes_labels):
+            ax = axes[col, i]
+            ax.plot(wl, sample_pixel_stokes[col, :], 'b-', linewidth=1.5)
+            ax.plot(wl[sample_wavelength_idx], sample_pixel_stokes[col, sample_wavelength_idx], 'ro', markersize=6)
+            ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
+            ax.set_ylabel('Intensity' if col == 0 else 'Polarization')
+            ax.set_xlabel('Wavelength [Å]')
+            ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('MODEST Stokes Profiles - Multiple Sample Pixels', fontsize=16)
     plt.tight_layout()
-    plt.savefig(modest_images_dir / "modest_sample_pixel_stokes_profiles_nospatial.png", dpi=300, bbox_inches='tight')
+    plt.savefig(modest_images_dir / "modest_sample_pixels_stokes_profiles.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
-    return wl, sample_wavelength_idx, stokes_labels
+    return wl, sample_wavelength_indices, stokes_labels
 
-def plot_modest_stokes_images(modest_loader, deconvolved_obs_stokes_region, sample_x, sample_y, wl, sample_wavelength_idx, stokes_labels, modest_images_dir):
+def plot_modest_stokes_images(modest_loader, deconvolved_obs_stokes_region, sample_pixels, wl, sample_wavelength_indices, stokes_labels, modest_images_dir):
     continuum = modest_loader.continuum
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    stokes_region_sample = deconvolved_obs_stokes_region[:, :, :, sample_wavelength_idx]
-    cont_vmin = np.quantile(continuum, 0.05)
-    cont_vmax = np.quantile(continuum, 0.95)
-    for col, label in enumerate(stokes_labels):
-        ax = axes[col]
-        if col == 0:
-            vmin, vmax = cont_vmin, cont_vmax
-        else:
-            data_sample = stokes_region_sample[:, :, col]
-            abs_max = np.max(np.abs([np.quantile(data_sample, 0.01), np.quantile(data_sample, 0.99)]))
-            vmin, vmax = -abs_max, abs_max
-        im = ax.imshow(stokes_region_sample[:, :, col], cmap='gray', origin='lower', vmin=vmin, vmax=vmax)
-        ax.set_title(label, fontsize=12)
-        ax.set_ylabel('Y [pixels]')
-        ax.set_xlabel('X [pixels]')
-        ax.set_xticks([]); ax.set_yticks([])
-        ax.plot(sample_x, sample_y, 'rx', markersize=8, markeredgewidth=2)
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-    plt.suptitle(f'MODEST Stokes Parameters at λ = {wl[sample_wavelength_idx]:.3f} Å [no_spatial]', fontsize=15)
-    plt.tight_layout()
-    plt.savefig(modest_images_dir / "modest_stokes_parameters_nospatial.png", dpi=300, bbox_inches='tight')
-    plt.close(fig)
+    
+    # Plot for each sample pixel's wavelength
+    for key, pixel_info in sample_pixels.items():
+        sample_wavelength_idx = sample_wavelength_indices[key]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        stokes_region_sample = deconvolved_obs_stokes_region[:, :, :, sample_wavelength_idx]
+        cont_vmin = np.quantile(continuum, 0.05)
+        cont_vmax = np.quantile(continuum, 0.95)
+        
+        for col, label in enumerate(stokes_labels):
+            ax = axes[col]
+            if col == 0:
+                vmin, vmax = cont_vmin, cont_vmax
+            else:
+                data_sample = stokes_region_sample[:, :, col]
+                abs_max = np.max(np.abs([np.quantile(data_sample, 0.01), np.quantile(data_sample, 0.99)]))
+                vmin, vmax = -abs_max, abs_max
+            im = ax.imshow(stokes_region_sample[:, :, col], cmap='gray', origin='lower', vmin=vmin, vmax=vmax)
+            ax.set_title(label, fontsize=12)
+            ax.set_ylabel('Y [pixels]')
+            ax.set_xlabel('X [pixels]')
+            ax.set_xticks([]); ax.set_yticks([])
+            
+            # Plot all sample pixels for reference
+            colors = ['red', 'blue', 'green', 'orange']
+            markers = ['x', 'o', 's', '^']
+            for i, (k, p_info) in enumerate(sample_pixels.items()):
+                marker_style = markers[i] if k == key else '+'
+                color = colors[i] if k == key else 'white'
+                markersize = 10 if k == key else 6
+                ax.plot(p_info['x'], p_info['y'], marker_style, color=color, 
+                       markersize=markersize, markeredgewidth=2)
+            
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+        
+        plt.suptitle(f'MODEST Stokes Parameters at λ = {wl[sample_wavelength_idx]:.3f} Å - {pixel_info["label"]}', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(modest_images_dir / f"modest_stokes_parameters_{key}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-def plot_modest_fitted_stokes(modest_loader, y_start, y_end, x_start, x_end, sample_x, sample_y, modest_images_dir):
+def plot_modest_fitted_stokes(modest_loader, y_start, y_end, x_start, x_end, sample_pixels, modest_images_dir):
     inverted_profs = modest_loader.inverted_profs
     wl = modest_loader.wl
     wl_inv = modest_loader.wl_inv
     inverted_profs_region = inverted_profs[y_start:y_end, x_start:x_end, :, :]
-    sample_pixel_inverted = inverted_profs_region[sample_y, sample_x, :, :]
-    sample_wavelength_idx_inv = np.argmin(sample_pixel_inverted[0, :])-50
     stokes_labels = ['Stokes I', 'Stokes V']
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    for i, (ax, label) in enumerate(zip(axes, stokes_labels)):
-        ax.plot(wl_inv, sample_pixel_inverted[i, :], 'r-', linewidth=1.5)
-        ax.plot(wl_inv[sample_wavelength_idx_inv], sample_pixel_inverted[i, sample_wavelength_idx_inv], 'bo', markersize=6)
-        ax.set_title(f'{label} profile (Inverted)')
-        if i == 0:
-            ax.legend(['Fitted Profile', f'Sample wavelength\n(λ = {wl_inv[sample_wavelength_idx_inv]:.3f})'], loc='lower right')
-        ax.set_xlabel('Wavelength [Å]')
-        ax.set_ylabel('Intensity' if i == 0 else 'Polarization Signal')
-        ax.grid(True, alpha=0.3)
+    
+    # Plot profiles for all sample pixels
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    
+    sample_wavelength_indices_inv = {}
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        sample_x, sample_y = pixel_info['x'], pixel_info['y']
+        sample_pixel_inverted = inverted_profs_region[sample_y, sample_x, :, :]
+        sample_wavelength_idx_inv = np.argmin(sample_pixel_inverted[0, :]) - 50
+        sample_wavelength_indices_inv[key] = sample_wavelength_idx_inv
+        
+        for j, (label, color) in enumerate(zip(stokes_labels, ['red', 'blue'])):
+            ax = axes[j, i]
+            ax.plot(wl_inv, sample_pixel_inverted[j, :], color=color, linewidth=1.5)
+            ax.plot(wl_inv[sample_wavelength_idx_inv], sample_pixel_inverted[j, sample_wavelength_idx_inv], 'ko', markersize=4)
+            ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
+            ax.set_xlabel('Wavelength [Å]')
+            ax.set_ylabel('Intensity' if j == 0 else 'Polarization Signal')
+            ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('MODEST Fitted Stokes Profiles - Multiple Sample Pixels', fontsize=16)
     plt.tight_layout()
-    plt.savefig(modest_images_dir / "sample_pixel_inverted_stokes_profiles.png", dpi=300, bbox_inches='tight')
+    plt.savefig(modest_images_dir / "sample_pixels_inverted_stokes_profiles.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
-    # Plot fitted Stokes images at sample wavelength
-    inverted_profs_region_sample = inverted_profs_region[:, :, :, sample_wavelength_idx_inv]
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    fig.suptitle(f'Inverted Stokes Parameters at λ = {wl_inv[sample_wavelength_idx_inv]:.3f} - Selected Region', fontsize=16)
-    for i, (ax, label) in enumerate(zip(axes, stokes_labels)):
-        im = ax.imshow(inverted_profs_region_sample[:, :, i], cmap='gray', origin='lower')
-        ax.set_title(label)
-        ax.set_xlabel('X [pixels]')
-        ax.set_ylabel('Y [pixels]')
-        ax.plot(sample_x, sample_y, 'bx', markersize=8, markeredgewidth=2)
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-    plt.tight_layout()
-    plt.savefig(modest_images_dir / "inverted_stokes_parameters_selected_region.png", dpi=300, bbox_inches='tight')
-    plt.close(fig)
+    
+    # Plot fitted Stokes images for each pixel's wavelength
+    for key, pixel_info in sample_pixels.items():
+        sample_wavelength_idx_inv = sample_wavelength_indices_inv[key]
+        inverted_profs_region_sample = inverted_profs_region[:, :, :, sample_wavelength_idx_inv]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        fig.suptitle(f'Inverted Stokes Parameters at λ = {wl_inv[sample_wavelength_idx_inv]:.3f} - {pixel_info["label"]}', fontsize=14)
+        
+        for i, (ax, label) in enumerate(zip(axes, stokes_labels)):
+            im = ax.imshow(inverted_profs_region_sample[:, :, i], cmap='gray', origin='lower')
+            ax.set_title(label)
+            ax.set_xlabel('X [pixels]')
+            ax.set_ylabel('Y [pixels]')
+            
+            # Plot all sample pixels for reference
+            colors = ['red', 'blue', 'green', 'orange']
+            markers = ['x', 'o', 's', '^']
+            for j, (k, p_info) in enumerate(sample_pixels.items()):
+                marker_style = markers[j] if k == key else '+'
+                color = colors[j] if k == key else 'white'
+                markersize = 10 if k == key else 6
+                ax.plot(p_info['x'], p_info['y'], marker_style, color=color, 
+                       markersize=markersize, markeredgewidth=2)
+            
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+        
+        plt.tight_layout()
+        plt.savefig(modest_images_dir / f"inverted_stokes_parameters_{key}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
 
-def plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, sample_x, sample_y, modest_images_dir):
+def plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, sample_pixels, modest_images_dir):
     inverted_atm = modest_loader.inverted_atmos
     tau_values = [-2.0, -0.8, 0.0]
     temp_indices = [8, 6, 7]
@@ -217,7 +302,10 @@ def plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, samp
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
-        ax.plot(sample_x, sample_y, 'cx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_continuum']['x'], sample_pixels['max_continuum']['y'], 'cx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_continuum']['x'], sample_pixels['min_continuum']['y'], 'mx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_polarization']['x'], sample_pixels['max_polarization']['y'], 'gx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_polarization']['x'], sample_pixels['min_polarization']['y'], 'rx', markersize=8, markeredgewidth=2)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
@@ -238,7 +326,10 @@ def plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, samp
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
-        ax.plot(sample_x, sample_y, 'kx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_continuum']['x'], sample_pixels['max_continuum']['y'], 'cx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_continuum']['x'], sample_pixels['min_continuum']['y'], 'mx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_polarization']['x'], sample_pixels['max_polarization']['y'], 'gx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_polarization']['x'], sample_pixels['min_polarization']['y'], 'rx', markersize=8, markeredgewidth=2)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
@@ -268,7 +359,10 @@ def plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, samp
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
-        ax.plot(sample_x, sample_y, 'kx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_continuum']['x'], sample_pixels['max_continuum']['y'], 'cx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_continuum']['x'], sample_pixels['min_continuum']['y'], 'mx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['max_polarization']['x'], sample_pixels['max_polarization']['y'], 'gx', markersize=8, markeredgewidth=2)
+        ax.plot(sample_pixels['min_polarization']['x'], sample_pixels['min_polarization']['y'], 'rx', markersize=8, markeredgewidth=2)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
@@ -435,3 +529,171 @@ def plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all
             plt.savefig(out_dir / f"{quantities[i][1].replace('$','')}_{fname_prefix}_vs_tau_allw.png")
             plt.close()
             plt.close()
+def plot_muram_sample_pixels(data_charger, test_data, fname, modest_images_dir):
+    """
+    Plot MuRAM sample pixels based on continuum intensity and circular polarization extremes.
+    
+    Args:
+        data_charger: DataCharger instance
+        test_data: Dictionary containing test data
+        fname: Filename being processed
+        modest_images_dir: Output directory for plots
+    """
+    if fname not in test_data:
+        print(f"File {fname} not found in test data")
+        return
+    
+    # Get MuRAM data
+    file_data = test_data[fname]
+    stokes_reshaped = file_data["stokes_reshaped"]  # (nx*ny, n_stokes, n_wl)
+    muram_reshaped = file_data["muram_reshaped"]    # (nx*ny, n_logtau*n_params)
+    
+    # Reshape back to spatial dimensions
+    nx, ny = 480, 480
+    n_stokes, n_wl = stokes_reshaped.shape[1], stokes_reshaped.shape[2]
+    stokes_cube = stokes_reshaped.reshape(nx, ny, n_stokes, n_wl)
+    
+    n_logtau = data_charger.n_logtau
+    n_params = muram_reshaped.shape[1] // n_logtau
+    muram_cube = muram_reshaped.reshape(nx, ny, n_logtau, n_params)
+    
+    # Calculate continuum intensity (average of first few wavelength points)
+    continuum_intensity = np.mean(stokes_cube[:, :, 0, :5], axis=2)  # Stokes I, first 5 wavelengths
+    
+    # Calculate mean circular polarization (Stokes V)
+    mean_circular_pol = np.mean(np.abs(stokes_cube[:, :, 1, :]), axis=2)  # |Stokes V|
+    
+    # Find sample pixels based on criteria
+    sample_pixels = {}
+    
+    # 1. Highest continuum intensity
+    max_cont_idx = np.unravel_index(np.argmax(continuum_intensity), continuum_intensity.shape)
+    sample_pixels['max_continuum'] = {'y': max_cont_idx[0], 'x': max_cont_idx[1], 'label': 'Max Continuum'}
+    
+    # 2. Lowest continuum intensity
+    min_cont_idx = np.unravel_index(np.argmin(continuum_intensity), continuum_intensity.shape)
+    sample_pixels['min_continuum'] = {'y': min_cont_idx[0], 'x': min_cont_idx[1], 'label': 'Min Continuum'}
+    
+    # 3. Highest circular polarization
+    max_pol_idx = np.unravel_index(np.argmax(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['max_polarization'] = {'y': max_pol_idx[0], 'x': max_pol_idx[1], 'label': 'Max |Stokes V|'}
+    
+    # 4. Lowest circular polarization
+    min_pol_idx = np.unravel_index(np.argmin(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['min_polarization'] = {'y': min_pol_idx[0], 'x': min_pol_idx[1], 'label': 'Min |Stokes V|'}
+    
+    # Create wavelength array (same as Hinode)
+    NAXIS1 = 112
+    CRVAL1 = 6302.0
+    CDELT1 = 0.0215
+    CRPIX1 = 57
+    wl = CRVAL1 + (np.arange(1, NAXIS1 + 1) - CRPIX1) * CDELT1
+    
+    # Plot continuum with sample pixels
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Continuum intensity map
+    im1 = axes[0].imshow(continuum_intensity, cmap='gray', origin='lower')
+    axes[0].set_title(f'MuRAM Continuum Intensity - {fname}')
+    axes[0].set_xlabel('X [pixels]')
+    axes[0].set_ylabel('Y [pixels]')
+    plt.colorbar(im1, ax=axes[0])
+    
+    # Circular polarization map
+    im2 = axes[1].imshow(mean_circular_pol, cmap='RdBu_r', origin='lower')
+    axes[1].set_title(f'MuRAM Mean |Stokes V| - {fname}')
+    axes[1].set_xlabel('X [pixels]')
+    axes[1].set_ylabel('Y [pixels]')
+    plt.colorbar(im2, ax=axes[1])
+    
+    # Plot sample pixels on both maps
+    colors = ['red', 'blue', 'green', 'orange']
+    markers = ['x', 'o', 's', '^']
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        for ax in axes:
+            ax.plot(pixel_info['x'], pixel_info['y'], markers[i], color=colors[i], 
+                   markersize=8, markeredgewidth=2, label=pixel_info['label'])
+    
+    axes[0].legend()
+    plt.tight_layout()
+    fig.savefig(modest_images_dir / f"muram_sample_pixels_maps_{fname}.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot Stokes profiles for sample pixels
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    stokes_labels = ['Stokes I', 'Stokes V']
+    
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        sample_x, sample_y = pixel_info['x'], pixel_info['y']
+        sample_pixel_stokes = stokes_cube[sample_y, sample_x, :, :]
+        
+        for col, label in enumerate(stokes_labels):
+            ax = axes[col, i]
+            ax.plot(wl, sample_pixel_stokes[col, :], 'b-', linewidth=1.5)
+            ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
+            ax.set_ylabel('Intensity' if col == 0 else 'Polarization')
+            ax.set_xlabel('Wavelength [Å]')
+            ax.grid(True, alpha=0.3)
+    
+    plt.suptitle(f'MuRAM Stokes Profiles - Multiple Sample Pixels - {fname}', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / f"muram_sample_pixels_stokes_profiles_{fname}.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot atmospheric parameters for sample pixels at different optical depths
+    tau_values = [-2.0, -0.8, 0.0]
+    tau_indices = [0, 10, 20]  # Approximate indices for the tau values
+    param_names = ['Temperature', 'Velocity', 'B_LOS']
+    param_units = ['K', 'km/s', 'G']
+    
+    # Rescale MuRAM data to physical units
+    from modules.charge_data import DataCharger  # Import for scaling factors
+    temp_max, temp_min = 2e4, 0
+    vel_max, vel_min = 1e6, -1e6
+    blos_max, blos_min = 3e3, -3e3
+    
+    muram_phys = np.zeros_like(muram_cube)
+    muram_phys[..., 0] = muram_cube[..., 0] * (temp_max - temp_min) + temp_min
+    muram_phys[..., 1] = (muram_cube[..., 1] * (vel_max - vel_min) + vel_min) / 1e5  # km/s
+    muram_phys[..., 2] = muram_cube[..., 2] * (blos_max - blos_min) + blos_min
+    
+    for param_idx, (param_name, param_unit) in enumerate(zip(param_names, param_units)):
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+        
+        for tau_idx, (tau_val, ax) in enumerate(zip(tau_values, axes)):
+            # Get atmospheric parameter at this optical depth
+            atm_param_map = muram_phys[:, :, tau_indices[tau_idx], param_idx]
+            
+            # Set colormap and limits
+            if param_name == 'Temperature':
+                cmap = 'hot'
+                vmin, vmax = np.quantile(atm_param_map, [0.05, 0.95])
+            else:
+                cmap = 'RdBu_r' if param_name == 'Velocity' else 'PiYG'
+                vmin, vmax = np.quantile(atm_param_map, [0.01, 0.99])
+                if np.abs(vmin) > np.abs(vmax):
+                    vmax = np.abs(vmin)
+                else:
+                    vmin = -np.abs(vmax)
+            
+            im = ax.imshow(atm_param_map, cmap=cmap, origin='lower', vmin=vmin, vmax=vmax)
+            ax.set_title(f'log τ = {tau_val}')
+            ax.set_xlabel('X [pixels]')
+            ax.set_ylabel('Y [pixels]')
+            
+            # Plot sample pixels
+            for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+                ax.plot(pixel_info['x'], pixel_info['y'], markers[i], color='white', 
+                       markersize=6, markeredgewidth=2)
+            
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            cbar = plt.colorbar(im, cax=cax)
+            cbar.set_label(f'[{param_unit}]')
+        
+        plt.suptitle(f'MuRAM {param_name} at Different Optical Depths - {fname}', fontsize=16)
+        plt.tight_layout()
+        plt.savefig(modest_images_dir / f"muram_{param_name.lower()}_sample_pixels_{fname}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+    
+    return sample_pixels
