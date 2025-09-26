@@ -18,7 +18,7 @@ def main():
     # Spectral conditions are ALWAYS applied (mandatory)
     apply_spectral_conditions = True
     noise_conditions = [True, False]     # With and without noise (optional)
-    w_values = [0, 1e-4, 1e-3, 1e-2, 0.1, 0.5, 0.9]
+    w_values = [0, 1e-3, 1e-2, 0.1, 0.5, 0.9]
     num_epochs = 20
     # Set batch size based on available GPU memory
     if torch.cuda.is_available():
