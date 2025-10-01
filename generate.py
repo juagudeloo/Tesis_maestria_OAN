@@ -23,6 +23,13 @@ from modules.results_plot import (
     plot_modest_stokes_images,
     plot_modest_fitted_stokes,
     plot_modest_spinor_atmos,
+    load_modest_region_full_scene,
+    plot_modest_continuum_full_scene,
+    load_and_deconvolve_stokes_full_scene,
+    plot_modest_stokes_profiles_full_scene,
+    plot_modest_stokes_images_full_scene,
+    plot_modest_fitted_stokes_full_scene,
+    plot_modest_spinor_atmos_full_scene,
     plot_per_tau_metrics,
     plot_model_summary_metrics,
     plot_overall_summary_metrics
@@ -136,34 +143,30 @@ def main():
     modest_loader = ModestDataLoader(psf_path = "/scratchsan/observatorio/juagudeloo/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits")
     modest_loader.load_all()
     
-    # MODEST region processing
-    (_, _, y_start, y_end, x_start, x_end, sample_pixels,
-     x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
-     arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, region_continuum) = load_modest_region(modest_loader)
+    # MODEST full scene processing
+    sample_pixels = load_modest_region_full_scene(modest_loader)
     
-    plot_modest_continuum(modest_loader, y_start, y_end, x_start, x_end, sample_pixels,
-                          x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
-                          arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, region_continuum, modest_images_dir)
+    plot_modest_continuum_full_scene(modest_loader, sample_pixels, modest_images_dir)
     
-    deconvolved_obs_stokes_region = load_and_deconvolve_stokes(modest_loader, y_start, y_end, x_start, x_end)
+    deconvolved_obs_stokes_full = load_and_deconvolve_stokes_full_scene(modest_loader)
     
-    wl, sample_wavelength_indices, stokes_labels = plot_modest_stokes_profiles(modest_loader, deconvolved_obs_stokes_region, sample_pixels, modest_images_dir)
+    wl, sample_wavelength_indices, stokes_labels = plot_modest_stokes_profiles_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, modest_images_dir)
     
-    plot_modest_stokes_images(modest_loader, deconvolved_obs_stokes_region, sample_pixels, wl, sample_wavelength_indices, stokes_labels, modest_images_dir)
+    plot_modest_stokes_images_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, wl, sample_wavelength_indices, stokes_labels, modest_images_dir)
     
-    plot_modest_fitted_stokes(modest_loader, y_start, y_end, x_start, x_end, sample_pixels, modest_images_dir)
+    plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_images_dir)
     
-    spinor_atm_dict = plot_modest_spinor_atmos(modest_loader, y_start, y_end, x_start, x_end, sample_pixels, modest_images_dir)
+    spinor_atm_dict = plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_images_dir)
     
     print("MODEST atm params shape:", modest_loader.inverted_atmos.shape)
     
-    # Plot MuRAM sample pixels
-    from modules.results_plot import plot_muram_sample_pixels
-    muram_sample_pixels = plot_muram_sample_pixels(data_charger, test_data, test_files[0], modest_images_dir)
-    print(f"MuRAM sample pixels identified: {list(muram_sample_pixels.keys())}")
+    # # Plot MuRAM sample pixels
+    # from modules.results_plot import plot_muram_sample_pixels
+    # muram_sample_pixels = plot_muram_sample_pixels(data_charger, test_data, test_files[0], modest_images_dir)
+    # print(f"MuRAM sample pixels identified: {list(muram_sample_pixels.keys())}")
 
-    # Extract MODEST region Stokes data (I and V only)
-    modest_stokes = modest_loader.obs_stokes[y_start:y_end, x_start:x_end, :, :]  # shape: (NY, NX, 2, n_wl)
+    # Extract MODEST full scene Stokes data (I and V only)
+    modest_stokes = modest_loader.obs_stokes  # shape: (NY, NX, 2, n_wl)
     NY, NX, n_stokes, n_wl = modest_stokes.shape
     
     # Process both noise conditions
@@ -206,7 +209,7 @@ def main():
 
             with torch.no_grad():
                 pred = model(stokes_tensor).numpy()  # shape: (NY*NX, n_logtau, n_params)
-                pred_region = pred.reshape(NY, NX, 21, 3)
+                pred_full_scene = pred.reshape(NY, NX, 21, 3)
 
             # --- Rescale predicted values to physical units ---
             # Scaling: [max, min]
@@ -214,13 +217,13 @@ def main():
             vel_max, vel_min = 1e6, -1e6
             blos_max, blos_min = 3e3, -3e3
 
-            pred_phys = np.zeros_like(pred_region)
+            pred_phys = np.zeros_like(pred_full_scene)
             # Temperature
-            pred_phys[:, :, :, 0] = pred_region[:, :, :, 0] * (temp_max - temp_min) + temp_min
+            pred_phys[:, :, :, 0] = pred_full_scene[:, :, :, 0] * (temp_max - temp_min) + temp_min
             # Velocity (convert to km/s after scaling)
-            pred_phys[:, :, :, 1] = (pred_region[:, :, :, 1] * (vel_max - vel_min) + vel_min) / 1e5
+            pred_phys[:, :, :, 1] = (pred_full_scene[:, :, :, 1] * (vel_max - vel_min) + vel_min) / 1e5
             # B_LOS
-            pred_phys[:, :, :, 2] = pred_region[:, :, :, 2] * (blos_max - blos_min) + blos_min
+            pred_phys[:, :, :, 2] = pred_full_scene[:, :, :, 2] * (blos_max - blos_min) + blos_min
 
             # --- Plot comparisons for the three nodes ---
             modest_tau_values = [-2.0, -0.8, 0.0]

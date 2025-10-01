@@ -529,6 +529,345 @@ def plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all
             plt.savefig(out_dir / f"{quantities[i][1].replace('$','')}_{fname_prefix}_vs_tau_allw.png")
             plt.close()
             plt.close()
+def load_modest_region_full_scene(modest_loader):
+    """
+    Load MODEST data for the full scene without regional cropping.
+    Returns sample pixels based on the full scene analysis.
+    """
+    # Load continuum data using ModestDataLoader
+    continuum = modest_loader.load_continuum()
+    
+    # Load observed Stokes data for circular polarization analysis
+    obs_stokes = modest_loader.load_obs_stokes()
+    
+    # Calculate mean circular polarization (Stokes V) over wavelength
+    mean_circular_pol = np.mean(np.abs(obs_stokes[:, :, 1, :]), axis=2)
+    
+    # Find pixels based on criteria
+    sample_pixels = {}
+    
+    # 1. Highest continuum intensity
+    max_cont_idx = np.unravel_index(np.argmax(continuum), continuum.shape)
+    sample_pixels['max_continuum'] = {'y': max_cont_idx[0], 'x': max_cont_idx[1], 'label': 'Max Continuum'}
+    
+    # 2. Lowest continuum intensity
+    min_cont_idx = np.unravel_index(np.argmin(continuum), continuum.shape)
+    sample_pixels['min_continuum'] = {'y': min_cont_idx[0], 'x': min_cont_idx[1], 'label': 'Min Continuum'}
+    
+    # 3. Highest circular polarization
+    max_pol_idx = np.unravel_index(np.argmax(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['max_polarization'] = {'y': max_pol_idx[0], 'x': max_pol_idx[1], 'label': 'Max |Stokes V|'}
+    
+    # 4. Lowest circular polarization
+    min_pol_idx = np.unravel_index(np.argmin(mean_circular_pol), mean_circular_pol.shape)
+    sample_pixels['min_polarization'] = {'y': min_pol_idx[0], 'x': min_pol_idx[1], 'label': 'Min |Stokes V|'}
+
+    return sample_pixels
+
+def plot_modest_continuum_full_scene(modest_loader, sample_pixels, modest_images_dir):
+    """Plot MODEST continuum for the full scene with sample pixels marked."""
+    continuum = modest_loader.continuum
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    
+    im = ax.imshow(continuum, cmap='gray', origin='lower')
+    ax.set_title("AR11967 - Full Scene Continuum")
+    ax.set_xlabel('X [pixels]')
+    ax.set_ylabel('Y [pixels]')
+    
+    # Plot all sample pixels with different colors/markers
+    colors = ['red', 'blue', 'green', 'orange']
+    markers = ['x', 'o', 's', '^']
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        ax.plot(pixel_info['x'], pixel_info['y'], markers[i], color=colors[i], 
+                markersize=8, markeredgewidth=2, label=pixel_info['label'])
+    ax.legend()
+    
+    # Add colorbar
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.05)
+    plt.colorbar(im, cax=cax)
+    
+    plt.tight_layout()
+    fig.savefig(modest_images_dir / "continuum_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+def load_and_deconvolve_stokes_full_scene(modest_loader):
+    """Load and deconvolve Stokes data for the full scene."""
+    obs_stokes = modest_loader.obs_stokes
+    hinode_psf = modest_loader.load_psf()
+    
+    def wiener_deconv(image, psf, noise_level=0.01):
+        psf_padded = np.zeros_like(image)
+        psf_center = (psf.shape[0] // 2, psf.shape[1] // 2)
+        img_center = (image.shape[0] // 2, image.shape[1] // 2)
+        y_start_ = img_center[0] - psf_center[0]
+        y_end_ = y_start_ + psf.shape[0]
+        x_start_ = img_center[1] - psf_center[1]
+        x_end_ = x_start_ + psf.shape[1]
+        psf_padded[y_start_:y_end_, x_start_:x_end_] = psf
+        psf_padded = fftshift(psf_padded)
+        img_fft = fft2(image)
+        psf_fft = fft2(psf_padded)
+        psf_conj = np.conj(psf_fft)
+        psf_abs_sq = np.abs(psf_fft)**2
+        wiener_filter = psf_conj / (psf_abs_sq + noise_level)
+        result_fft = img_fft * wiener_filter
+        result = np.real(ifft2(result_fft))
+        return result
+        
+    def deconvolve_stokes_data(stokes_data, psf):
+        ny, nx, n_stokes, n_wavelength = stokes_data.shape
+        deconvolved_stokes = np.zeros_like(stokes_data)
+        for wave_idx in range(n_wavelength):
+            for stokes_idx in range(n_stokes):
+                image_2d = stokes_data[:, :, stokes_idx, wave_idx]
+                deconvolved_image = wiener_deconv(image_2d, psf)
+                deconvolved_stokes[:, :, stokes_idx, wave_idx] = deconvolved_image
+        return deconvolved_stokes
+    
+    deconvolved_obs_stokes_full = deconvolve_stokes_data(obs_stokes, hinode_psf)
+    return deconvolved_obs_stokes_full
+
+def plot_modest_stokes_profiles_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, modest_images_dir):
+    """Plot Stokes profiles for sample pixels from the full scene."""
+    wl = modest_loader.wl
+    stokes_labels = ['Stokes I', 'Stokes V']
+    
+    # Create a 2x4 subplot for all sample pixels
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    
+    sample_wavelength_indices = {}
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        sample_x, sample_y = pixel_info['x'], pixel_info['y']
+        sample_pixel_stokes = deconvolved_obs_stokes_full[sample_y, sample_x, :, :]
+        sample_wavelength_idx = np.argmin(sample_pixel_stokes[0, :]) - 6
+        sample_wavelength_indices[key] = sample_wavelength_idx
+        
+        # Plot Stokes I and V for this pixel
+        for col, label in enumerate(stokes_labels):
+            ax = axes[col, i]
+            ax.plot(wl, sample_pixel_stokes[col, :], 'b-', linewidth=1.5)
+            ax.plot(wl[sample_wavelength_idx], sample_pixel_stokes[col, sample_wavelength_idx], 'ro', markersize=6)
+            ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
+            ax.set_ylabel('Intensity' if col == 0 else 'Polarization')
+            ax.set_xlabel('Wavelength [Å]')
+            ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('MODEST Stokes Profiles - Full Scene Sample Pixels', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / "modest_sample_pixels_stokes_profiles_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    return wl, sample_wavelength_indices, stokes_labels
+
+def plot_modest_stokes_images_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, wl, sample_wavelength_indices, stokes_labels, modest_images_dir):
+    """Plot Stokes images for the full scene at sample wavelengths."""
+    # Plot for each sample pixel's wavelength
+    for key, pixel_info in sample_pixels.items():
+        sample_wavelength_idx = sample_wavelength_indices[key]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        stokes_full_sample = deconvolved_obs_stokes_full[:, :, :, sample_wavelength_idx]
+        
+        for col, label in enumerate(stokes_labels):
+            ax = axes[col]
+            if col == 0:
+                vmin, vmax = np.quantile(stokes_full_sample[:, :, col], [0.05, 0.95])
+            else:
+                data_sample = stokes_full_sample[:, :, col]
+                abs_max = np.max(np.abs([np.quantile(data_sample, 0.01), np.quantile(data_sample, 0.99)]))
+                vmin, vmax = -abs_max, abs_max
+            im = ax.imshow(stokes_full_sample[:, :, col], cmap='gray', origin='lower', vmin=vmin, vmax=vmax)
+            ax.set_title(label, fontsize=12)
+            ax.set_ylabel('Y [pixels]')
+            ax.set_xlabel('X [pixels]')
+            
+            # Plot all sample pixels for reference
+            colors = ['red', 'blue', 'green', 'orange']
+            markers = ['x', 'o', 's', '^']
+            for i, (k, p_info) in enumerate(sample_pixels.items()):
+                marker_style = markers[i] if k == key else '+'
+                color = colors[i] if k == key else 'white'
+                markersize = 10 if k == key else 6
+                ax.plot(p_info['x'], p_info['y'], marker_style, color=color, 
+                       markersize=markersize, markeredgewidth=2)
+            
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+        
+        plt.suptitle(f'MODEST Full Scene Stokes Parameters at λ = {wl[sample_wavelength_idx]:.3f} Å - {pixel_info["label"]}', fontsize=14)
+        plt.tight_layout()
+        plt.savefig(modest_images_dir / f"modest_stokes_parameters_full_scene_{key}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+def plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_images_dir):
+    """Plot fitted Stokes profiles for the full scene."""
+    inverted_profs = modest_loader.inverted_profs
+    wl_inv = modest_loader.wl_inv
+    stokes_labels = ['Stokes I', 'Stokes V']
+    
+    # Plot profiles for all sample pixels
+    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+    
+    sample_wavelength_indices_inv = {}
+    for i, (key, pixel_info) in enumerate(sample_pixels.items()):
+        sample_x, sample_y = pixel_info['x'], pixel_info['y']
+        sample_pixel_inverted = inverted_profs[sample_y, sample_x, :, :]
+        sample_wavelength_idx_inv = np.argmin(sample_pixel_inverted[0, :]) - 50
+        sample_wavelength_indices_inv[key] = sample_wavelength_idx_inv
+        
+        for j, (label, color) in enumerate(zip(stokes_labels, ['red', 'blue'])):
+            ax = axes[j, i]
+            ax.plot(wl_inv, sample_pixel_inverted[j, :], color=color, linewidth=1.5)
+            ax.plot(wl_inv[sample_wavelength_idx_inv], sample_pixel_inverted[j, sample_wavelength_idx_inv], 'ko', markersize=4)
+            ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
+            ax.set_xlabel('Wavelength [Å]')
+            ax.set_ylabel('Intensity' if j == 0 else 'Polarization Signal')
+            ax.grid(True, alpha=0.3)
+    
+    plt.suptitle('MODEST Fitted Stokes Profiles - Full Scene Sample Pixels', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / "sample_pixels_inverted_stokes_profiles_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot fitted Stokes images for each pixel's wavelength
+    for key, pixel_info in sample_pixels.items():
+        sample_wavelength_idx_inv = sample_wavelength_indices_inv[key]
+        inverted_profs_sample = inverted_profs[:, :, :, sample_wavelength_idx_inv]
+        
+        fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+        fig.suptitle(f'Inverted Stokes Parameters Full Scene at λ = {wl_inv[sample_wavelength_idx_inv]:.3f} - {pixel_info["label"]}', fontsize=14)
+        
+        for i, (ax, label) in enumerate(zip(axes, stokes_labels)):
+            im = ax.imshow(inverted_profs_sample[:, :, i], cmap='gray', origin='lower')
+            ax.set_title(label)
+            ax.set_xlabel('X [pixels]')
+            ax.set_ylabel('Y [pixels]')
+            
+            # Plot all sample pixels for reference
+            colors = ['red', 'blue', 'green', 'orange']
+            markers = ['x', 'o', 's', '^']
+            for j, (k, p_info) in enumerate(sample_pixels.items()):
+                marker_style = markers[j] if k == key else '+'
+                color = colors[j] if k == key else 'white'
+                markersize = 10 if k == key else 6
+                ax.plot(p_info['x'], p_info['y'], marker_style, color=color, 
+                       markersize=markersize, markeredgewidth=2)
+            
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            plt.colorbar(im, cax=cax)
+        
+        plt.tight_layout()
+        plt.savefig(modest_images_dir / f"inverted_stokes_parameters_full_scene_{key}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+def plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_images_dir):
+    """Plot SPINOR atmospheric parameters for the full scene."""
+    inverted_atm = modest_loader.inverted_atmos
+    tau_values = [-2.0, -0.8, 0.0]
+    temp_indices = [8, 6, 7]
+    vel_indices = [20, 18, 19]
+    mag_field_indices = [11, 9, 10]
+    gamma_indices = [14, 12, 13]
+    
+    # Temperature
+    temp_nodes = inverted_atm[temp_indices, :, :]
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    temp_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
+    for i, (ax, label) in enumerate(zip(axes, temp_labels)):
+        vmin = np.quantile(temp_nodes[i], 0.05)
+        vmax = np.quantile(temp_nodes[i], 0.95)
+        im = ax.imshow(temp_nodes[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
+        ax.set_title(label)
+        ax.set_xlabel('X [pixels]')
+        ax.set_ylabel('Y [pixels]')
+        for j, (key, pixel_info) in enumerate(sample_pixels.items()):
+            colors = ['cyan', 'magenta', 'green', 'red']
+            ax.plot(pixel_info['x'], pixel_info['y'], 'x', color=colors[j], markersize=8, markeredgewidth=2)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(im, cax=cax)
+        cbar.set_label('[K]')
+    plt.suptitle('SPINOR 2D Inverted Temperature - Full Scene', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / "spinor_temperature_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Velocity
+    vel_nodes = inverted_atm[vel_indices, :, :]
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    vel_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
+    for i, (ax, label) in enumerate(zip(axes, vel_labels)):
+        vmin = np.quantile(vel_nodes[i], 0.01)
+        vmax = np.quantile(vel_nodes[i], 0.99)
+        if np.abs(vmin) > np.abs(vmax):
+            vmax = np.abs(vmin)
+        else:
+            vmin = -np.abs(vmax)
+        im = ax.imshow(vel_nodes[i], cmap='RdBu_r', origin='lower', vmin=vmin, vmax=vmax)
+        ax.set_title(label)
+        ax.set_xlabel('X [pixels]')
+        ax.set_ylabel('Y [pixels]')
+        for j, (key, pixel_info) in enumerate(sample_pixels.items()):
+            colors = ['cyan', 'magenta', 'green', 'red']
+            ax.plot(pixel_info['x'], pixel_info['y'], 'x', color=colors[j], markersize=8, markeredgewidth=2)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(im, cax=cax)
+        cbar.set_label('[Km/s]')
+    plt.suptitle(r'SPINOR 2D Inverted $v_\text{LOS}$ - Full Scene', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / "spinor_velocity_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # B_LOS
+    bcos_gamma_nodes = []
+    for i in range(3):
+        b_field = inverted_atm[mag_field_indices[i], :, :]
+        gamma_deg = inverted_atm[gamma_indices[i], :, :]
+        gamma_rad = np.deg2rad(gamma_deg)
+        bcos_gamma = b_field * np.cos(gamma_rad)
+        bcos_gamma_nodes.append(bcos_gamma)
+    bcos_gamma_nodes = np.array(bcos_gamma_nodes)
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    bcos_gamma_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
+    for i, (ax, label) in enumerate(zip(axes, bcos_gamma_labels)):
+        vmin = np.quantile(bcos_gamma_nodes[i], 0.01)
+        vmax = np.quantile(bcos_gamma_nodes[i], 0.99)
+        if np.abs(vmin) > np.abs(vmax): 
+            vmax = np.abs(vmin)
+        else: 
+            vmin = -np.abs(vmax)
+        im = ax.imshow(bcos_gamma_nodes[i], cmap='PiYG', origin='lower', vmin=vmin, vmax=vmax)
+        ax.set_title(label)
+        ax.set_xlabel('X [pixels]')
+        ax.set_ylabel('Y [pixels]')
+        for j, (key, pixel_info) in enumerate(sample_pixels.items()):
+            colors = ['cyan', 'magenta', 'green', 'red']
+            ax.plot(pixel_info['x'], pixel_info['y'], 'x', color=colors[j], markersize=8, markeredgewidth=2)
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        cbar = plt.colorbar(im, cax=cax)
+        cbar.set_label('[G]')
+    plt.suptitle(r'SPINOR 2D Inverted $B_{\text{LOS}}$ - Full Scene', fontsize=16)
+    plt.tight_layout()
+    plt.savefig(modest_images_dir / "spinor_bcos_gamma_full_scene.png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Save all data for further use (full scene now)
+    spinor_atm_dict = {}
+    for i, tau in enumerate(tau_values):
+        spinor_atm_dict[f"temperature_tau_{tau}"] = inverted_atm[temp_indices[i], :, :]
+        spinor_atm_dict[f"velocity_tau_{tau}"] = inverted_atm[vel_indices[i], :, :]
+        b_field = inverted_atm[mag_field_indices[i], :, :]
+        gamma_deg = inverted_atm[gamma_indices[i], :, :]
+        gamma_rad = np.deg2rad(gamma_deg)
+        blos = b_field * np.cos(gamma_rad)
+        spinor_atm_dict[f"blos_tau_{tau}"] = blos
+    return spinor_atm_dict
+
 def plot_muram_sample_pixels(data_charger, test_data, fname, modest_images_dir):
     """
     Plot MuRAM sample pixels based on continuum intensity and circular polarization extremes.
