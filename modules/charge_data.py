@@ -83,7 +83,7 @@ class DataCharger:
         
         # Load opacity table
         df_kappa = pd.read_csv(self.data_path / 'csv' / 'kappa.0.dat', 
-                              sep='\s+', header=None)
+                              sep=r'\s+', header=None)
         df_kappa.columns = ["Temperature index", "Pressure index", "Opacity value"]
         temp_indices = df_kappa["Temperature index"].unique()
         press_indices = df_kappa["Pressure index"].unique()
@@ -119,7 +119,7 @@ class DataCharger:
         
         # Load LSF
         lsf_hinode = pd.read_csv(self.data_path / "hinode-MODEST" / "PSFs" / "hinode_sp.spline.psf", 
-                                sep="\s+", header=None)
+                                sep=r"\s+", header=None)
         lsf_wavelengths = lsf_hinode[0].values
         lsf_values = lsf_hinode[1].values
         lsf_interp = interp1d(lsf_wavelengths, lsf_values, kind="cubic")
@@ -534,6 +534,85 @@ class ModestDataLoader:
         self.wl = None
         self.wl_inv = None
         self.spinor_atm_dict = None
+        # Masking
+        self.mask = None
+        self.circular_polarization_threshold = 5e-3
+
+    def spectropolarimetry(self, stokes: np.ndarray) -> np.ndarray:
+        """
+        Function to calculate the circular polarization from the Stokes parameters.
+        Args:
+            stokes(np.ndarray): Array containing the Stokes parameters in format (y, x, n_stokes, n_wavelength).
+        Returns:
+            (np.ndarray) Array containing the circular polarization.
+        """
+        # Extract Stokes I and V - shape (y, x, n_wavelength)
+        I = stokes[:, :, 0, :]  # Stokes I
+        V = stokes[:, :, 1, :]  # Stokes V
+        nwl_points = stokes.shape[-1]
+
+        # Avoid division by zero
+        epsilon = 1e-10
+        I_safe = np.maximum(I, epsilon)
+        
+        # Calculate circular polarization as mean absolute |V/I| over wavelength
+        circular_polarization = np.mean(np.abs(V) / I_safe, axis=-1)
+        
+        return circular_polarization
+    
+    def create_mask_from_circular_polarization(self):
+        """
+        Create a mask based on circular polarization threshold.
+        Mask pixels where circular polarization < threshold.
+        """
+        if self.obs_stokes is None:
+            raise ValueError("obs_stokes must be loaded before creating mask")
+        
+        # Calculate circular polarization from obs_stokes
+        circular_polarization = self.spectropolarimetry(self.obs_stokes)
+        
+        # Create mask: True for pixels to keep (above threshold), False for pixels to mask
+        self.mask = circular_polarization <= self.circular_polarization_threshold
+        
+        print(f"Mask created: {np.sum(~self.mask)} pixels masked out of {self.mask.size} total pixels")
+        print(f"Percentage of pixels masked: {100 * np.sum(~self.mask) / self.mask.size:.2f}%")
+        
+        return self.mask
+    
+    def apply_mask_to_data(self):
+        """
+        Apply the mask to all loaded data by setting masked pixels to NaN.
+        """
+        if self.mask is None:
+            print("No mask created yet. Creating mask from circular polarization...")
+            self.create_mask_from_circular_polarization()
+        
+        # Apply mask to continuum
+        if self.continuum is not None:
+            self.continuum = self.continuum.copy()
+            self.continuum[~self.mask] = np.nan
+            
+        # Apply mask to obs_stokes
+        if self.obs_stokes is not None:
+            self.obs_stokes = self.obs_stokes.copy()
+            self.obs_stokes[~self.mask, :, :] = np.nan
+            
+        # Apply mask to deconvolved_stokes
+        if self.deconvolved_stokes is not None:
+            self.deconvolved_stokes = self.deconvolved_stokes.copy()
+            self.deconvolved_stokes[~self.mask, :, :] = np.nan
+            
+        # Apply mask to inverted_profs
+        if self.inverted_profs is not None:
+            self.inverted_profs = self.inverted_profs.copy()
+            self.inverted_profs[~self.mask, :, :] = np.nan
+            
+        # Apply mask to inverted_atmos
+        if self.inverted_atmos is not None:
+            self.inverted_atmos = self.inverted_atmos.copy()
+            self.inverted_atmos[:, ~self.mask] = np.nan
+            
+        print("Mask applied to all loaded data")
 
     def load_continuum(self, filename="continuum.fits"):
         path = self.modest_dir / filename
@@ -644,13 +723,37 @@ class ModestDataLoader:
         self.spinor_atm_dict = d
         return d
 
+    def build_spinor_atm_dict_full_scene(self):
+        """Build SPINOR atmospheric dictionary for the full scene (including masked data)."""
+        tau_values = [-2.0, -0.8, 0.0]
+        temp_indices = [8, 6, 7]
+        vel_indices = [20, 18, 19]
+        mag_field_indices = [11, 9, 10]
+        gamma_indices = [14, 12, 13]
+        d = {}
+        for i, tau in enumerate(tau_values):
+            d[f"temperature_tau_{tau}"] = self.inverted_atmos[temp_indices[i], :, :]
+            d[f"velocity_tau_{tau}"] = self.inverted_atmos[vel_indices[i], :, :]
+            b_field = self.inverted_atmos[mag_field_indices[i], :, :]
+            gamma_deg = self.inverted_atmos[gamma_indices[i], :, :]
+            gamma_rad = np.deg2rad(gamma_deg)
+            blos = b_field * np.cos(gamma_rad)
+            d[f"blos_tau_{tau}"] = blos
+        self.spinor_atm_dict = d
+        return d
+
     def load_all(self, region_bounds=None):
+        """Load all MODEST data and apply masking based on circular polarization."""
         self.load_continuum()
         self.load_obs_stokes()
         self.deconvolve_stokes()
         self.load_inverted_profs()
         self.load_inverted_atmos()
         self.get_wavelength_arrays()
+        
+        # Apply masking at the end of the pipeline
+        self.apply_mask_to_data()
+        
         if region_bounds:
             y_start, y_end, x_start, x_end = region_bounds
             region = self.extract_region(y_start, y_end, x_start, x_end)

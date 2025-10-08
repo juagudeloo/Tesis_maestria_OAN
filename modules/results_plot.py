@@ -18,7 +18,7 @@ def load_modest_region(modest_loader):
     NY = y_end - y_start
 
     # --- 2. Load continuum data using ModestDataLoader ---
-    continuum = modest_loader.load_continuum()
+    continuum = modest_loader.continuum
     # If you need the header, you can load it separately if required
     with fits.open(modest_loader.modest_dir / "continuum.fits") as hdul:
         cont_header = hdul[0].header
@@ -45,7 +45,7 @@ def load_modest_region(modest_loader):
     
     # --- 5. Find sample pixels based on different criteria ---
     # Load observed Stokes data for circular polarization analysis
-    obs_stokes = modest_loader.load_obs_stokes()
+    obs_stokes = modest_loader.obs_stokes
     obs_stokes_region = obs_stokes[y_start:y_end, x_start:x_end, :, :]
     
     # Calculate mean circular polarization (Stokes V) over wavelength
@@ -532,14 +532,30 @@ def plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all
 def load_modest_region_full_scene(modest_loader):
     """
     Load MODEST data for the full scene without regional cropping.
-    Returns sample pixels based on the full scene analysis.
+    Returns sample pixels and disk center information based on the full scene analysis.
     """
     # Load continuum data using ModestDataLoader
-    continuum = modest_loader.load_continuum()
+    continuum = modest_loader.continuum
+    
+    # Calculate disk center and arrow parameters
+    y_center_fov_arcsec = -126.0
+    x_center_fov_arcsec = 16.0
+    pixel_scale = 0.32
+    x_center_fov_pixel = continuum.shape[1] / 2
+    y_center_fov_pixel = continuum.shape[0] / 2
+    x_disk_offset_arcsec = 0 - x_center_fov_arcsec
+    y_disk_offset_arcsec = 0 - y_center_fov_arcsec
+    x_disk_offset_pixels = x_disk_offset_arcsec / pixel_scale
+    y_disk_offset_pixels = y_disk_offset_arcsec / pixel_scale
+    x_disk_center = x_center_fov_pixel + x_disk_offset_pixels
+    y_disk_center = y_center_fov_pixel + y_disk_offset_pixels
+    arrow_start_x = 800
+    arrow_start_y = 400
+    arrow_dx = x_disk_offset_pixels/10
+    arrow_dy = y_disk_offset_pixels/10
     
     # Load observed Stokes data for circular polarization analysis
-    obs_stokes = modest_loader.load_obs_stokes()
-    
+    obs_stokes = modest_loader.obs_stokes
     # Calculate mean circular polarization (Stokes V) over wavelength
     mean_circular_pol = np.mean(np.abs(obs_stokes[:, :, 1, :]), axis=2)
     
@@ -547,25 +563,28 @@ def load_modest_region_full_scene(modest_loader):
     sample_pixels = {}
     
     # 1. Highest continuum intensity
-    max_cont_idx = np.unravel_index(np.argmax(continuum), continuum.shape)
+    max_cont_idx = np.unravel_index(np.nanargmax(continuum), continuum.shape)
     sample_pixels['max_continuum'] = {'y': max_cont_idx[0], 'x': max_cont_idx[1], 'label': 'Max Continuum'}
     
     # 2. Lowest continuum intensity
-    min_cont_idx = np.unravel_index(np.argmin(continuum), continuum.shape)
+    min_cont_idx = np.unravel_index(np.nanargmin(continuum), continuum.shape)
     sample_pixels['min_continuum'] = {'y': min_cont_idx[0], 'x': min_cont_idx[1], 'label': 'Min Continuum'}
     
     # 3. Highest circular polarization
-    max_pol_idx = np.unravel_index(np.argmax(mean_circular_pol), mean_circular_pol.shape)
+    max_pol_idx = np.unravel_index(np.nanargmax(mean_circular_pol), mean_circular_pol.shape)
     sample_pixels['max_polarization'] = {'y': max_pol_idx[0], 'x': max_pol_idx[1], 'label': 'Max |Stokes V|'}
     
     # 4. Lowest circular polarization
-    min_pol_idx = np.unravel_index(np.argmin(mean_circular_pol), mean_circular_pol.shape)
+    min_pol_idx = np.unravel_index(np.nanargmin(mean_circular_pol), mean_circular_pol.shape)
     sample_pixels['min_polarization'] = {'y': min_pol_idx[0], 'x': min_pol_idx[1], 'label': 'Min |Stokes V|'}
 
-    return sample_pixels
+    return (sample_pixels, x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
+            arrow_start_x, arrow_start_y, arrow_dx, arrow_dy)
 
-def plot_modest_continuum_full_scene(modest_loader, sample_pixels, modest_images_dir):
-    """Plot MODEST continuum for the full scene with sample pixels marked."""
+def plot_modest_continuum_full_scene(modest_loader, sample_pixels, x_center_fov_pixel, y_center_fov_pixel, 
+                                    x_disk_center, y_disk_center, arrow_start_x, arrow_start_y, 
+                                    arrow_dx, arrow_dy, modest_images_dir):
+    """Plot MODEST continuum for the full scene with sample pixels marked and disk center arrow."""
     continuum = modest_loader.continuum
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
     
@@ -574,12 +593,31 @@ def plot_modest_continuum_full_scene(modest_loader, sample_pixels, modest_images
     ax.set_xlabel('X [pixels]')
     ax.set_ylabel('Y [pixels]')
     
+    # Plot FOV center
+    ax.plot(x_center_fov_pixel, y_center_fov_pixel, 'b+', markersize=15, markeredgewidth=3, 
+            label=f'FOV Center\n({16.0}, {-126.0})')
+    
+    # Plot disk center or arrow pointing to it
+    if 0 <= x_disk_center <= continuum.shape[1] and 0 <= y_disk_center <= continuum.shape[0]:
+        ax.plot(x_disk_center, y_disk_center, 'r+', markersize=15, markeredgewidth=3, 
+                label='Solar Disk Center\n(0, 0)')
+    else:
+        ax.arrow(arrow_start_x, arrow_start_y, arrow_dx, arrow_dy, head_width=20, head_length=20, 
+                fc='blue', ec='blue', linewidth=3, label='Solar Disk Center')
+    
     # Plot all sample pixels with different colors/markers
     colors = ['red', 'blue', 'green', 'orange']
     markers = ['x', 'o', 's', '^']
     for i, (key, pixel_info) in enumerate(sample_pixels.items()):
         ax.plot(pixel_info['x'], pixel_info['y'], markers[i], color=colors[i], 
                 markersize=8, markeredgewidth=2, label=pixel_info['label'])
+    
+    # Add text information
+    textstr = f'AR11967\nFOV Center\n(16.0, -126.0)\nZürich: Fkc\nMagnetic: βγδ\nμ=0.99'
+    props = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8)
+    ax.text(0.05, 0.05, textstr, transform=ax.transAxes, fontsize=11, 
+            verticalalignment='bottom', bbox=props)
+    
     ax.legend()
     
     # Add colorbar
@@ -629,9 +667,12 @@ def load_and_deconvolve_stokes_full_scene(modest_loader):
     return deconvolved_obs_stokes_full
 
 def plot_modest_stokes_profiles_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, modest_images_dir):
-    """Plot Stokes profiles for sample pixels from the full scene."""
+    """Plot Stokes profiles for sample pixels from the full scene with masking applied."""
     wl = modest_loader.wl
     stokes_labels = ['Stokes I', 'Stokes V']
+    
+    # Use the masked deconvolved Stokes data from the loader
+    masked_deconvolved_stokes = modest_loader.deconvolved_stokes
     
     # Create a 2x4 subplot for all sample pixels
     fig, axes = plt.subplots(2, 4, figsize=(16, 8))
@@ -639,43 +680,72 @@ def plot_modest_stokes_profiles_full_scene(modest_loader, deconvolved_obs_stokes
     sample_wavelength_indices = {}
     for i, (key, pixel_info) in enumerate(sample_pixels.items()):
         sample_x, sample_y = pixel_info['x'], pixel_info['y']
-        sample_pixel_stokes = deconvolved_obs_stokes_full[sample_y, sample_x, :, :]
-        sample_wavelength_idx = np.argmin(sample_pixel_stokes[0, :]) - 6
+        sample_pixel_stokes = masked_deconvolved_stokes[sample_y, sample_x, :, :]
+        
+        # Find wavelength index, handling potential NaN values
+        stokes_i_profile = sample_pixel_stokes[0, :]
+        if np.all(np.isnan(stokes_i_profile)):
+            # If the pixel is completely masked, use a default wavelength
+            sample_wavelength_idx = len(wl) // 2
+        else:
+            # Find minimum of non-NaN values
+            valid_indices = ~np.isnan(stokes_i_profile)
+            if np.any(valid_indices):
+                valid_profile = stokes_i_profile[valid_indices]
+                valid_wl_indices = np.where(valid_indices)[0]
+                min_idx_in_valid = np.argmin(valid_profile)
+                sample_wavelength_idx = max(0, valid_wl_indices[min_idx_in_valid] - 6)
+            else:
+                sample_wavelength_idx = len(wl) // 2
+        
         sample_wavelength_indices[key] = sample_wavelength_idx
         
         # Plot Stokes I and V for this pixel
         for col, label in enumerate(stokes_labels):
             ax = axes[col, i]
             ax.plot(wl, sample_pixel_stokes[col, :], 'b-', linewidth=1.5)
-            ax.plot(wl[sample_wavelength_idx], sample_pixel_stokes[col, sample_wavelength_idx], 'ro', markersize=6)
+            if not np.isnan(sample_pixel_stokes[col, sample_wavelength_idx]):
+                ax.plot(wl[sample_wavelength_idx], sample_pixel_stokes[col, sample_wavelength_idx], 'ro', markersize=6)
             ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
             ax.set_ylabel('Intensity' if col == 0 else 'Polarization')
             ax.set_xlabel('Wavelength [Å]')
             ax.grid(True, alpha=0.3)
     
-    plt.suptitle('MODEST Stokes Profiles - Full Scene Sample Pixels', fontsize=16)
+    plt.suptitle('MODEST Stokes Profiles - Full Scene Sample Pixels (Masked)', fontsize=16)
     plt.tight_layout()
     plt.savefig(modest_images_dir / "modest_sample_pixels_stokes_profiles_full_scene.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     return wl, sample_wavelength_indices, stokes_labels
 
 def plot_modest_stokes_images_full_scene(modest_loader, deconvolved_obs_stokes_full, sample_pixels, wl, sample_wavelength_indices, stokes_labels, modest_images_dir):
-    """Plot Stokes images for the full scene at sample wavelengths."""
+    """Plot Stokes images for the full scene at sample wavelengths with masking applied."""
+    # Use the masked deconvolved Stokes data from the loader instead of the unmasked deconvolved data
+    masked_deconvolved_stokes = modest_loader.deconvolved_stokes
+    
     # Plot for each sample pixel's wavelength
     for key, pixel_info in sample_pixels.items():
         sample_wavelength_idx = sample_wavelength_indices[key]
         
         fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-        stokes_full_sample = deconvolved_obs_stokes_full[:, :, :, sample_wavelength_idx]
+        stokes_full_sample = masked_deconvolved_stokes[:, :, :, sample_wavelength_idx]
         
         for col, label in enumerate(stokes_labels):
             ax = axes[col]
             if col == 0:
-                vmin, vmax = np.quantile(stokes_full_sample[:, :, col], [0.05, 0.95])
+                # Calculate quantiles only from non-NaN values for proper scaling
+                valid_data = stokes_full_sample[:, :, col][~np.isnan(stokes_full_sample[:, :, col])]
+                if len(valid_data) > 0:
+                    vmin, vmax = np.quantile(valid_data, [0.05, 0.95])
+                else:
+                    vmin, vmax = 0, 1
             else:
                 data_sample = stokes_full_sample[:, :, col]
-                abs_max = np.max(np.abs([np.quantile(data_sample, 0.01), np.quantile(data_sample, 0.99)]))
-                vmin, vmax = -abs_max, abs_max
+                valid_data = data_sample[~np.isnan(data_sample)]
+                if len(valid_data) > 0:
+                    abs_max = np.max(np.abs([np.quantile(valid_data, 0.01), np.quantile(valid_data, 0.99)]))
+                    vmin, vmax = -abs_max, abs_max
+                else:
+                    vmin, vmax = -1, 1
             im = ax.imshow(stokes_full_sample[:, :, col], cmap='gray', origin='lower', vmin=vmin, vmax=vmax)
             ax.set_title(label, fontsize=12)
             ax.set_ylabel('Y [pixels]')
@@ -695,13 +765,13 @@ def plot_modest_stokes_images_full_scene(modest_loader, deconvolved_obs_stokes_f
             cax = divider.append_axes("right", size="5%", pad=0.05)
             plt.colorbar(im, cax=cax)
         
-        plt.suptitle(f'MODEST Full Scene Stokes Parameters at λ = {wl[sample_wavelength_idx]:.3f} Å - {pixel_info["label"]}', fontsize=14)
+        plt.suptitle(f'MODEST Full Scene Stokes Parameters at λ = {wl[sample_wavelength_idx]:.3f} Å - {pixel_info["label"]} (Masked)', fontsize=14)
         plt.tight_layout()
         plt.savefig(modest_images_dir / f"modest_stokes_parameters_full_scene_{key}.png", dpi=300, bbox_inches='tight')
         plt.close(fig)
 
 def plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_images_dir):
-    """Plot fitted Stokes profiles for the full scene."""
+    """Plot fitted Stokes profiles for the full scene with masking applied."""
     inverted_profs = modest_loader.inverted_profs
     wl_inv = modest_loader.wl_inv
     stokes_labels = ['Stokes I', 'Stokes V']
@@ -713,19 +783,36 @@ def plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_im
     for i, (key, pixel_info) in enumerate(sample_pixels.items()):
         sample_x, sample_y = pixel_info['x'], pixel_info['y']
         sample_pixel_inverted = inverted_profs[sample_y, sample_x, :, :]
-        sample_wavelength_idx_inv = np.argmin(sample_pixel_inverted[0, :]) - 50
+        
+        # Find wavelength index, handling potential NaN values
+        stokes_i_profile = sample_pixel_inverted[0, :]
+        if np.all(np.isnan(stokes_i_profile)):
+            # If the pixel is completely masked, use a default wavelength
+            sample_wavelength_idx_inv = max(0, len(wl_inv) // 2 - 50)
+        else:
+            # Find minimum of non-NaN values
+            valid_indices = ~np.isnan(stokes_i_profile)
+            if np.any(valid_indices):
+                valid_profile = stokes_i_profile[valid_indices]
+                valid_wl_indices = np.where(valid_indices)[0]
+                min_idx_in_valid = np.argmin(valid_profile)
+                sample_wavelength_idx_inv = max(0, valid_wl_indices[min_idx_in_valid] - 50)
+            else:
+                sample_wavelength_idx_inv = max(0, len(wl_inv) // 2 - 50)
+        
         sample_wavelength_indices_inv[key] = sample_wavelength_idx_inv
         
         for j, (label, color) in enumerate(zip(stokes_labels, ['red', 'blue'])):
             ax = axes[j, i]
             ax.plot(wl_inv, sample_pixel_inverted[j, :], color=color, linewidth=1.5)
-            ax.plot(wl_inv[sample_wavelength_idx_inv], sample_pixel_inverted[j, sample_wavelength_idx_inv], 'ko', markersize=4)
+            if not np.isnan(sample_pixel_inverted[j, sample_wavelength_idx_inv]):
+                ax.plot(wl_inv[sample_wavelength_idx_inv], sample_pixel_inverted[j, sample_wavelength_idx_inv], 'ko', markersize=4)
             ax.set_title(f'{label} - {pixel_info["label"]}', fontsize=10)
             ax.set_xlabel('Wavelength [Å]')
             ax.set_ylabel('Intensity' if j == 0 else 'Polarization Signal')
             ax.grid(True, alpha=0.3)
     
-    plt.suptitle('MODEST Fitted Stokes Profiles - Full Scene Sample Pixels', fontsize=16)
+    plt.suptitle('MODEST Fitted Stokes Profiles - Full Scene Sample Pixels (Masked)', fontsize=16)
     plt.tight_layout()
     plt.savefig(modest_images_dir / "sample_pixels_inverted_stokes_profiles_full_scene.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
@@ -736,10 +823,18 @@ def plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_im
         inverted_profs_sample = inverted_profs[:, :, :, sample_wavelength_idx_inv]
         
         fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-        fig.suptitle(f'Inverted Stokes Parameters Full Scene at λ = {wl_inv[sample_wavelength_idx_inv]:.3f} - {pixel_info["label"]}', fontsize=14)
+        fig.suptitle(f'Inverted Stokes Parameters Full Scene at λ = {wl_inv[sample_wavelength_idx_inv]:.3f} - {pixel_info["label"]} (Masked)', fontsize=14)
         
         for i, (ax, label) in enumerate(zip(axes, stokes_labels)):
-            im = ax.imshow(inverted_profs_sample[:, :, i], cmap='gray', origin='lower')
+            # Calculate color scale from non-NaN values
+            data_to_plot = inverted_profs_sample[:, :, i]
+            valid_data = data_to_plot[~np.isnan(data_to_plot)]
+            if len(valid_data) > 0:
+                vmin, vmax = np.quantile(valid_data, [0.05, 0.95])
+            else:
+                vmin, vmax = 0, 1
+            
+            im = ax.imshow(data_to_plot, cmap='gray', origin='lower', vmin=vmin, vmax=vmax)
             ax.set_title(label)
             ax.set_xlabel('X [pixels]')
             ax.set_ylabel('Y [pixels]')
@@ -763,22 +858,24 @@ def plot_modest_fitted_stokes_full_scene(modest_loader, sample_pixels, modest_im
         plt.close(fig)
 
 def plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_images_dir):
-    """Plot SPINOR atmospheric parameters for the full scene."""
-    inverted_atm = modest_loader.inverted_atmos
+    """Plot SPINOR atmospheric parameters for the full scene with masking applied."""
+    # Use the full scene atmospheric dictionary that includes masking
+    spinor_atm_dict = modest_loader.build_spinor_atm_dict_full_scene()
     tau_values = [-2.0, -0.8, 0.0]
-    temp_indices = [8, 6, 7]
-    vel_indices = [20, 18, 19]
-    mag_field_indices = [11, 9, 10]
-    gamma_indices = [14, 12, 13]
     
     # Temperature
-    temp_nodes = inverted_atm[temp_indices, :, :]
+    temp_data = [spinor_atm_dict[f"temperature_tau_{tau}"] for tau in tau_values]
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     temp_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
     for i, (ax, label) in enumerate(zip(axes, temp_labels)):
-        vmin = np.quantile(temp_nodes[i], 0.05)
-        vmax = np.quantile(temp_nodes[i], 0.95)
-        im = ax.imshow(temp_nodes[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
+        # Calculate quantiles only from non-NaN values for proper scaling
+        valid_data = temp_data[i][~np.isnan(temp_data[i])]
+        if len(valid_data) > 0:
+            vmin = np.quantile(valid_data, 0.05)
+            vmax = np.quantile(valid_data, 0.95)
+        else:
+            vmin, vmax = 0, 1
+        im = ax.imshow(temp_data[i], cmap='hot', origin='lower', vmin=vmin, vmax=vmax)
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
@@ -789,23 +886,28 @@ def plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_ima
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('[K]')
-    plt.suptitle('SPINOR 2D Inverted Temperature - Full Scene', fontsize=16)
+    plt.suptitle('SPINOR 2D Inverted Temperature - Full Scene (Masked)', fontsize=16)
     plt.tight_layout()
     plt.savefig(modest_images_dir / "spinor_temperature_full_scene.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     
     # Velocity
-    vel_nodes = inverted_atm[vel_indices, :, :]
+    vel_data = [spinor_atm_dict[f"velocity_tau_{tau}"] for tau in tau_values]
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
     vel_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
     for i, (ax, label) in enumerate(zip(axes, vel_labels)):
-        vmin = np.quantile(vel_nodes[i], 0.01)
-        vmax = np.quantile(vel_nodes[i], 0.99)
-        if np.abs(vmin) > np.abs(vmax):
-            vmax = np.abs(vmin)
+        # Calculate quantiles only from non-NaN values for proper scaling
+        valid_data = vel_data[i][~np.isnan(vel_data[i])]
+        if len(valid_data) > 0:
+            vmin = np.quantile(valid_data, 0.01)
+            vmax = np.quantile(valid_data, 0.99)
+            if np.abs(vmin) > np.abs(vmax):
+                vmax = np.abs(vmin)
+            else:
+                vmin = -np.abs(vmax)
         else:
-            vmin = -np.abs(vmax)
-        im = ax.imshow(vel_nodes[i], cmap='RdBu_r', origin='lower', vmin=vmin, vmax=vmax)
+            vmin, vmax = -1, 1
+        im = ax.imshow(vel_data[i], cmap='RdBu_r', origin='lower', vmin=vmin, vmax=vmax)
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
@@ -816,31 +918,28 @@ def plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_ima
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('[Km/s]')
-    plt.suptitle(r'SPINOR 2D Inverted $v_\text{LOS}$ - Full Scene', fontsize=16)
+    plt.suptitle(r'SPINOR 2D Inverted $v_\text{LOS}$ - Full Scene (Masked)', fontsize=16)
     plt.tight_layout()
     plt.savefig(modest_images_dir / "spinor_velocity_full_scene.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     
     # B_LOS
-    bcos_gamma_nodes = []
-    for i in range(3):
-        b_field = inverted_atm[mag_field_indices[i], :, :]
-        gamma_deg = inverted_atm[gamma_indices[i], :, :]
-        gamma_rad = np.deg2rad(gamma_deg)
-        bcos_gamma = b_field * np.cos(gamma_rad)
-        bcos_gamma_nodes.append(bcos_gamma)
-    bcos_gamma_nodes = np.array(bcos_gamma_nodes)
-    
+    blos_data = [spinor_atm_dict[f"blos_tau_{tau}"] for tau in tau_values]
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    bcos_gamma_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
-    for i, (ax, label) in enumerate(zip(axes, bcos_gamma_labels)):
-        vmin = np.quantile(bcos_gamma_nodes[i], 0.01)
-        vmax = np.quantile(bcos_gamma_nodes[i], 0.99)
-        if np.abs(vmin) > np.abs(vmax): 
-            vmax = np.abs(vmin)
-        else: 
-            vmin = -np.abs(vmax)
-        im = ax.imshow(bcos_gamma_nodes[i], cmap='PiYG', origin='lower', vmin=vmin, vmax=vmax)
+    blos_labels = ['log τ = -2.0', 'log τ = -0.8', 'log τ = 0.0']
+    for i, (ax, label) in enumerate(zip(axes, blos_labels)):
+        # Calculate quantiles only from non-NaN values for proper scaling
+        valid_data = blos_data[i][~np.isnan(blos_data[i])]
+        if len(valid_data) > 0:
+            vmin = np.quantile(valid_data, 0.01)
+            vmax = np.quantile(valid_data, 0.99)
+            if np.abs(vmin) > np.abs(vmax): 
+                vmax = np.abs(vmin)
+            else: 
+                vmin = -np.abs(vmax)
+        else:
+            vmin, vmax = -1, 1
+        im = ax.imshow(blos_data[i], cmap='PiYG', origin='lower', vmin=vmin, vmax=vmax)
         ax.set_title(label)
         ax.set_xlabel('X [pixels]')
         ax.set_ylabel('Y [pixels]')
@@ -851,21 +950,12 @@ def plot_modest_spinor_atmos_full_scene(modest_loader, sample_pixels, modest_ima
         cax = divider.append_axes("right", size="5%", pad=0.05)
         cbar = plt.colorbar(im, cax=cax)
         cbar.set_label('[G]')
-    plt.suptitle(r'SPINOR 2D Inverted $B_{\text{LOS}}$ - Full Scene', fontsize=16)
+    plt.suptitle(r'SPINOR 2D Inverted $B_{\text{LOS}}$ - Full Scene (Masked)', fontsize=16)
     plt.tight_layout()
     plt.savefig(modest_images_dir / "spinor_bcos_gamma_full_scene.png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     
-    # Save all data for further use (full scene now)
-    spinor_atm_dict = {}
-    for i, tau in enumerate(tau_values):
-        spinor_atm_dict[f"temperature_tau_{tau}"] = inverted_atm[temp_indices[i], :, :]
-        spinor_atm_dict[f"velocity_tau_{tau}"] = inverted_atm[vel_indices[i], :, :]
-        b_field = inverted_atm[mag_field_indices[i], :, :]
-        gamma_deg = inverted_atm[gamma_indices[i], :, :]
-        gamma_rad = np.deg2rad(gamma_deg)
-        blos = b_field * np.cos(gamma_rad)
-        spinor_atm_dict[f"blos_tau_{tau}"] = blos
+    # Return the masked dictionary for further use
     return spinor_atm_dict
 
 def plot_muram_sample_pixels(data_charger, test_data, fname, modest_images_dir):

@@ -144,9 +144,12 @@ def main():
     modest_loader.load_all()
     
     # MODEST full scene processing
-    sample_pixels = load_modest_region_full_scene(modest_loader)
+    (sample_pixels, x_center_fov_pixel, y_center_fov_pixel, x_disk_center, y_disk_center,
+     arrow_start_x, arrow_start_y, arrow_dx, arrow_dy) = load_modest_region_full_scene(modest_loader)
     
-    plot_modest_continuum_full_scene(modest_loader, sample_pixels, modest_images_dir)
+    plot_modest_continuum_full_scene(modest_loader, sample_pixels, x_center_fov_pixel, y_center_fov_pixel,
+                                   x_disk_center, y_disk_center, arrow_start_x, arrow_start_y,
+                                   arrow_dx, arrow_dy, modest_images_dir)
     
     deconvolved_obs_stokes_full = load_and_deconvolve_stokes_full_scene(modest_loader)
     
@@ -169,6 +172,11 @@ def main():
     modest_stokes = modest_loader.obs_stokes  # shape: (NY, NX, 2, n_wl)
     NY, NX, n_stokes, n_wl = modest_stokes.shape
     
+    # Get the mask to identify valid pixels
+    mask = modest_loader.mask  # shape: (NY, NX)
+    valid_pixels = np.sum(mask)  # Count of valid (unmasked) pixels
+    print(f"Valid pixels for neural network processing: {valid_pixels} out of {mask.size} ({100*valid_pixels/mask.size:.2f}%)")
+    
     # Process both noise conditions
     for condition in noise_conditions:
         if condition not in all_model_weights or not all_model_weights[condition]:
@@ -190,10 +198,16 @@ def main():
             condition_suffix = "without_noise_smoothed"
             print(f"Applied smoothing with kernel size {smoothing_kernel_size}")
         
-        # Reshape for neural network input
-        processed_modest_stokes_reshaped = processed_modest_stokes.reshape(-1, n_stokes, n_wl)
-        processed_modest_stokes_reshaped = processed_modest_stokes_reshaped.astype(np.float32)
-        stokes_tensor = torch.tensor(processed_modest_stokes_reshaped, dtype=torch.float32)
+        # Extract only valid (unmasked) pixels for neural network processing
+        # Find indices of valid pixels
+        valid_y_indices, valid_x_indices = np.where(mask)
+        
+        # Extract Stokes data only for valid pixels
+        valid_stokes_data = processed_modest_stokes[valid_y_indices, valid_x_indices, :, :]  # shape: (n_valid, n_stokes, n_wl)
+        valid_stokes_data = valid_stokes_data.astype(np.float32)
+        valid_stokes_tensor = torch.tensor(valid_stokes_data, dtype=torch.float32)
+        
+        print(f"Processing {len(valid_stokes_data)} valid pixels (skipping {mask.size - len(valid_stokes_data)} masked pixels)")
         
         # Prepare output directory for this condition
         condition_pred_dir = modest_images_dir / f"modest_nn_predictions_{condition_suffix}"
@@ -208,22 +222,37 @@ def main():
             model.eval()
 
             with torch.no_grad():
-                pred = model(stokes_tensor).numpy()  # shape: (NY*NX, n_logtau, n_params)
-                pred_full_scene = pred.reshape(NY, NX, 21, 3)
+                # Apply neural network only to valid pixels
+                valid_pred = model(valid_stokes_tensor).numpy()  # shape: (n_valid, n_logtau, n_params)
+                
+                # Reconstruct full scene predictions with NaN for masked pixels
+                pred_full_scene = np.full((NY, NX, 21, 3), np.nan, dtype=np.float32)
+                
+                # Place valid predictions back in their original positions
+                pred_full_scene[valid_y_indices, valid_x_indices, :, :] = valid_pred
 
-            # --- Rescale predicted values to physical units ---
+            # --- Rescale predicted values to physical units (only for valid pixels) ---
             # Scaling: [max, min]
             temp_max, temp_min = 2e4, 0
             vel_max, vel_min = 1e6, -1e6
             blos_max, blos_min = 3e3, -3e3
 
-            pred_phys = np.zeros_like(pred_full_scene)
+            pred_phys = np.full_like(pred_full_scene, np.nan)
+            
+            # Apply scaling only to valid (non-NaN) pixels
+            valid_mask_3d = ~np.isnan(pred_full_scene)
+            
             # Temperature
-            pred_phys[:, :, :, 0] = pred_full_scene[:, :, :, 0] * (temp_max - temp_min) + temp_min
+            temp_mask = valid_mask_3d[:, :, :, 0]
+            pred_phys[:, :, :, 0][temp_mask] = pred_full_scene[:, :, :, 0][temp_mask] * (temp_max - temp_min) + temp_min
+            
             # Velocity (convert to km/s after scaling)
-            pred_phys[:, :, :, 1] = (pred_full_scene[:, :, :, 1] * (vel_max - vel_min) + vel_min) / 1e5
+            vel_mask = valid_mask_3d[:, :, :, 1]
+            pred_phys[:, :, :, 1][vel_mask] = (pred_full_scene[:, :, :, 1][vel_mask] * (vel_max - vel_min) + vel_min) / 1e5
+            
             # B_LOS
-            pred_phys[:, :, :, 2] = pred_full_scene[:, :, :, 2] * (blos_max - blos_min) + blos_min
+            blos_mask = valid_mask_3d[:, :, :, 2]
+            pred_phys[:, :, :, 2][blos_mask] = pred_full_scene[:, :, :, 2][blos_mask] * (blos_max - blos_min) + blos_min
 
             # --- Plot comparisons for the three nodes ---
             modest_tau_values = [-2.0, -0.8, 0.0]
@@ -248,26 +277,31 @@ def main():
                     pred_data = pred_phys[:, :, tau_idx, pred_idx]
                     spinor_data = spinor_atm_dict[f"{spinor_key}{tau_val}"]
                     
-                    # --- Imshow comparison ---
-                    vmin = np.quantile(spinor_data, 0.05) if param_name == "Temperature" else np.quantile(spinor_data, 0.01)
-                    vmax = np.quantile(spinor_data, 0.95) if param_name == "Temperature" else np.quantile(spinor_data, 0.99)
-                    if param_name == "Velocity" or param_name == "B_LOS":
-                        if np.abs(vmin) > np.abs(vmax):
-                            vmax = np.abs(vmin)
-                        else:
-                            vmin = -np.abs(vmax)
+                    # Calculate color scale from valid (non-NaN) values only
+                    valid_spinor = spinor_data[~np.isnan(spinor_data)]
+                    if len(valid_spinor) > 0:
+                        vmin = np.quantile(valid_spinor, 0.05) if param_name == "Temperature" else np.quantile(valid_spinor, 0.01)
+                        vmax = np.quantile(valid_spinor, 0.95) if param_name == "Temperature" else np.quantile(valid_spinor, 0.99)
+                        if param_name == "Velocity" or param_name == "B_LOS":
+                            if np.abs(vmin) > np.abs(vmax):
+                                vmax = np.abs(vmin)
+                            else:
+                                vmin = -np.abs(vmax)
+                    else:
+                        vmin, vmax = 0, 1
                     cmap = "hot" if param_name == "Temperature" else ("RdBu_r" if param_name == "Velocity" else "PiYG")
                     
+                    # --- Imshow comparison ---
                     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
                     im0 = axes[0].imshow(spinor_data, cmap=cmap, origin='lower', vmin=vmin, vmax=vmax)
-                    axes[0].set_title(f"SPINOR 2D {param_name}\nlogτ={tau_val:.1f}")
+                    axes[0].set_title(f"SPINOR 2D {param_name}\nlogτ={tau_val:.1f} (Masked)")
                     axes[0].set_xticks([]); axes[0].set_yticks([])
                     divider0 = make_axes_locatable(axes[0])
                     cax0 = divider0.append_axes("right", size="5%", pad=0.05)
                     plt.colorbar(im0, cax=cax0)
                     
                     im1 = axes[1].imshow(pred_data, cmap=cmap, origin='lower', vmin=vmin, vmax=vmax)
-                    axes[1].set_title(f"DL Model {param_name}\nlogτ={tau_val:.1f}")
+                    axes[1].set_title(f"DL Model {param_name}\nlogτ={tau_val:.1f} (Masked)")
                     axes[1].set_xticks([]); axes[1].set_yticks([])
                     divider1 = make_axes_locatable(axes[1])
                     cax1 = divider1.append_axes("right", size="5%", pad=0.05)
@@ -278,35 +312,51 @@ def main():
                     plt.savefig(tau_imshow_dir / f"{param_name}_imshow_{condition_suffix}_w_{w_str}.png", dpi=200)
                     plt.close(fig)
                     
-                    # --- Histogram comparison ---
-                    fig = plt.figure(figsize=(7, 4))
-                    plt.hist(spinor_data.flatten(), bins=50, alpha=0.7, label="SPINOR 2D", color="blue", histtype="step", linewidth=2)
-                    plt.hist(pred_data.flatten(), bins=50, alpha=0.7, label="DL Model", color="red", histtype="step", linewidth=2, linestyle="--")
-                    plt.xlabel(f"{param_name} [{param_unit}]")
-                    plt.ylabel("Frequency")
-                    plt.title(f"{param_name} Distribution at logτ={tau_val:.1f} ({condition_suffix}, w={w_str})")
-                    plt.legend()
-                    plt.tight_layout()
-                    plt.savefig(tau_hist_dir / f"{param_name}_hist_{condition_suffix}_w_{w_str}.png", dpi=200)
-                    plt.close(fig)
+                    # --- Histogram comparison (only valid pixels) ---
+                    valid_spinor_flat = valid_spinor
+                    valid_pred_flat = pred_data[~np.isnan(pred_data)]
                     
-                    # --- Scatter plot comparison ---
-                    fig = plt.figure(figsize=(5, 5))
-                    plt.scatter(spinor_data.flatten(), pred_data.flatten(), s=1, alpha=0.5, color="blue")
-                    plt.plot([spinor_data.min(), spinor_data.max()], [spinor_data.min(), spinor_data.max()], 'r--', lw=1)
-                    plt.xlabel(f"SPINOR 2D {param_name} [{param_unit}]")
-                    plt.ylabel(f"DL Model {param_name} [{param_unit}]")
-                    corr, _ = scipy.stats.pearsonr(spinor_data.flatten(), pred_data.flatten())
-                    rmse_val = np.sqrt(np.mean((pred_data.flatten() - spinor_data.flatten()) ** 2))
-                    mean_spinor = np.mean(np.abs(spinor_data.flatten()))
-                    rrmse_val = (rmse_val / mean_spinor * 100) if mean_spinor != 0 else 0
-                    plt.title(f"{param_name} Scatter (r={corr:.3f}, RRMSE={rrmse_val:.1f}%)")
-                    plt.tight_layout()
-                    plt.savefig(tau_scatter_dir / f"{param_name}_scatter_{condition_suffix}_w_{w_str}.png", dpi=200)
-                    plt.close(fig)
+                    if len(valid_spinor_flat) > 0 and len(valid_pred_flat) > 0:
+                        fig = plt.figure(figsize=(7, 4))
+                        plt.hist(valid_spinor_flat, bins=50, alpha=0.7, label="SPINOR 2D", color="blue", histtype="step", linewidth=2)
+                        plt.hist(valid_pred_flat, bins=50, alpha=0.7, label="DL Model", color="red", histtype="step", linewidth=2, linestyle="--")
+                        plt.xlabel(f"{param_name} [{param_unit}]")
+                        plt.ylabel("Frequency")
+                        plt.title(f"{param_name} Distribution at logτ={tau_val:.1f} ({condition_suffix}, w={w_str}) - Valid Pixels Only")
+                        plt.legend()
+                        plt.tight_layout()
+                        plt.savefig(tau_hist_dir / f"{param_name}_hist_{condition_suffix}_w_{w_str}.png", dpi=200)
+                        plt.close(fig)
                     
-                    # Print summary statistics
-                    print(f"MODEST {param_name} logτ={tau_val:.1f} {condition_suffix} w={w_str}: r={corr:.3f}, RMSE={rmse_val:.3f}, RRMSE={rrmse_val:.2f}%")
+                    # --- Scatter plot comparison (only valid pixels) ---
+                    # Find pixels that are valid in both SPINOR and prediction data
+                    both_valid_mask = (~np.isnan(spinor_data)) & (~np.isnan(pred_data))
+                    valid_spinor_scatter = spinor_data[both_valid_mask]
+                    valid_pred_scatter = pred_data[both_valid_mask]
+                    
+                    if len(valid_spinor_scatter) > 0 and len(valid_pred_scatter) > 0:
+                        fig = plt.figure(figsize=(5, 5))
+                        plt.scatter(valid_spinor_scatter, valid_pred_scatter, s=1, alpha=0.5, color="blue")
+                        plt.plot([valid_spinor_scatter.min(), valid_spinor_scatter.max()], 
+                                [valid_spinor_scatter.min(), valid_spinor_scatter.max()], 'r--', lw=1)
+                        plt.xlabel(f"SPINOR 2D {param_name} [{param_unit}]")
+                        plt.ylabel(f"DL Model {param_name} [{param_unit}]")
+                        
+                        # Calculate statistics only on valid pixels
+                        corr, _ = scipy.stats.pearsonr(valid_spinor_scatter, valid_pred_scatter)
+                        rmse_val = np.sqrt(np.mean((valid_pred_scatter - valid_spinor_scatter) ** 2))
+                        mean_spinor = np.mean(np.abs(valid_spinor_scatter))
+                        rrmse_val = (rmse_val / mean_spinor * 100) if mean_spinor != 0 else 0
+                        
+                        plt.title(f"{param_name} Scatter (r={corr:.3f}, RRMSE={rrmse_val:.1f}%) - Valid Pixels Only")
+                        plt.tight_layout()
+                        plt.savefig(tau_scatter_dir / f"{param_name}_scatter_{condition_suffix}_w_{w_str}.png", dpi=200)
+                        plt.close(fig)
+                        
+                        # Print summary statistics
+                        print(f"MODEST {param_name} logτ={tau_val:.1f} {condition_suffix} w={w_str}: r={corr:.3f}, RMSE={rmse_val:.3f}, RRMSE={rrmse_val:.2f}% (n_valid={len(valid_spinor_scatter)})")
+                    else:
+                        print(f"MODEST {param_name} logτ={tau_val:.1f} {condition_suffix} w={w_str}: No valid pixels for comparison")
 
     # Process MuRAM test data for both conditions
     all_rrmse = []
