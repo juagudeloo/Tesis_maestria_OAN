@@ -536,7 +536,7 @@ class ModestDataLoader:
         self.spinor_atm_dict = None
         # Masking
         self.mask = None
-        self.circular_polarization_threshold = 5e-3
+        self.circular_polarization_threshold = 4e-3
 
     def spectropolarimetry(self, stokes: np.ndarray) -> np.ndarray:
         """

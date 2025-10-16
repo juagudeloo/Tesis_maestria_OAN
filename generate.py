@@ -223,7 +223,8 @@ def main():
 
             with torch.no_grad():
                 # Apply neural network only to valid pixels
-                valid_pred = model(valid_stokes_tensor).numpy()  # shape: (n_valid, n_logtau, n_params)
+                valid_pred = model(valid_stokes_tensor).numpy()  # shape: (n_valid, n_logtau*n_params)
+                valid_pred = valid_pred.reshape(-1, n_logtau, 3)  # shape: (n_valid, n_logtau, 3)
                 
                 # Reconstruct full scene predictions with NaN for masked pixels
                 pred_full_scene = np.full((NY, NX, 21, 3), np.nan, dtype=np.float32)
@@ -289,7 +290,7 @@ def main():
                                 vmin = -np.abs(vmax)
                     else:
                         vmin, vmax = 0, 1
-                    cmap = "hot" if param_name == "Temperature" else ("RdBu_r" if param_name == "Velocity" else "PiYG")
+                    cmap = "hot" if param_name == "Temperature" else ("RdBu" if param_name == "Velocity" else "PiYG")
                     
                     # --- Imshow comparison ---
                     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
@@ -318,12 +319,26 @@ def main():
                     
                     if len(valid_spinor_flat) > 0 and len(valid_pred_flat) > 0:
                         fig = plt.figure(figsize=(7, 4))
-                        plt.hist(valid_spinor_flat, bins=50, alpha=0.7, label="SPINOR 2D", color="blue", histtype="step", linewidth=2)
-                        plt.hist(valid_pred_flat, bins=50, alpha=0.7, label="DL Model", color="red", histtype="step", linewidth=2, linestyle="--")
+                        
+                        # Create histograms and calculate integrals
+                        n_spinor, bins_spinor, patches_spinor = plt.hist(valid_spinor_flat, bins=50, alpha=0.7, label="SPINOR 2D", color="blue", histtype="step", linewidth=2)
+                        n_pred, bins_pred, patches_pred = plt.hist(valid_pred_flat, bins=50, alpha=0.7, label="DL Model", color="red", histtype="step", linewidth=2, linestyle="--")
+                        
+                        # Calculate histogram integrals (total counts)
+                        integral_spinor = np.sum(n_spinor)
+                        integral_pred = np.sum(n_pred)
+                        
                         plt.xlabel(f"{param_name} [{param_unit}]")
                         plt.ylabel("Frequency")
                         plt.title(f"{param_name} Distribution at logτ={tau_val:.1f} ({condition_suffix}, w={w_str}) - Valid Pixels Only")
                         plt.legend()
+                        
+                        # Add text box with histogram integrals
+                        textstr = f'SPINOR counts: {integral_spinor:.0f}\nDL Model counts: {integral_pred:.0f}\nRatio: {integral_pred/integral_spinor:.3f}'
+                        props = dict(boxstyle='round,pad=0.5', facecolor='wheat', alpha=0.8)
+                        plt.text(0.02, 0.98, textstr, transform=plt.gca().transAxes, fontsize=10, 
+                                verticalalignment='top', bbox=props)
+                        
                         plt.tight_layout()
                         plt.savefig(tau_hist_dir / f"{param_name}_hist_{condition_suffix}_w_{w_str}.png", dpi=200)
                         plt.close(fig)

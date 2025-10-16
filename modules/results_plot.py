@@ -496,38 +496,32 @@ def plot_model_summary_metrics(tau_vals, rrmse_arr, pearson_arr, ssim_arr, quant
     plt.close()
 
 def plot_overall_summary_metrics(all_rrmse, all_pearson, all_ssim, all_wstr, all_tau_vals, quantities, hist_dir, scatter_dir, imshow_dir):
+    import matplotlib.cm as cm
+    import numpy as np
+    
     metrics = [
         ("RRMSE", all_rrmse, hist_dir, "RRMSE", "RRMSE"),
         ("Pearson Correlation", all_pearson, scatter_dir, "Pearson Correlation", "Pearson"),
         ("SSIM", all_ssim, imshow_dir, "SSIM", "SSIM"),
     ]
+    
+    # Generate distinct colors for all models
+    n_models = len(all_wstr)
+    colors = cm.tab20(np.linspace(0, 1, n_models))  # Use tab20 colormap for distinct colors
+    
     for i in range(3):
         for metric_name, all_metric, out_dir, ylabel, fname_prefix in metrics:
-            plt.figure(figsize=(7, 5))
-            for arr, w_str in zip(all_metric, all_wstr):
+            plt.figure(figsize=(10, 6))  # Slightly larger figure for better legend visibility
+            for idx, (arr, w_str) in enumerate(zip(all_metric, all_wstr)):
                 vals = arr[:, i]
-                plt.plot(all_tau_vals, vals, marker='o', label=f"w={w_str}")
+                plt.plot(all_tau_vals, vals, marker='o', label=f"w={w_str}", color=colors[idx], linewidth=2) 
             plt.xlabel("Optical Depth (log τ)")
             plt.ylabel(ylabel)
             plt.title(f"{metric_name} vs Optical Depth for {quantities[i][1]}")
-            plt.legend()
+            plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')  # Place legend outside plot area
             plt.tight_layout()
-            plt.savefig(out_dir / f"{quantities[i][1].replace('$','')}_{fname_prefix}_vs_tau_allw.png")
-            plt.close()
-            
-    for i in range(3):
-        for metric_name, all_metric, out_dir, ylabel, fname_prefix in metrics:
-            plt.figure(figsize=(7, 5))
-            for arr, w_str in zip(all_metric, all_wstr):
-                vals = arr[:, i]
-                plt.plot(all_tau_vals, vals, marker='o', label=f"w={w_str}")
-            plt.xlabel("Optical Depth (log τ)")
-            plt.ylabel(ylabel)
-            plt.title(f"{metric_name} vs Optical Depth for {quantities[i][1]}")
-            plt.legend()
-            plt.tight_layout()
-            plt.savefig(out_dir / f"{quantities[i][1].replace('$','')}_{fname_prefix}_vs_tau_allw.png")
-            plt.close()
+            plt.savefig(out_dir / f"{quantities[i][1].replace('$','')}_{fname_prefix}_vs_tau_allw.png", 
+                       dpi=200, bbox_inches='tight')  # bbox_inches='tight' to include legend
             plt.close()
 def load_modest_region_full_scene(modest_loader):
     """
