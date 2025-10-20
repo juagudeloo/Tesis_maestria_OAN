@@ -10,6 +10,10 @@ check_run.ipynb
 20*
 slurm_outputs
 data/
+*.json
+*.svg
+*.pdf
+*.png
 *.pth
 *.npy
 *.code-workspace
