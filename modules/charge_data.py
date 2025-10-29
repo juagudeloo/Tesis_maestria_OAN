@@ -14,6 +14,7 @@ from scipy.ndimage import convolve1d
 from scipy.signal import fftconvolve
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import root_mean_squared_error
+import matplotlib.pyplot as plt
 
 
 class DataCharger:
@@ -22,7 +23,7 @@ class DataCharger:
     Handles multiple files and applies all Hinode/SOT-SP adaptations.
     """
     
-    def __init__(self, data_path: str, filenames: list, nx: int = 480, ny: int = 480, nz: int = 256):
+    def __init__(self, data_path: str, filenames: list, nx: int = 480, ny: int = 480, nz: int = 256, noise_level: float = 5.9e-4, noise_levels: list = None):
         """
         Initialize the DataCharger.
         
@@ -53,9 +54,12 @@ class DataCharger:
             "B": [3e3, -3e3]
         }
         
-        # Noise level for Hinode
-        self.noise_level = 5.9e-4
-        
+        # Noise level for Hinode (single value) and optional list for augmentation
+        self.noise_level = noise_level
+        # noise_levels: optional list of noise values to use for augmentation (overrides single noise behavior in charge_all_files)
+        # Example: [0.9e-4, 1.9e-4, ...]
+        self.noise_levels = noise_levels
+
         # Load opacity data
         self._load_opacity_data()
         
@@ -171,6 +175,9 @@ class DataCharger:
                     
         muram_logtau = np.log10(tau)
         np.save(geom_path / logtau_name, muram_logtau)
+        
+        #Plot of logtau = 1 line on temperature
+        
         return muram_logtau
         
     def _stratify_to_optical_depth(self, muram_box, muram_logtau):
@@ -192,6 +199,65 @@ class DataCharger:
                     )
                     new_muram_quantity[ix, iy, :] = mapper(self.new_logtau)
             atm_to_logtau[..., imur] = new_muram_quantity
+            
+            # plot the temperature slice at the middle y and overlay the logtau=1 contour
+        y_to_plot = self.ny // 2
+        temp_slice = muram_box[:, y_to_plot, :, 0]      # shape (nx, nz)
+        logtau_slice = muram_logtau[:, y_to_plot, :]   # same shape (nx, nz)
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        im = ax.imshow(temp_slice, origin='lower', aspect='auto', cmap='inferno')
+        cbar = plt.colorbar(im, ax=ax)
+        cbar.set_label('Temperature')
+
+        ax.set_title(f"Logtau = 1 Line on Temperature (y={y_to_plot})")
+        ax.set_xlabel('geometrical height index (z)')
+        ax.set_ylabel('x index')
+
+        # compute approximate z position for logtau = 0 for each x (with simple interpolation if monotonic)
+        target = 0.0
+        nx = temp_slice.shape[0]
+        nz = temp_slice.shape[1]
+        z_coords = np.arange(nz)
+        z_at_target = np.full(nx, np.nan)
+
+        for ix in range(nx):
+            vals = logtau_slice[ix, :]
+            # ignore NaNs
+            valid = np.isfinite(vals)
+            if not np.any(valid):
+                continue
+            v = vals[valid]
+            zvalid = z_coords[valid]
+            # try linear interpolation if monotonic
+            diff = np.diff(v)
+            if np.all(diff >= 0) or np.all(diff <= 0):
+                # np.interp requires x (v) to be increasing
+                if v[0] < v[-1]:
+                    z_at_target[ix] = np.interp(target, v, zvalid)
+                else:
+                    z_at_target[ix] = np.interp(target, v[::-1], zvalid[::-1])
+            else:
+                # fallback: nearest index
+                idx = np.nanargmin(np.abs(v - target))
+                z_at_target[ix] = zvalid[idx]
+
+        # plot the line, skipping NaNs
+        good = np.isfinite(z_at_target)
+        if np.any(good):
+            ax.plot(z_at_target[good], np.arange(nx)[good], color='cyan', linewidth=2, label=r'$\log\tau=0$ (approx)')
+            ax.legend(loc='upper right', fontsize='small')
+
+        # ensure output directory exists and save the figure
+        outdir = Path("images") / "tranversals"
+        outdir.mkdir(parents=True, exist_ok=True)
+        # use filename if available, otherwise a generic name
+        fname_base = getattr(self, "filename", "muram")
+        fname = f"{fname_base}_logtau0_temp_y{y_to_plot}.png"
+        fig.tight_layout()
+        fig.savefig(outdir / fname, dpi=200)
+        plt.close(fig)
+        print(f"Saved logtau=0 line plot to {outdir / fname}")
             
         return atm_to_logtau
         
@@ -257,7 +323,7 @@ class DataCharger:
         """Add Gaussian noise to normalized Stokes parameters."""
         # Calculate I_c (continuum intensity) like in the notebook
         I_c = mean_continuum_image.flatten().mean()
-        level_of_noise = self.noise_level * I_c  # 5.9e-4 * I_c
+        level_of_noise = self.noise_level * I_c  # default behavior uses instance noise_level
         
         norm_stokes_with_noise = np.zeros_like(norm_stokes)
         mean_continuum_with_noise = np.zeros_like(mean_continuum_image)
@@ -297,7 +363,7 @@ class DataCharger:
         # Normalize by continuum (always applied)
         norm_stokes, mean_continuum_image = self._continuum_normalization(stokes)
         
-        # Add noise if requested
+        # Add noise if requested (uses self.noise_level)
         if add_noise:
             norm_stokes_with_noise, mean_continuum_with_noise = self._add_noise(norm_stokes, mean_continuum_image)
             return norm_stokes_with_noise, mean_continuum_with_noise
@@ -414,29 +480,66 @@ class DataCharger:
         """Charge and process all files, returning a dictionary per file."""
         print(f"Charging {self.n_files} files...")
 
+        # data_per_file will be a dict keyed by filename or filename__noise{value} when augmentation is used
         self.data_per_file = {}
-        for filename in self.filenames:
-            (
-                muram_box,
-                stokes,
-                wfa_BLOS_minmax,
-                best_muram_B_minmax,
-                best_muram_B_minmax_scaler,
-                min_rrmse_idx_normalized,
-                min_rrmse_logtau
-            ) = self.charge_single_file(filename, normalize_atmosphere=normalize_atmosphere, 
-                                       apply_spectral_conditions=apply_spectral_conditions, 
-                                       add_noise=add_noise)
 
-            self.data_per_file[filename] = {
-                "muram_box": muram_box,
-                "stokes": stokes,
-                "wfa_BLOS_minmax": wfa_BLOS_minmax,
-                "best_muram_B_minmax": best_muram_B_minmax,
-                "best_muram_B_minmax_scaler": best_muram_B_minmax_scaler,
-                "min_rrmse_idx_normalized": min_rrmse_idx_normalized,
-                "min_rrmse_logtau": min_rrmse_logtau
-            }
+        # If noise_levels is provided (list), perform augmentation by charging each file multiple times
+        if self.noise_levels is not None and isinstance(self.noise_levels, (list, tuple)) and len(self.noise_levels) > 0:
+            print(f"Charging files with augmentation over noise levels: {self.noise_levels}")
+            for filename in self.filenames:
+                for nl in self.noise_levels:
+                    # Temporarily set instance noise_level and charge
+                    prev_noise = self.noise_level
+                    self.noise_level = float(nl)
+                    (
+                        muram_box,
+                        stokes,
+                        wfa_BLOS_minmax,
+                        best_muram_B_minmax,
+                        best_muram_B_minmax_scaler,
+                        min_rrmse_idx_normalized,
+                        min_rrmse_logtau
+                    ) = self.charge_single_file(filename, normalize_atmosphere=normalize_atmosphere, 
+                                               apply_spectral_conditions=apply_spectral_conditions, 
+                                               add_noise=add_noise)
+                    key = f"{filename}__noise_{self.noise_level}"
+                    self.data_per_file[key] = {
+                        "muram_box": muram_box,
+                        "stokes": stokes,
+                        "wfa_BLOS_minmax": wfa_BLOS_minmax,
+                        "best_muram_B_minmax": best_muram_B_minmax,
+                        "best_muram_B_minmax_scaler": best_muram_B_minmax_scaler,
+                        "min_rrmse_idx_normalized": min_rrmse_idx_normalized,
+                        "min_rrmse_logtau": min_rrmse_logtau,
+                        "noise_level": self.noise_level
+                    }
+                    # restore previous noise level
+                    self.noise_level = prev_noise
+        else:
+            # Standard single-noise charging
+            for filename in self.filenames:
+                (
+                    muram_box,
+                    stokes,
+                    wfa_BLOS_minmax,
+                    best_muram_B_minmax,
+                    best_muram_B_minmax_scaler,
+                    min_rrmse_idx_normalized,
+                    min_rrmse_logtau
+                ) = self.charge_single_file(filename, normalize_atmosphere=normalize_atmosphere, 
+                                           apply_spectral_conditions=apply_spectral_conditions, 
+                                           add_noise=add_noise)
+
+                self.data_per_file[filename] = {
+                    "muram_box": muram_box,
+                    "stokes": stokes,
+                    "wfa_BLOS_minmax": wfa_BLOS_minmax,
+                    "best_muram_B_minmax": best_muram_B_minmax,
+                    "best_muram_B_minmax_scaler": best_muram_B_minmax_scaler,
+                    "min_rrmse_idx_normalized": min_rrmse_idx_normalized,
+                    "min_rrmse_logtau": min_rrmse_logtau,
+                    "noise_level": self.noise_level
+                }
 
         print("Data charging completed!")
         return self.data_per_file
