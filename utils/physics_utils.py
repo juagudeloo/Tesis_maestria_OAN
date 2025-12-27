@@ -379,3 +379,36 @@ class ApproxInversions:
             'rrmse_values': np.array(rrmse_values),
             'correlation_values': np.array(correlation_values),
         }
+
+# ============================================================================
+# EXAMPLE USAGE (INversions through approximations)
+# ============================================================================
+"""
+from physics_utils import ApproxInversions
+
+# Initialize with Stokes data
+inversions = ApproxInversions(
+    stokes=stokes.data,  # dict with 'I', 'V', etc.
+    wavelength=stokes.wl,
+    central_wavelength=6301.5*u.Angstrom,
+    lande_factor=1.67
+)
+
+# Compute B_LOS
+blos = inversions.compute_blos_wfa(wl_range=[15, 60])
+
+# Compute V_LOS
+vlos = inversions.compute_vlos_doppler(wl_range=[15, 60])
+
+# Compare with MHD at different heights
+metrics = inversions.compare_with_mhd(
+    mhd_od_data=mhd.od_data,
+    approximation="blos",
+    logtau_values=new_logtau,
+    save_dir="./results/"
+)
+
+print(f"Best RRMSE: {metrics['min_rrmse']:.4f} at τ={metrics['min_rrmse_logtau']:.2f}")
+print(f"Best Corr: {metrics['max_corr']:.4f} at τ={metrics['max_corr_logtau']:.2f}")
+"""    
+

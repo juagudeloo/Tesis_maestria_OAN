@@ -256,7 +256,7 @@ class MhdData:
         
         # Interpolate opacity and multiply by density with units
         kappa_rho_interp = self.kappa_interp(PT_log)
-        kappa_rho_interp = kappa_rho_interp.reshape(self.data["T"].shape)
+        kappa_rho_interp = kappa_rho_interp.reshape(self.data["T"].shape)*(u.cm**2/u.g)
         # κ*ρ: (cm²/g) * (g/cm³) = cm⁻¹ (dimensionless for optical depth integration)
         # Extract numeric value for numerical integration
         kappa_rho = (kappa_rho_interp * self.data["rho"]).to(u.cm**-1).value
@@ -623,7 +623,7 @@ class MhdData:
                 ax.set_yticklabels(tick_labels)
                 ax.set_ylabel("Height (km)")
                 
-                plt.colorbar(im, ax=ax, label=q_label, fraction=0.046, pad=0.04, label=f"{q_unit}")
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label=f"{q_unit}")
                 ax.set_title(f"{q_label} slice at x={x_idx}")
                 plt.tight_layout()
                 
