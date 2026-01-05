@@ -1,10 +1,13 @@
 """Physics-informed MSCNN model definition."""
 
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Callable
+from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
 import astropy.units as u
 
 from models.mscnn_model import MSCNNInversionModel
@@ -47,9 +50,12 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         wl_range: Tuple[int, int] = (15, 60),
         lambda_reg: float = 0.1,
         use_physics: Optional[str] = 'both',
+        dropout_rate: float = 0.2,  # Add dropout parameter
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        # Pass dropout_rate to parent MSCNNInversionModel
+        super().__init__(dropout_rate=dropout_rate, **kwargs)
+        
         self.central_wavelength = central_wavelength
         self.lande_factor = float(lande_factor)
         self.wl_range = [int(wl_range[0]), int(wl_range[1])]
@@ -104,6 +110,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         blos_approx: Optional[np.ndarray] = None,
         vlos_approx: Optional[np.ndarray] = None,
         logtau_values: Optional[np.ndarray] = None,
+        blos_best_index: Optional[int] = None,
+        vlos_best_index: Optional[int] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, Any]]:
         """Compute physics regularization using pre-computed approximations.
         
@@ -119,6 +127,10 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Pre-computed Doppler V_LOS approximation map (ny, nx)
         logtau_values : np.ndarray, optional
             Log(tau) values for height reporting
+        blos_best_index : int, optional
+            Precomputed best-height index for B_LOS (global scene)
+        vlos_best_index : int, optional
+            Precomputed best-height index for V_LOS (global scene)
             
         Returns
         -------
@@ -150,7 +162,13 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
                 raise ValueError("mhd_od_data must contain 'Bz' for WFA regularization.")
             mhd_bz = mhd_bz.value if hasattr(mhd_bz, "value") else mhd_bz
             
-            bz_idx, bz_rrmse = self._best_rrmse_index(blos, mhd_bz)
+            bz_rrmse = None
+            if blos_best_index is not None:
+                if blos_best_index < 0 or blos_best_index >= mhd_bz.shape[2]:
+                    raise ValueError("blos_best_index is out of bounds for provided MHD cube")
+                bz_idx = int(blos_best_index)
+            else:
+                bz_idx, bz_rrmse = self._best_rrmse_index(blos, mhd_bz)
             # Prefer model-predicted optical-depth data for mismatch, if available
             if predicted_od_data is not None and predicted_od_data.get("Bz") is not None:
                 pred_bz = predicted_od_data["Bz"]
@@ -178,7 +196,13 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
                 raise ValueError("mhd_od_data must contain 'Vz' for Doppler regularization.")
             mhd_vz = mhd_vz.value if hasattr(mhd_vz, "value") else mhd_vz
             
-            vz_idx, vz_rrmse = self._best_rrmse_index(vlos, mhd_vz)
+            vz_rrmse = None
+            if vlos_best_index is not None:
+                if vlos_best_index < 0 or vlos_best_index >= mhd_vz.shape[2]:
+                    raise ValueError("vlos_best_index is out of bounds for provided MHD cube")
+                vz_idx = int(vlos_best_index)
+            else:
+                vz_idx, vz_rrmse = self._best_rrmse_index(vlos, mhd_vz)
             # Prefer model-predicted optical-depth data for mismatch, if available
             if predicted_od_data is not None and predicted_od_data.get("Vz") is not None:
                 pred_vz = predicted_od_data["Vz"]
@@ -209,6 +233,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         blos_approx: Optional[np.ndarray] = None,
         vlos_approx: Optional[np.ndarray] = None,
         logtau_values: Optional[np.ndarray] = None,
+        blos_best_index: Optional[int] = None,
+        vlos_best_index: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
         """Compute total loss with optional physics regularization.
         
@@ -228,6 +254,10 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Pre-computed Doppler V_LOS approximation
         logtau_values : np.ndarray, optional
             Log(tau) values for height reporting
+        blos_best_index : int, optional
+            Precomputed best-height index for B_LOS (global scene)
+        vlos_best_index : int, optional
+            Precomputed best-height index for V_LOS (global scene)
             
         Returns
         -------
@@ -241,6 +271,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             blos_approx=blos_approx,
             vlos_approx=vlos_approx,
             logtau_values=logtau_values,
+            blos_best_index=blos_best_index,
+            vlos_best_index=vlos_best_index,
         )
 
         total_loss = base_mse + self.lambda_reg * reg_tensor
@@ -252,9 +284,3 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             "regularization_parts": reg_components,
             "height_info": height_info,
         }
-
-
-__all__ = [
-    "MSCNNInversionModel",
-    "PhysicsInformedMSCNN",
-]

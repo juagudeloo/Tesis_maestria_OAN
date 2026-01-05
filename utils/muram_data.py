@@ -39,7 +39,8 @@ class MhdData:
         self.data_path = Path(data_path)
         self.nx = nx
         self.ny = ny
-        self.nz = nz
+        self.nz = nz  # Original grid z dimension
+        self.z_max: Optional[int] = None  # Trimmed z dimension (if z_max was applied during load_step)
         
         # Data containers
         self.data: Dict[str, np.ndarray] = {}
@@ -137,6 +138,7 @@ class MhdData:
         Bz = Bz * coef
         
         # Optionally trim top z layers
+        # Keep self.nz unchanged for file I/O. Track trimmed size in self.z_max.
         if z_max is not None:
             if not (0 < z_max <= self.nz):
                 raise ValueError(f"z_max must be in 1..{self.nz}, got {z_max}")
@@ -145,8 +147,10 @@ class MhdData:
             rho = rho[:, :, :z_max]
             Vz = Vz[:, :, :z_max]
             Bz = Bz[:, :, :z_max]
-            self.nz = z_max
+            self.z_max = z_max
             print(f"  Trimmed z axis to first {z_max} layers (0..{z_max-1})")
+        else:
+            self.z_max = self.nz
         
         self.data = {
             "T": T*u.K,
@@ -169,7 +173,9 @@ class MhdData:
         
         mean_T_z = np.nanmean(self.data["T"], axis=(0, 1))
         self.z0 = int(np.argmin(np.abs(mean_T_z - 5780.0*u.K)))
-        self.height_levels = np.arange(0, self.nz, 1) * height_step_km - self.z0 * height_step_km
+        # Use actual data z-size (self.z_max) for height levels, not original nz
+        nz_actual = self.data["T"].shape[2] if "T" in self.data else self.z_max
+        self.height_levels = np.arange(0, nz_actual, 1) * height_step_km - self.z0 * height_step_km
         print(f"  Reference layer (T ~ 5780 K) at z-index {self.z0}")
     
     def load_opacity_table(self, kappa_path: str):
@@ -333,12 +339,13 @@ class MhdData:
     def plot_surfaces(self, z_idx: int, data_source: str = "geometric",
                       zero_height: bool = True, pixel_size_km: float = 25,
                       quantities: Optional[List[str]] = None,
+                      second_plot: str = "profile",
                       default_cmap: str = "viridis",
                       limit_values: Optional[Dict[str, Tuple[float, float]]] = None,
                       save_dir: Optional[str] = None, dpi: int = 150,
                       return_figs: bool = False):
         """
-        Plot 2D surfaces and vertical profiles for each quantity.
+        Plot 2D surfaces and vertical profiles or histograms for each quantity.
         
         Parameters
         ----------
@@ -352,6 +359,8 @@ class MhdData:
             Pixel size for scale bar
         quantities : list of str, optional
             Quantities to plot
+        second_plot : str
+            Type of second plot: "profile" or "histogram"
         default_cmap : str
             Default colormap
         limit_values : dict, optional
@@ -448,28 +457,38 @@ class MhdData:
                 axs[0].add_artist(scalebar)
                 plt.colorbar(im, ax=axs[0], fraction=0.046, pad=0.04, label=f"{q_unit}")
                 
-                line_color = cmap(0.6)
+                if second_plot == "profile":
+                    line_color = cmap(0.6)
+                    
+                    if height_levels is not None:
+                        axs[1].plot(height_levels, profile, "-o", ms=3, color=line_color)
+                        if self.z0 is not None and zero_height and data_source == "geometric":
+                            axs[1].axvline(z_idx * 10 - self.z0 * 10, color="gray", lw=1, ls="--")
+                        axs[1].set_xlabel("Height (km)")
+                    else:
+                        x_vals = np.arange(len(profile))
+                        axs[1].plot(x_vals, profile, "-o", ms=3, color=line_color)
+                        axs[1].set_xlabel("Z-index")
+                    
+                    if zero_height and data_source == "geometric":
+                        y_min, y_max = axs[1].get_ylim()
+                        y_mid = 0.5 * (y_min + y_max)
+                        axs[1].text(0, y_mid, r"$T \approx 5780$ K",
+                                    color='red', fontsize=9, ha='center', va='center',
+                                    bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
+                        axs[1].axvline(0, color='red', lw=1.5, ls='-')
+                    
+                    axs[1].set_ylabel(f"mean {q_label} (x,y)")
+                    axs[1].set_title(rf"{q_label} profile along z", fontsize=12)
                 
-                if height_levels is not None:
-                    axs[1].plot(height_levels, profile, "-o", ms=3, color=line_color)
-                    if self.z0 is not None and zero_height and data_source == "geometric":
-                        axs[1].axvline(z_idx * 10 - self.z0 * 10, color="gray", lw=1, ls="--")
-                    axs[1].set_xlabel("Height (km)")
+                elif second_plot == "histogram":
+                    axs[1].hist(surf.ravel(), bins=50, color="black", alpha=0.7)
+                    axs[1].set_xlabel(f"{q_label}")
+                    axs[1].set_ylabel("Counts")
+                    axs[1].set_title(rf"{q_label} histogram at z={z_idx}", fontsize=12)
+                
                 else:
-                    x_vals = np.arange(len(profile))
-                    axs[1].plot(x_vals, profile, "-o", ms=3, color=line_color)
-                    axs[1].set_xlabel("Z-index")
-                
-                if zero_height and data_source == "geometric":
-                    y_min, y_max = axs[1].get_ylim()
-                    y_mid = 0.5 * (y_min + y_max)
-                    axs[1].text(0, y_mid, r"$T \approx 5780$ K",
-                                color='red', fontsize=9, ha='center', va='center',
-                                bbox=dict(facecolor='white', alpha=0.6, edgecolor='none'))
-                    axs[1].axvline(0, color='red', lw=1.5, ls='-')
-                
-                axs[1].set_ylabel(f"mean {q_label} (x,y)")
-                axs[1].set_title(rf"{q_label} profile along z", fontsize=12)
+                    raise ValueError(f"Unknown second_plot option: {second_plot}. Must be 'profile' or 'histogram'")
                 
                 plt.tight_layout()
                 
@@ -997,15 +1016,9 @@ class StokesData:
                     wl_index_range: Optional[Tuple[int, int]] = None,
                     scatter: bool = False,
                     **kwargs):
-        """Plot Stokes I and V for a given pixel on provided axes.
-
-        This mirrors the notebook utility: it uses the supplied axes, does not
-        create its own figure, and defaults to the current `self.data` and
-        `self.wl` if `stokes` or `wl` are not provided.
-        """
-        
-        print(f"stokes shape {self.data["I"].shape}")
-        print(f"wl shape {self.wl.shape}")
+        """Plot Stokes I and V for a given pixel on provided axes."""
+        if "I" not in self.data or "V" not in self.data:
+            raise ValueError("Stokes I and V must be loaded. Call load_stokes() first.")
 
         stokes_titles = [r"$I$", r"$V/I_c$"]
         for i, key in enumerate(["I", "V"]):
@@ -1027,99 +1040,59 @@ class StokesData:
 
         return ax
 
-    def plot_polarizations(self, 
-                          continuum_map: Optional[np.ndarray] = None,
-                          polarization_map: Optional[np.ndarray] = None,
-                          titles: Tuple[str, str] = ("Continuum", "Circular Pol."),
-                          rms_values: Optional[Tuple[float, float]] = None,
-                          save_dir: Optional[str] = None, dpi: int = 300) -> None:
-        if continuum_map is None:
-            if self.mean_continuum is None:
-                raise ValueError("Continuum map not available. Call continuum_normalization() first.")
-            continuum_map = self.mean_continuum
-        if polarization_map is None:
-            polarization_map = self.spectropolarimetry()
-        fig, ax = plt.subplots(1, 2, figsize=(2*4.3, 4.3))
-        im1 = ax[0].imshow(continuum_map, cmap='inferno', origin="lower")
+    def plot_polarizations(
+        self,
+        continuum_map: Optional[np.ndarray] = None,
+        polarization_map: Optional[np.ndarray] = None,
+        titles: Tuple[str, str] = ("Continuum", "Circular Pol."),
+        rms_values: Optional[Tuple[float, float]] = None,
+        quantiles: Tuple[float, float] = (0.05, 0.95),
+        save_dir: Optional[str] = None,
+        dpi: int = 150,
+    ) -> None:
+        """Plot continuum and circular polarization maps with optional RMS labels."""
+        continuum = continuum_map if continuum_map is not None else self.mean_continuum
+        polarization = polarization_map if polarization_map is not None else self.circular_polarization
+
+        if continuum is None or polarization is None:
+            raise ValueError("Continuum and polarization data must be available to plot.")
+
+        if rms_values is None:
+            rms_values = (
+                self.rms_calculation(continuum),
+                self.rms_calculation(polarization),
+            )
+
+        q_low, q_high = np.quantile(polarization, quantiles)
+
+        fig, ax = plt.subplots(1, 2, figsize=(8.6, 4.3))
+
+        im1 = ax[0].imshow(continuum, cmap="inferno", origin="lower")
         ax[0].set_xticks([])
         ax[0].set_yticks([])
         divider1 = make_axes_locatable(ax[0])
         cax1 = divider1.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im1, cax=cax1)
-        q_low, q_high = np.quantile(polarization_map, [0.05, 0.95])
-        im2 = ax[1].imshow(polarization_map, cmap="PiYG", vmin=q_low, vmax=q_high, origin="lower")
+
+        im2 = ax[1].imshow(polarization, cmap="PiYG", vmin=q_low, vmax=q_high, origin="lower")
         ax[1].set_xticks([])
         ax[1].set_yticks([])
         divider2 = make_axes_locatable(ax[1])
         cax2 = divider2.append_axes("right", size="5%", pad=0.05)
         fig.colorbar(im2, cax=cax2)
-        if rms_values:
-            ax[0].set_title(f'{titles[0]} (rms = {rms_values[0]:.2f})')
-            ax[1].set_title(f'{titles[1]} (rms = {rms_values[1]:.2f})')
-        else:
-            ax[0].set_title(titles[0])
-            ax[1].set_title(titles[1])
+
+        ax[0].set_title(f"{titles[0]} (rms = {rms_values[0]:.2f})")
+        ax[1].set_title(f"{titles[1]} (rms = {rms_values[1]:.2f})")
+
         plt.tight_layout()
+
         if save_dir:
             save_path = Path(save_dir)
             save_path.mkdir(parents=True, exist_ok=True)
-            fig.savefig(save_path / "polarizations.png", dpi=dpi)
-            print(f"Saved: {save_path / 'polarizations.png'}")
+            outfile = save_path / "polarizations.png"
+            fig.savefig(outfile, dpi=dpi)
+            print(f"Saved: {outfile}")
+            plt.close(fig)
         else:
             plt.show()
-        plt.close(fig)
-
-# ============================================================================
-# EXAMPLE USAGE (Stokes)
-# ============================================================================
-"""
-from pathlib import Path
-import numpy as np
-
-# Initialize
-stokes = StokesData(
-    data_dir="/path/to/muram-simulation/",
-    step=112,
-    wavelength_range=(6300.5, 6303.5),
-    wavelength_step=0.01
-)
-
-# Load Stokes cube
-stokes.load_stokes()
-
-# Normalize by continuum intensity
-stokes.continuum_normalization(cont_indices=[0, 1, 2, 3])
-
-# Load and apply spectral convolution with Hinode LSF
-stokes.load_hinode_lsf("../data/hinode-MODEST/PSFs/hinode_sp.spline.psf")
-stokes.apply_spectral_convolution()
-
-# Resample to Hinode/SP wavelengths (112 points)
-stokes.resample_to_hinode()
-
-# OPTIONAL: Add realistic Hinode noise
-stokes.add_hinode_noise(noise_level=5.9e-4)
-
-# Visualize
-stokes.plot_selected_pixel(x=373, y=55, save_dir="./output")
-
-circ_pol = stokes.spectropolarimetry()
-rms_cont = stokes.rms_calculation(stokes.mean_continuum)
-rms_pol = stokes.rms_calculation(circ_pol)
-stokes.plot_polarizations(
-    polarization_map=circ_pol,
-    rms_values=(rms_cont, rms_pol),
-    save_dir="./output"
-)
-
-stokes.plot_spectra(
-    x=373, y=55,
-    stokes_params=("I", "V"),
-    save_dir="./output"
-)
-
-# Access final processed Hinode-adapted data
-wavelengths = stokes.wl  # Hinode wavelengths
-I_hinode = stokes.data["I"]  # Shape: (nx, ny, 112)
-V_hinode = stokes.data["V"]
-"""
+            plt.close(fig)

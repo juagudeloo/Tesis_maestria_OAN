@@ -96,76 +96,106 @@ class MultiScaleFeatureMapping(nn.Module):
 
 
 class LinearBlock(nn.Module):
-	def __init__(self, *, in_features: int, out_features: int, n_layers: int = 4) -> None:
-		super().__init__()
-		self.layers = nn.ModuleList(
-			[
-				nn.Sequential(
-					nn.Linear(in_features=in_features, out_features=in_features),
-					nn.ReLU(),
-				)
-				for _ in range(n_layers)
-			]
-		)
-		self.output_layer = nn.Linear(in_features=in_features, out_features=out_features)
+    def __init__(
+        self, 
+        *, 
+        in_features: int, 
+        out_features: int, 
+        n_layers: int = 4,
+        dropout_rate: float = 0.0  # Add dropout parameter
+    ) -> None:
+        super().__init__()
+        self.dropout_rate = dropout_rate
+        
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(in_features=in_features, out_features=in_features),
+                    nn.ReLU(),
+                    nn.Dropout(p=dropout_rate) if dropout_rate > 0 else nn.Identity()
+                )
+                for _ in range(n_layers)
+            ]
+        )
+        self.output_layer = nn.Linear(in_features=in_features, out_features=out_features)
 
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
-		for layer in self.layers:
-			x = layer(x)
-		return self.output_layer(x)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for layer in self.layers:
+            x = layer(x)
+        return self.output_layer(x)
 
 
 class MSCNNInversionModel(nn.Module):
-	def __init__(
-		self,
-		*,
-		scales: list[int],
-		in_channels: int = 2,
-		c1_filters: int = 16,
-		c2_filters: int = 32,
-		kernel_size: int = 5,
-		stride: int = 1,
-		padding: int = 0,
-		pool_size: int = 2,
-		n_linear_layers: int = 4,
-		output_features: int = 3 * 21,
-		input_length: int = 112,
-	) -> None:
-		super().__init__()
+    def __init__(
+        self,
+        *,
+        scales: list[int],
+        in_channels: int = 2,
+        c1_filters: int = 16,
+        c2_filters: int = 32,
+        kernel_size: int = 5,
+        stride: int = 1,
+        padding: int = 0,
+        pool_size: int = 2,
+        n_linear_layers: int = 4,
+        output_features: int = 3 * 21,
+        input_length: int = 112,
+        dropout_rate: float = 0.2,  # Add dropout parameter
+    ) -> None:
+        super().__init__()
 
-		self.msfm = MultiScaleFeatureMapping(
-			scales=scales,
-			in_channels=in_channels,
-			c1_filters=c1_filters,
-			c2_filters=c2_filters,
-			kernel_size=kernel_size,
-			stride=stride,
-			padding=padding,
-			pool_size=pool_size,
-		)
+        self.msfm = MultiScaleFeatureMapping(
+            scales=scales,
+            in_channels=in_channels,
+            c1_filters=c1_filters,
+            c2_filters=c2_filters,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            pool_size=pool_size,
+        )
 
-		# Compute flatten size from expected input length.
-		total_features = 0
-		for s in scales:
-			length = input_length // s
-			length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
-			length = length // pool_size
-			length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
-			length = length // pool_size
-			total_features += length
-		flatten_size = total_features * c2_filters
+        # Compute flatten size from expected input length.
+        total_features = 0
+        for s in scales:
+            length = input_length // s
+            length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
+            length = length // pool_size
+            length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
+            length = length // pool_size
+            total_features += length
+        flatten_size = total_features * c2_filters
 
-		self.flatten = nn.Flatten()
-		self.linear_block = LinearBlock(
-			in_features=flatten_size,
-			out_features=output_features,
-			n_layers=n_linear_layers,
-		)
+        self.flatten = nn.Flatten()
+        self.linear_block = LinearBlock(
+            in_features=flatten_size,
+            out_features=output_features,
+            n_layers=n_linear_layers,
+            dropout_rate=dropout_rate,  # Pass dropout to LinearBlock
+        )
 
-	def forward(self, x: torch.Tensor) -> torch.Tensor:
-		x = self.msfm(x)
-		x = self.flatten(x)
-		return self.linear_block(x)
+    def forward(self, x: torch.Tensor, return_uncertainty: bool = False) -> torch.Tensor:
+        x = self.msfm(x)
+        x = self.flatten(x)
+
+        if return_uncertainty and not self.training:
+            # Enable dropout during inference for Monte Carlo sampling
+            self.linear_block.train()  # Put linear block in training mode
+            
+            predictions = []
+            for _ in range(30):  # 30 stochastic forward passes
+                pred = self.linear_block(x)
+                predictions.append(pred.unsqueeze(0))
+            
+            self.linear_block.eval()  # Restore eval mode
+            
+            predictions = torch.cat(predictions, dim=0)  # (30, batch, 63)
+            mean_pred = predictions.mean(dim=0)
+            std_pred = predictions.std(dim=0)  # Uncertainty estimate
+            
+            return mean_pred, std_pred
+
+        return self.linear_block(x)
 
 
 __all__ = [

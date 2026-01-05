@@ -1,0 +1,766 @@
+"""
+Physics Regularization Ablation Study
+======================================
+
+Compares PINN training with different regularization configurations:
+1. No physics (pure supervised learning)
+2. WFA only
+3. All physics terms (WFA + Gradient smoothness)
+
+Usage:
+    python first_experiment.py --n_epochs 50 --device cuda
+"""
+
+import sys
+import json
+import time
+from pathlib import Path
+from typing import Dict, List
+import warnings
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+# Add parent directories to path
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+from utils.muram_data import MhdData, StokesData
+from utils.normalizer import MhdNormalizer, StokesNormalizer
+from models.pinn_mscnn_model import PhysicsInformedMSCNN
+from utils.physics_utils import ApproxInversions
+from scripts.base_training import (
+    TrainingConfig, MuramStepDataset, PhysicsLossComputer,
+    load_and_prepare_step, validate
+)
+
+
+class ExperimentTracker:
+    """Tracks metrics across different experimental conditions."""
+    
+    def __init__(self, output_dir: Path):
+        self.output_dir = output_dir
+        self.results = {}
+        
+    def add_experiment(self, name: str, metrics: Dict):
+        """Add results from one experimental condition."""
+        self.results[name] = metrics
+        
+    def save_results(self):
+        """Save all results to JSON."""
+        results_path = self.output_dir / "experiment_results.json"
+        with open(results_path, 'w') as f:
+            json.dump(self.results, f, indent=2)
+        print(f"Results saved to {results_path}")
+    
+    def print_summary_table(self):
+        """Print a formatted summary table."""
+        if not self.results:
+            print("No results to display")
+            return
+        
+        print("\n" + "=" * 120)
+        print("PHYSICS REGULARIZATION ABLATION STUDY - SUMMARY".center(120))
+        print("=" * 120)
+        
+        # Header
+        header = f"{'Experiment':<25} {'Val Loss':<12} {'Time (min)':<12} {'B_LOS RRMSE':<15} {'V_LOS RRMSE':<15} {'Best?':<8}"
+        print(header)
+        print("-" * 120)
+        
+        # Find best model
+        best_exp = min(self.results.keys(), 
+                      key=lambda x: self.results[x]['final_val_loss'])
+        
+        # Print rows
+        for exp_name in self.results.keys():
+            metrics = self.results[exp_name]
+            is_best = "★ YES" if exp_name == best_exp else "";
+            
+            row = (f"{exp_name:<25} "
+                  f"{metrics['final_val_loss']:<12.6f} "
+                  f"{metrics['training_time_minutes']:<12.1f} "
+                  f"{metrics['test_metrics']['blos_rrmse_tau_avg']:<15.6f} "
+                  f"{metrics['test_metrics']['vlos_rrmse_tau_avg']:<15.6f} "
+                  f"{is_best:<8}")
+            print(row)
+        
+        print("=" * 120)
+        
+        # Print key findings
+        print("\n📊 KEY FINDINGS:")
+        print("-" * 120)
+        
+        baseline_name = 'no_physics'
+        if baseline_name in self.results and best_exp != baseline_name:
+            baseline_loss = self.results[baseline_name]['final_val_loss']
+            best_loss = self.results[best_exp]['final_val_loss']
+            improvement = (baseline_loss - best_loss) / baseline_loss * 100
+            
+            print(f"✓ Best configuration: {best_exp}")
+            print(f"✓ Improvement over no physics: {improvement:.2f}%")
+            print(f"✓ Validation loss: {best_loss:.6f} vs {baseline_loss:.6f} (baseline)")
+        elif best_exp == baseline_name:
+            print("⚠ Physics regularization did NOT improve performance")
+            print("  Recommendation: Check lambda values or physics approximation quality")
+        
+        print("=" * 120 + "\n")
+    
+    def plot_individual_loss_curves(self):
+        """Generate individual plots for each experiment showing all loss components."""
+        for exp_name, results in self.results.items():
+            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            fig.suptitle(f'Loss Components - {exp_name}', fontsize=14, fontweight='bold')
+            
+            epochs = range(1, len(results['train_loss_history']) + 1)
+            
+            # Total loss
+            ax1 = axes[0, 0]
+            ax1.plot(epochs, results['train_loss_history'], 'b-o', label='Total Loss', linewidth=2)
+            ax1.set_xlabel('Epoch')
+            ax1.set_ylabel('Loss')
+            ax1.set_title('Total Training Loss')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax1.set_yscale('log')
+            
+            # MSE loss
+            ax2 = axes[0, 1]
+            if 'mse_loss_history' in results:
+                ax2.plot(epochs, results['mse_loss_history'], 'g-s', label='MSE Loss', linewidth=2)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Loss')
+            ax2.set_title('MSE Loss Component')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            ax2.set_yscale('log')
+            
+            # Physics loss breakdown
+            ax3 = axes[1, 0]
+            if 'physics_loss_history' in results and any(l > 0 for l in results['physics_loss_history']):
+                ax3.plot(epochs, results['physics_loss_history'], 'r-^', label='Total Physics', linewidth=2)
+            if 'wfa_loss_history' in results and any(l > 0 for l in results['wfa_loss_history']):
+                ax3.plot(epochs, results['wfa_loss_history'], 'm--', label='WFA', linewidth=1.5)
+            if 'doppler_loss_history' in results and any(l > 0 for l in results['doppler_loss_history']):
+                ax3.plot(epochs, results['doppler_loss_history'], 'c--', label='Doppler', linewidth=1.5)
+            if 'smoothness_loss_history' in results and any(l > 0 for l in results['smoothness_loss_history']):
+                ax3.plot(epochs, results['smoothness_loss_history'], 'y--', label='Smoothness', linewidth=1.5)
+            ax3.set_xlabel('Epoch')
+            ax3.set_ylabel('Loss')
+            ax3.set_title('Physics Loss Components')
+            ax3.legend()
+            ax3.grid(True, alpha=0.3)
+            ax3.set_yscale('log')
+            
+            # Validation loss
+            ax4 = axes[1, 1]
+            ax4.plot(epochs, results['val_loss_history'], 'orange', marker='o', label='Validation Loss', linewidth=2)
+            ax4.set_xlabel('Epoch')
+            ax4.set_ylabel('Loss')
+            ax4.set_title('Validation Loss')
+            ax4.legend()
+            ax4.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            
+            # Save individual plot
+            plot_path = self.output_dir / f"{exp_name}_loss_curves.png"
+            plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+            plt.close()
+            
+        print(f"Individual loss curve plots saved to {self.output_dir}")
+        
+    def generate_comparison_plots(self):
+        """Generate comparison visualizations."""
+        if not self.results:
+            print("No results to plot")
+            return
+        
+        fig = plt.figure(figsize=(20, 18))
+        
+        # Extract data
+        experiments = list(self.results.keys())
+        
+        # 1. Validation Loss Comparison
+        ax1 = plt.subplot(3, 3, 1)
+        val_losses = [self.results[exp]['final_val_loss'] for exp in experiments]
+        bars1 = ax1.bar(range(len(experiments)), val_losses, color='steelblue', alpha=0.7)
+        ax1.set_xticks(range(len(experiments)))
+        ax1.set_xticklabels(experiments, rotation=45, ha='right')
+        ax1.set_ylabel('Validation Loss')
+        ax1.set_title('Final Validation Loss')
+        ax1.grid(True, alpha=0.3)
+        
+        for i, (bar, val) in enumerate(zip(bars1, val_losses)):
+            ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # 2. Training Time Comparison
+        ax2 = plt.subplot(3, 3, 2)
+        train_times = [self.results[exp]['training_time_minutes'] for exp in experiments]
+        bars2 = ax2.bar(range(len(experiments)), train_times, color='coral', alpha=0.7)
+        ax2.set_xticks(range(len(experiments)))
+        ax2.set_xticklabels(experiments, rotation=45, ha='right')
+        ax2.set_ylabel('Time (minutes)')
+        ax2.set_title('Training Time')
+        ax2.grid(True, alpha=0.3)
+        
+        for i, (bar, val) in enumerate(zip(bars2, train_times)):
+            ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                    f'{val:.1f}', ha='center', va='bottom', fontsize=9)
+        
+        # 3. B_LOS RRMSE (Tau-averaged)
+        ax3 = plt.subplot(3, 3, 3)
+        blos_rrmse = [self.results[exp]['test_metrics']['blos_rrmse_tau_avg'] 
+                      for exp in experiments]
+        bars3 = ax3.bar(range(len(experiments)), blos_rrmse, color='forestgreen', alpha=0.7)
+        ax3.set_xticks(range(len(experiments)))
+        ax3.set_xticklabels(experiments, rotation=45, ha='right')
+        ax3.set_ylabel('RRMSE')
+        ax3.set_title('B_LOS RRMSE (Tau-Averaged)')
+        ax3.grid(True, alpha=0.3)
+        ax3.axhline(y=min(blos_rrmse), color='red', linestyle='--', alpha=0.5, label='Best')
+        ax3.legend()
+        
+        for i, (bar, val) in enumerate(zip(bars3, blos_rrmse)):
+            ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # 4. V_LOS RRMSE (Tau-averaged)
+        ax4 = plt.subplot(3, 3, 4)
+        vlos_rrmse = [self.results[exp]['test_metrics']['vlos_rrmse_tau_avg'] 
+                      for exp in experiments]
+        bars4 = ax4.bar(range(len(experiments)), vlos_rrmse, color='purple', alpha=0.7)
+        ax4.set_xticks(range(len(experiments)))
+        ax4.set_xticklabels(experiments, rotation=45, ha='right')
+        ax4.set_ylabel('RRMSE')
+        ax4.set_title('V_LOS RRMSE (Tau-Averaged)')
+        ax4.grid(True, alpha=0.3)
+        ax4.axhline(y=min(vlos_rrmse), color='red', linestyle='--', alpha=0.5, label='Best')
+        ax4.legend()
+        
+        for i, (bar, val) in enumerate(zip(bars4, vlos_rrmse)):
+            ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # 5. Convergence curves (validation loss)
+        ax5 = plt.subplot(3, 3, 5)
+        for exp in experiments:
+            val_history = self.results[exp]['val_loss_history']
+            epochs = range(1, len(val_history) + 1)
+            ax5.plot(epochs, val_history, marker='o', label=exp, linewidth=2)
+        ax5.set_xlabel('Epoch')
+        ax5.set_ylabel('Validation Loss')
+        ax5.set_title('Validation Loss Convergence')
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+        
+        # 6. Relative improvement matrix
+        ax6 = plt.subplot(3, 3, 6)
+        baseline_name = 'no_physics'
+        if baseline_name in self.results:
+            baseline_val = self.results[baseline_name]['final_val_loss']
+            baseline_blos = self.results[baseline_name]['test_metrics']['blos_rrmse_tau_avg']
+            baseline_vlos = self.results[baseline_name]['test_metrics']['vlos_rrmse_tau_avg']
+            
+            improvements = []
+            for exp in experiments:
+                if exp == baseline_name:
+                    improvements.append([0, 0, 0])
+                else:
+                    val_imp = (baseline_val - self.results[exp]['final_val_loss']) / baseline_val * 100
+                    blos_imp = (baseline_blos - self.results[exp]['test_metrics']['blos_rrmse_tau_avg']) / baseline_blos * 100
+                    vlos_imp = (baseline_vlos - self.results[exp]['test_metrics']['vlos_rrmse_tau_avg']) / baseline_vlos * 100
+                    improvements.append([val_imp, blos_imp, vlos_imp])
+            
+            improvements = np.array(improvements)
+            
+            im = ax6.imshow(improvements.T, cmap='RdYlGn', aspect='auto', vmin=-20, vmax=20)
+            ax6.set_xticks(range(len(experiments)))
+            ax6.set_xticklabels(experiments, rotation=45, ha='right')
+            ax6.set_yticks([0, 1, 2])
+            ax6.set_yticklabels(['Val Loss', 'B_LOS RRMSE', 'V_LOS RRMSE'])
+            ax6.set_title('% Improvement over Baseline\n(Positive = Better)')
+            
+            for i in range(len(experiments)):
+                for j in range(3):
+                    ax6.text(i, j, f'{improvements[i, j]:.1f}%',
+                           ha="center", va="center", color="black", fontsize=9)
+            
+            plt.colorbar(im, ax=ax6, label='% Improvement')
+        
+        # 7. Total Loss Curves
+        ax7 = plt.subplot(3, 3, 7)
+        for exp in experiments:
+            if 'train_loss_history' in self.results[exp]:
+                loss_history = self.results[exp]['train_loss_history']
+                epochs = range(1, len(loss_history) + 1)
+                ax7.plot(epochs, loss_history, marker='o', label=exp, linewidth=2, markersize=4)
+        ax7.set_xlabel('Epoch')
+        ax7.set_ylabel('Total Loss')
+        ax7.set_title('Total Loss Convergence (Training)')
+        ax7.legend(fontsize=8)
+        ax7.grid(True, alpha=0.3)
+        ax7.set_yscale('log')
+        
+        # 8. MSE Loss Component
+        ax8 = plt.subplot(3, 3, 8)
+        for exp in experiments:
+            if 'mse_loss_history' in self.results[exp]:
+                loss_history = self.results[exp]['mse_loss_history']
+                epochs = range(1, len(loss_history) + 1)
+                ax8.plot(epochs, loss_history, marker='s', label=exp, linewidth=2, markersize=4)
+        ax8.set_xlabel('Epoch')
+        ax8.set_ylabel('MSE Loss')
+        ax8.set_title('MSE Loss Component')
+        ax8.legend(fontsize=8)
+        ax8.grid(True, alpha=0.3)
+        ax8.set_yscale('log')
+        
+        # 9. Physics Loss Components
+        ax9 = plt.subplot(3, 3, 9)
+        for exp in experiments:
+            if 'physics_loss_history' in self.results[exp]:
+                loss_history = self.results[exp]['physics_loss_history']
+                if len(loss_history) > 0 and any(l > 0 for l in loss_history):
+                    epochs = range(1, len(loss_history) + 1)
+                    ax9.plot(epochs, loss_history, marker='^', label=exp, linewidth=2, markersize=4)
+        ax9.set_xlabel('Epoch')
+        ax9.set_ylabel('Physics Loss')
+        ax9.set_title('Physics Loss Components')
+        ax9.legend(fontsize=8)
+        ax9.grid(True, alpha=0.3)
+        ax9.set_yscale('log')
+        
+        plt.suptitle('Physics Regularization Ablation Study', fontsize=16, y=0.997)
+        plt.tight_layout()
+        
+        plot_path = self.output_dir / "comparison_plots.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        print(f"Comparison plots saved to {plot_path}")
+        plt.show()
+
+def compute_tau_averaged_metrics(
+    model: PhysicsInformedMSCNN,
+    test_steps: List[int],
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    logtau_values: np.ndarray,
+) -> Dict[str, float]:
+    """Evaluate model on test steps using tau-averaged physics metrics."""
+    from scipy.stats import pearsonr
+    
+    model.eval()
+    device = config.device
+    
+    all_pred_blos = []
+    all_true_blos = []
+    all_pred_vlos = []
+    all_true_vlos = []
+    
+    with torch.no_grad():
+        for step in tqdm(test_steps, desc="Evaluating test steps"):
+            try:
+                dataset, physics_data, approx_data = load_and_prepare_step(
+                    step=step,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    stokes_normalizer=stokes_normalizer,
+                )
+                
+                dataloader = DataLoader(
+                    dataset, batch_size=512, shuffle=False, num_workers=0
+                )
+                
+                true_blos = approx_data['blos'].flatten()
+                true_vlos = approx_data['vlos'].flatten()
+                
+                step_pred_blos = []
+                step_pred_vlos = []
+                
+                for stokes_batch, _, spatial_idx_batch in dataloader:
+                    stokes_batch = stokes_batch.to(device)
+                    predictions = model(stokes_batch)
+                    
+                    pred_Vz = predictions[:, 21:42]
+                    pred_Bz = predictions[:, 42:63]
+                    
+                    pred_Vz_denorm = mhd_normalizer.inverse_transform_quantity(
+                        pred_Vz.cpu().numpy(), 'Vz'
+                    )
+                    pred_Bz_denorm = mhd_normalizer.inverse_transform_quantity(
+                        pred_Bz.cpu().numpy(), 'Bz'
+                    )
+                    
+                    tau_linear = 10 ** logtau_values
+                    dtau = np.diff(tau_linear)
+                    integral_dtau = tau_linear[-1] - tau_linear[0]
+                    
+                    Bz_avg = (pred_Bz_denorm[:, :-1] + pred_Bz_denorm[:, 1:]) / 2
+                    integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
+                    pred_blos_batch = integral_Bz / integral_dtau
+                    
+                    Vz_avg = (pred_Vz_denorm[:, :-1] + pred_Vz_denorm[:, 1:]) / 2
+                    integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
+                    pred_vlos_batch = integral_Vz / integral_dtau
+                    
+                    step_pred_blos.append(pred_blos_batch)
+                    step_pred_vlos.append(pred_vlos_batch)
+                
+                all_pred_blos.append(np.concatenate(step_pred_blos))
+                all_true_blos.append(true_blos)
+                all_pred_vlos.append(np.concatenate(step_pred_vlos))
+                all_true_vlos.append(true_vlos)
+                
+            except Exception as e:
+                print(f"Warning: Failed to evaluate step {step}: {e}")
+                continue
+    
+    all_pred_blos = np.concatenate(all_pred_blos)
+    all_true_blos = np.concatenate(all_true_blos)
+    all_pred_vlos = np.concatenate(all_pred_vlos)
+    all_true_vlos = np.concatenate(all_true_vlos)
+    
+    rmse_blos = np.sqrt(np.mean((all_pred_blos - all_true_blos) ** 2))
+    rrmse_blos = rmse_blos / (np.mean(np.abs(all_true_blos)) + 1e-10)
+    
+    rmse_vlos = np.sqrt(np.mean((all_pred_vlos - all_true_vlos) ** 2))
+    rrmse_vlos = rmse_vlos / (np.mean(np.abs(all_true_vlos)) + 1e-10)
+    
+    corr_blos, _ = pearsonr(all_pred_blos, all_true_blos)
+    corr_vlos, _ = pearsonr(all_pred_vlos, all_true_vlos)
+    
+    return {
+        'blos_rrmse_tau_avg': float(rrmse_blos),
+        'vlos_rrmse_tau_avg': float(rrmse_vlos),
+        'blos_correlation': float(corr_blos),
+        'vlos_correlation': float(corr_vlos),
+        'blos_rmse': float(rmse_blos),
+        'vlos_rmse': float(rmse_vlos),
+    }
+
+
+def run_single_experiment(
+    experiment_name: str,
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    test_steps: List[int],
+) -> Dict:
+    """Run a single training experiment."""
+    print("\n" + "=" * 100)
+    print(f"EXPERIMENT: {experiment_name}".center(100))
+    print("=" * 100)
+    print(f"Physics regularization: {config.use_physics}")
+    print(f"Lambda WFA: {config.lambda_wfa}")
+    print(f"Lambda Doppler: {config.lambda_doppler}")
+    print(f"Lambda Physics: {config.lambda_physics}")
+    print(f"Learning rate: {config.learning_rate}")
+    print(f"Weight decay: {config.weight_decay}")
+    print(f"Gradient clip: {config.gradient_clip}")
+    print("=" * 100)
+    
+    # Initialize model
+    model = PhysicsInformedMSCNN(
+        scales=[1, 2, 3],
+        in_channels=2,
+        c1_filters=16,
+        c2_filters=32,
+        kernel_size=5,
+        pool_size=2,
+        n_linear_layers=4,
+        dropout_rate=0.2,
+    ).to(config.device)
+    
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay
+    )
+    
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=config.scheduler_factor,
+        patience=config.scheduler_patience,
+        verbose=True
+    )
+    
+    # Prepare train/val split
+    all_steps = list(range(60, 201))
+    train_steps = [s for s in all_steps if s not in test_steps]
+    
+    import random
+    random.seed(42)
+    n_val = max(1, len(train_steps) // 10)
+    val_steps = random.sample(train_steps, n_val)
+    train_steps = [s for s in train_steps if s not in val_steps]
+    
+    # Training loop
+    start_time = time.time()
+    val_loss_history = []
+    train_loss_history = []
+    mse_loss_history = []
+    physics_loss_history = []
+    wfa_loss_history = []
+    doppler_loss_history = []
+    smoothness_loss_history = []
+    
+    for epoch in range(config.n_epochs):
+        print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
+        
+        random.shuffle(train_steps)
+        epoch_metrics = {
+            'total_loss': 0.0,
+            'mse_loss': 0.0,
+            'physics_loss': 0.0,
+            'wfa_loss': 0.0,
+            'doppler_loss': 0.0,
+            'smoothness_loss': 0.0,
+            'n_steps': 0
+        }
+        
+        # Limit to 20 steps per epoch for faster training
+        n_steps = 20
+        for step in tqdm(train_steps[:n_steps], desc=f"Epoch {epoch+1}", leave=False):
+            try:
+                dataset, physics_data, approx_data = load_and_prepare_step(
+                    step=step,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    stokes_normalizer=stokes_normalizer,
+                )
+                
+                dataloader = DataLoader(
+                    dataset,
+                    batch_size=config.batch_size,
+                    shuffle=True,
+                    num_workers=0,
+                    pin_memory=False,
+                )
+                
+                physics_computer = PhysicsLossComputer(
+                    physics_data=physics_data,
+                    approx_data=approx_data,
+                    logtau_values=np.arange(-2.0, 0.1, 0.1),
+                    config=config,
+                    device=config.device,
+                )
+                
+                model.train()
+                step_metrics = {k: 0.0 for k in epoch_metrics.keys() if k != 'n_steps'}
+                n_batches = 0
+                
+                for stokes_batch, mhd_batch, spatial_idx_batch in dataloader:
+                    stokes_batch = stokes_batch.to(config.device)
+                    mhd_batch = mhd_batch.to(config.device)
+                    spatial_idx_batch = spatial_idx_batch.to(config.device)
+                    
+                    optimizer.zero_grad()
+                    
+                    predictions = model(stokes_batch)
+                    mse_loss = nn.MSELoss()(predictions, mhd_batch)
+                    
+                    physics_loss, loss_components = physics_computer.compute_batch_physics_loss(
+                        predictions=predictions,
+                        spatial_indices=spatial_idx_batch,
+                    )
+                    
+                    total_loss = mse_loss + physics_loss
+                    total_loss.backward()
+                    
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
+                    optimizer.step()
+                    
+                    step_metrics['total_loss'] += total_loss.item()
+                    step_metrics['mse_loss'] += mse_loss.item()
+                    step_metrics['physics_loss'] += physics_loss.item()
+                    step_metrics['wfa_loss'] += loss_components.get('wfa', 0.0)
+                    step_metrics['doppler_loss'] += loss_components.get('doppler', 0.0)
+                    step_metrics['smoothness_loss'] += loss_components.get('gradient', 0.0)
+                    n_batches += 1
+                
+                for key in step_metrics:
+                    epoch_metrics[key] += step_metrics[key] / n_batches
+                epoch_metrics['n_steps'] += 1
+                
+                del dataset, dataloader, physics_computer
+                torch.cuda.empty_cache()
+                
+            except Exception as e:
+                print(f"Error in step {step}: {e}")
+                continue
+        
+        n_steps = epoch_metrics['n_steps']
+        if n_steps > 0:
+            avg_train_loss = epoch_metrics['total_loss'] / n_steps
+            avg_mse_loss = epoch_metrics['mse_loss'] / n_steps
+            avg_physics_loss = epoch_metrics['physics_loss'] / n_steps
+            avg_wfa_loss = epoch_metrics['wfa_loss'] / n_steps
+            avg_doppler_loss = epoch_metrics['doppler_loss'] / n_steps
+            avg_smoothness_loss = epoch_metrics['smoothness_loss'] / n_steps
+        else:
+            avg_train_loss = avg_mse_loss = float('inf')
+            avg_physics_loss = avg_wfa_loss = avg_doppler_loss = avg_smoothness_loss = 0.0
+        
+        train_loss_history.append(avg_train_loss)
+        mse_loss_history.append(avg_mse_loss)
+        physics_loss_history.append(avg_physics_loss)
+        wfa_loss_history.append(avg_wfa_loss)
+        doppler_loss_history.append(avg_doppler_loss)
+        smoothness_loss_history.append(avg_smoothness_loss)
+        
+        avg_val_loss = validate(
+            model=model,
+            val_steps=val_steps[:5],
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+        )
+        
+        val_loss_history.append(avg_val_loss)
+        scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"  Train: {avg_train_loss:.6f} (MSE: {avg_mse_loss:.6f}, Physics: {avg_physics_loss:.6f})")
+        print(f"  Val: {avg_val_loss:.6f} | LR: {current_lr:.2e}")
+    
+    training_time = (time.time() - start_time) / 60
+    
+    print("\nEvaluating on test set...")
+    test_metrics = compute_tau_averaged_metrics(
+        model=model,
+        test_steps=test_steps,
+        config=config,
+        mhd_normalizer=mhd_normalizer,
+        stokes_normalizer=stokes_normalizer,
+        logtau_values=np.arange(-2.0, 0.1, 0.1),
+    )
+    
+    # Save model
+    if config.checkpoint_dir:
+        model_path = config.checkpoint_dir.parent / "final_model.pth"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'test_metrics': test_metrics,
+        }, model_path)
+    
+    return {
+        'final_val_loss': val_loss_history[-1],
+        'val_loss_history': val_loss_history,
+        'train_loss_history': train_loss_history,
+        'mse_loss_history': mse_loss_history,
+        'physics_loss_history': physics_loss_history,
+        'wfa_loss_history': wfa_loss_history,
+        'doppler_loss_history': doppler_loss_history,
+        'smoothness_loss_history': smoothness_loss_history,
+        'training_time_minutes': training_time,
+        'test_metrics': test_metrics,
+        'config': {
+            'use_physics': config.use_physics,
+            'lambda_wfa': config.lambda_wfa,
+            'lambda_doppler': config.lambda_doppler,
+            'lambda_physics': config.lambda_physics,
+        }
+    }
+
+
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Physics regularization ablation study")
+    parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
+    parser.add_argument('--output_dir', type=str, 
+                       default='experiments/physics_regularization_ablation',
+                       help='Output directory')
+    
+    args = parser.parse_args()
+    
+    # Base configuration
+    data_path = Path("/scratchsan/observatorio/juagudeloo/data/")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    test_steps = list(range(60, 70))
+    
+    # Load normalizers
+    print("Loading normalizers...")
+    mhd_normalizer = MhdNormalizer()
+    mhd_normalizer.load(data_path / "normalization_stats/mhd_normalization.json")
+    stokes_normalizer = StokesNormalizer()
+    stokes_normalizer.load(data_path / "normalization_stats/stokes_normalization.json")
+    print("  ✓ Normalizers loaded")
+    
+    tracker = ExperimentTracker(output_dir)
+    
+    # Define experiments using TrainingConfig
+    experiments = [
+        # 1. No physics
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics=None,
+            lambda_wfa=0.0,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            device=args.device,
+            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
+            log_dir=output_dir / "no_physics" / "logs",
+        ),
+        # 2. WFA only
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics='wfa',
+            lambda_wfa=0.01,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            device=args.device,
+            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
+            log_dir=output_dir / "wfa_only" / "logs",
+        ),
+        # 3. All physics
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics='wfa',
+            lambda_wfa=0.01,
+            lambda_doppler=0.0,
+            lambda_physics=0.02,
+            device=args.device,
+            checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
+            log_dir=output_dir / "all_physics_terms" / "logs",
+        ),
+    ]
+    
+    experiment_names = ['no_physics', 'wfa_only', 'all_physics_terms']
+    
+    # Run experiments
+    for name, config in zip(experiment_names, experiments):
+            results = run_single_experiment(
+                experiment_name=name,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                test_steps=test_steps,
+            )
+            
+            tracker.add_experiment(name, results)
+            
+    tracker.save_results()
+    tracker.print_summary_table()
+    tracker.generate_comparison_plots()
+    tracker.plot_individual_loss_curves()
+    
+    print("\n✓ Experiment complete!")
+    print(f"Results saved to: {output_dir}")
+
+
+if __name__ == "__main__":
+    main()
