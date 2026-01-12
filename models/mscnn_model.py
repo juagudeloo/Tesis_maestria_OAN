@@ -174,26 +174,24 @@ class MSCNNInversionModel(nn.Module):
             dropout_rate=dropout_rate,  # Pass dropout to LinearBlock
         )
 
-    def forward(self, x: torch.Tensor, return_uncertainty: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, stocastic_generation: bool = False, stocastic_steps: int = 30) -> torch.Tensor:
         x = self.msfm(x)
         x = self.flatten(x)
 
-        if return_uncertainty and not self.training:
+        if stocastic_generation and not self.training:
             # Enable dropout during inference for Monte Carlo sampling
             self.linear_block.train()  # Put linear block in training mode
             
             predictions = []
-            for _ in range(30):  # 30 stochastic forward passes
+            for _ in range(stocastic_steps):  # 30 stochastic forward passes
                 pred = self.linear_block(x)
                 predictions.append(pred.unsqueeze(0))
             
             self.linear_block.eval()  # Restore eval mode
             
-            predictions = torch.cat(predictions, dim=0)  # (30, batch, 63)
-            mean_pred = predictions.mean(dim=0)
-            std_pred = predictions.std(dim=0)  # Uncertainty estimate
+            predictions = torch.cat(predictions, dim=0)  # (stocastic_steps, batch, 63)
             
-            return mean_pred, std_pred
+            return predictions
 
         return self.linear_block(x)
 

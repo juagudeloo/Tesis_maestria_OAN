@@ -29,13 +29,13 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from utils.muram_data import MhdData, StokesData
+from utils.muram_data import MhdData, StokesData, MuramStepDataset  # Add MuramStepDataset
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.physics_utils import ApproxInversions
 from scripts.base_training import (
-    TrainingConfig, MuramStepDataset, PhysicsLossComputer,
-    load_and_prepare_step, validate
+    TrainingConfig,  # Remove MuramStepDataset from here
+    load_and_prepare_step, validate, train_epoch  # Import train_epoch
 )
 
 
@@ -366,7 +366,7 @@ def compute_tau_averaged_metrics(
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
             try:
-                dataset, physics_data, approx_data = load_and_prepare_step(
+                dataset, approx_data = load_and_prepare_step(
                     step=step,
                     config=config,
                     mhd_normalizer=mhd_normalizer,
@@ -387,25 +387,27 @@ def compute_tau_averaged_metrics(
                     stokes_batch = stokes_batch.to(device)
                     predictions = model(stokes_batch)
                     
-                    pred_Vz = predictions[:, 21:42]
-                    pred_Bz = predictions[:, 42:63]
+                    # Convert predictions to numpy for denormalization
+                    predictions_np = predictions.cpu().numpy()
                     
-                    pred_Vz_denorm = mhd_normalizer.inverse_transform_quantity(
-                        pred_Vz.cpu().numpy(), 'Vz'
-                    )
-                    pred_Bz_denorm = mhd_normalizer.inverse_transform_quantity(
-                        pred_Bz.cpu().numpy(), 'Bz'
+                    # Denormalize using inverse_transform (returns dict with 'T', 'Vz', 'Bz')
+                    pred_denorm = mhd_normalizer.inverse_transform(
+                        predictions_np, param_order=['T', 'Vz', 'Bz']
                     )
                     
+                    # Compute tau-averaged B_LOS
                     tau_linear = 10 ** logtau_values
                     dtau = np.diff(tau_linear)
                     integral_dtau = tau_linear[-1] - tau_linear[0]
                     
-                    Bz_avg = (pred_Bz_denorm[:, :-1] + pred_Bz_denorm[:, 1:]) / 2
+                    # Bz shape: (batch_size, n_tau=21)
+                    Bz_avg = (pred_denorm["Bz"][:, :-1] + pred_denorm["Bz"][:, 1:]) / 2
                     integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
                     pred_blos_batch = integral_Bz / integral_dtau
                     
-                    Vz_avg = (pred_Vz_denorm[:, :-1] + pred_Vz_denorm[:, 1:]) / 2
+                    # Compute tau-averaged V_LOS
+                    # Vz shape: (batch_size, n_tau=21)
+                    Vz_avg = (pred_denorm["Vz"][:, :-1] + pred_denorm["Vz"][:, 1:]) / 2
                     integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
                     pred_vlos_batch = integral_Vz / integral_dtau
                     
@@ -444,18 +446,23 @@ def compute_tau_averaged_metrics(
         'vlos_rmse': float(rmse_vlos),
     }
 
-
 def run_single_experiment(
     experiment_name: str,
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
     test_steps: List[int],
+    n_steps_per_epoch: int = 20,
+    min_step: int = 60,
+    max_step: int = 200,
 ) -> Dict:
     """Run a single training experiment."""
     print("\n" + "=" * 100)
     print(f"EXPERIMENT: {experiment_name}".center(100))
     print("=" * 100)
+    print(f"Device: {config.device}")
+    print(f"Number of epochs: {config.n_epochs}")
+    print(f"Training step range: {min_step} to {max_step}")
     print(f"Physics regularization: {config.use_physics}")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
@@ -464,6 +471,52 @@ def run_single_experiment(
     print(f"Weight decay: {config.weight_decay}")
     print(f"Gradient clip: {config.gradient_clip}")
     print("=" * 100)
+    
+    # Save experiment configuration
+    config_dict = {
+        'experiment_name': experiment_name,
+        'training_config': {
+            'n_epochs': config.n_epochs,
+            'batch_size': config.batch_size,
+            'learning_rate': config.learning_rate,
+            'weight_decay': config.weight_decay,
+            'gradient_clip': config.gradient_clip,
+            'scheduler_factor': config.scheduler_factor,
+            'scheduler_patience': config.scheduler_patience,
+        },
+        'physics_config': {
+            'use_physics': config.use_physics,
+            'lambda_wfa': config.lambda_wfa,
+            'lambda_doppler': config.lambda_doppler,
+            'lambda_physics': config.lambda_physics,
+        },
+        'data_config': {
+            'min_step': min_step,
+            'max_step': max_step,
+            'test_steps': test_steps,
+            'n_steps_per_epoch': n_steps_per_epoch,
+        },
+        'model_config': {
+            'scales': [1, 2, 3],
+            'in_channels': 2,
+            'c1_filters': 16,
+            'c2_filters': 32,
+            'kernel_size': 5,
+            'pool_size': 2,
+            'n_linear_layers': 4,
+            'dropout_rate': 0.2,
+        },
+        'device': config.device,
+        'data_path': str(config.data_path),  # Convert Path to string
+    }
+    
+    # Create experiment directory and save config
+    exp_dir = config.checkpoint_dir.parent
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    config_path = exp_dir / "experiment_config.json"
+    with open(config_path, 'w') as f:
+        json.dump(config_dict, f, indent=2)
+    print(f"Configuration saved to: {config_path}")
     
     # Initialize model
     model = PhysicsInformedMSCNN(
@@ -475,6 +528,10 @@ def run_single_experiment(
         pool_size=2,
         n_linear_layers=4,
         dropout_rate=0.2,
+        use_physics=config.use_physics,
+        lambda_wfa=config.lambda_wfa,
+        lambda_doppler=config.lambda_doppler,
+        lambda_physics=config.lambda_physics,
     ).to(config.device)
     
     optimizer = torch.optim.Adam(
@@ -492,7 +549,7 @@ def run_single_experiment(
     )
     
     # Prepare train/val split
-    all_steps = list(range(60, 201))
+    all_steps = list(range(min_step, max_step+1))
     train_steps = [s for s in all_steps if s not in test_steps]
     
     import random
@@ -514,100 +571,28 @@ def run_single_experiment(
     for epoch in range(config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         
-        random.shuffle(train_steps)
-        epoch_metrics = {
-            'total_loss': 0.0,
-            'mse_loss': 0.0,
-            'physics_loss': 0.0,
-            'wfa_loss': 0.0,
-            'doppler_loss': 0.0,
-            'smoothness_loss': 0.0,
-            'n_steps': 0
-        }
+        # Use the shared train_epoch function
+        epoch_metrics = train_epoch(
+            model=model,
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            optimizer=optimizer,
+            epoch=epoch,
+            logger=None,  # No detailed batch logging for ablation study
+            n_steps_per_epoch=n_steps_per_epoch,
+        )
         
-        # Limit to 20 steps per epoch for faster training
-        n_steps = 20
-        for step in tqdm(train_steps[:n_steps], desc=f"Epoch {epoch+1}", leave=False):
-            try:
-                dataset, physics_data, approx_data = load_and_prepare_step(
-                    step=step,
-                    config=config,
-                    mhd_normalizer=mhd_normalizer,
-                    stokes_normalizer=stokes_normalizer,
-                )
-                
-                dataloader = DataLoader(
-                    dataset,
-                    batch_size=config.batch_size,
-                    shuffle=True,
-                    num_workers=0,
-                    pin_memory=False,
-                )
-                
-                physics_computer = PhysicsLossComputer(
-                    physics_data=physics_data,
-                    approx_data=approx_data,
-                    logtau_values=np.arange(-2.0, 0.1, 0.1),
-                    config=config,
-                    device=config.device,
-                )
-                
-                model.train()
-                step_metrics = {k: 0.0 for k in epoch_metrics.keys() if k != 'n_steps'}
-                n_batches = 0
-                
-                for stokes_batch, mhd_batch, spatial_idx_batch in dataloader:
-                    stokes_batch = stokes_batch.to(config.device)
-                    mhd_batch = mhd_batch.to(config.device)
-                    spatial_idx_batch = spatial_idx_batch.to(config.device)
-                    
-                    optimizer.zero_grad()
-                    
-                    predictions = model(stokes_batch)
-                    mse_loss = nn.MSELoss()(predictions, mhd_batch)
-                    
-                    physics_loss, loss_components = physics_computer.compute_batch_physics_loss(
-                        predictions=predictions,
-                        spatial_indices=spatial_idx_batch,
-                    )
-                    
-                    total_loss = mse_loss + physics_loss
-                    total_loss.backward()
-                    
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip)
-                    optimizer.step()
-                    
-                    step_metrics['total_loss'] += total_loss.item()
-                    step_metrics['mse_loss'] += mse_loss.item()
-                    step_metrics['physics_loss'] += physics_loss.item()
-                    step_metrics['wfa_loss'] += loss_components.get('wfa', 0.0)
-                    step_metrics['doppler_loss'] += loss_components.get('doppler', 0.0)
-                    step_metrics['smoothness_loss'] += loss_components.get('gradient', 0.0)
-                    n_batches += 1
-                
-                for key in step_metrics:
-                    epoch_metrics[key] += step_metrics[key] / n_batches
-                epoch_metrics['n_steps'] += 1
-                
-                del dataset, dataloader, physics_computer
-                torch.cuda.empty_cache()
-                
-            except Exception as e:
-                print(f"Error in step {step}: {e}")
-                continue
+        # Extract metrics
+        avg_train_loss = epoch_metrics['total_loss']
+        avg_mse_loss = epoch_metrics['mse_loss']
+        avg_physics_loss = epoch_metrics['physics_loss']
+        avg_wfa_loss = epoch_metrics['wfa_loss']
+        avg_doppler_loss = epoch_metrics['doppler_loss']
+        avg_smoothness_loss = epoch_metrics['smoothness_loss']
         
-        n_steps = epoch_metrics['n_steps']
-        if n_steps > 0:
-            avg_train_loss = epoch_metrics['total_loss'] / n_steps
-            avg_mse_loss = epoch_metrics['mse_loss'] / n_steps
-            avg_physics_loss = epoch_metrics['physics_loss'] / n_steps
-            avg_wfa_loss = epoch_metrics['wfa_loss'] / n_steps
-            avg_doppler_loss = epoch_metrics['doppler_loss'] / n_steps
-            avg_smoothness_loss = epoch_metrics['smoothness_loss'] / n_steps
-        else:
-            avg_train_loss = avg_mse_loss = float('inf')
-            avg_physics_loss = avg_wfa_loss = avg_doppler_loss = avg_smoothness_loss = 0.0
-        
+        # Store histories
         train_loss_history.append(avg_train_loss)
         mse_loss_history.append(avg_mse_loss)
         physics_loss_history.append(avg_physics_loss)
@@ -615,6 +600,7 @@ def run_single_experiment(
         doppler_loss_history.append(avg_doppler_loss)
         smoothness_loss_history.append(avg_smoothness_loss)
         
+        # Validation
         avg_val_loss = validate(
             model=model,
             val_steps=val_steps[:5],
@@ -627,8 +613,11 @@ def run_single_experiment(
         scheduler.step(avg_val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         
+        print("=" * 50)
+        print(f"Epoch {epoch + 1} Summary:")
         print(f"  Train: {avg_train_loss:.6f} (MSE: {avg_mse_loss:.6f}, Physics: {avg_physics_loss:.6f})")
         print(f"  Val: {avg_val_loss:.6f} | LR: {current_lr:.2e}")
+        print("=" * 50)
     
     training_time = (time.time() - start_time) / 60
     
@@ -670,24 +659,28 @@ def run_single_experiment(
         }
     }
 
-
 def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Physics regularization ablation study")
     parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('--n_steps', type=int, default=-1, help='Number of training steps per epoch (-1 for all steps)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
+    parser.add_argument('--min_step', type=int, default=60, help='Minimum training step (inclusive)')
+    parser.add_argument('--max_step', type=int, default=200, help='Maximum training step (exclusive)')
+    parser.add_argument('--experiment_name', type=str, default='physics_regularization_ablation',
+                       help='Name for the experiment folder')
     parser.add_argument('--output_dir', type=str, 
-                       default='experiments/physics_regularization_ablation',
-                       help='Output directory')
+                       default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments',
+                       help='Base output directory')
     
     args = parser.parse_args()
     
     # Base configuration
     data_path = Path("/scratchsan/observatorio/juagudeloo/data/")
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) / args.experiment_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    test_steps = list(range(60, 70))
+    test_steps = list(range(198, 201))
     
     # Load normalizers
     print("Loading normalizers...")
@@ -701,19 +694,7 @@ def main():
     
     # Define experiments using TrainingConfig
     experiments = [
-        # 1. No physics
-        TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            use_physics=None,
-            lambda_wfa=0.0,
-            lambda_doppler=0.0,
-            lambda_physics=0.0,
-            device=args.device,
-            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
-            log_dir=output_dir / "no_physics" / "logs",
-        ),
-        # 2. WFA only
+        # 1. WFA only
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -725,7 +706,7 @@ def main():
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
         ),
-        # 3. All physics
+        # 2. All physics
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -737,9 +718,21 @@ def main():
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
         ),
+        # 3. No physics
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics=None,
+            lambda_wfa=0.0,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            device=args.device,
+            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
+            log_dir=output_dir / "no_physics" / "logs",
+        ),
     ]
     
-    experiment_names = ['no_physics', 'wfa_only', 'all_physics_terms']
+    experiment_names = ['wfa_only', 'all_physics_terms','no_physics']
     
     # Run experiments
     for name, config in zip(experiment_names, experiments):
@@ -749,6 +742,9 @@ def main():
                 mhd_normalizer=mhd_normalizer,
                 stokes_normalizer=stokes_normalizer,
                 test_steps=test_steps,
+                n_steps_per_epoch=args.n_steps,
+                min_step=args.min_step,
+                max_step=args.max_step,
             )
             
             tracker.add_experiment(name, results)

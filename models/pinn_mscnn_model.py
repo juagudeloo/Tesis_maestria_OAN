@@ -1,29 +1,23 @@
 """Physics-informed MSCNN model definition."""
 
-from typing import Dict, Optional, Tuple, Any, Callable
+from typing import Dict, Optional, Tuple, Any
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
 import astropy.units as u
 
 from models.mscnn_model import MSCNNInversionModel
-from utils.physics_utils import ApproxInversions
 
 
 class PhysicsInformedMSCNN(MSCNNInversionModel):
-    """MSCNN inversion model with optional physics-informed loss.
+    """MSCNN inversion model with integrated physics-informed loss computation.
 
-    The loss is MSE(predictions, targets) plus an optional regularization term built from
-    the WFA-based B_LOS and/or Doppler-based V_LOS approximations. The
-    regularization selects the optical-depth height with the lowest RRMSE by
-    comparing each approximation to the MHD cubes, and then compares the
-    approximation against the model's predicted optical-depth values (Bz or Vz)
-    at that best height. If model-predicted optical-depth data is not provided,
-    it falls back to comparing against the MHD cubes (previous behavior).
+    This model extends the base MSCNN architecture with physics-based regularization
+    computed in physical units (after denormalization). All physics computations are
+    self-contained within the model.
     
     Parameters
     ----------
@@ -32,255 +26,380 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         - None: No physics regularization (pure supervised learning)
         - 'wfa': Only WFA B_LOS regularization
         - 'doppler': Only Doppler V_LOS regularization  
-        - 'both': Both WFA and Doppler regularization (default)
-    
-    Notes
-    -----
-    Height selection (lowest RRMSE) is performed against the MHD optical-depth
-    cubes, but the regularization mismatch can be computed against either the
-    MHD cubes or the model's own predicted optical-depth cubes when provided
-    via `predicted_od_data`.
+        - 'both': Both WFA and Doppler regularization
+    lambda_wfa : float
+        Weight for WFA B_LOS loss term
+    lambda_doppler : float
+        Weight for Doppler V_LOS loss term
+    lambda_physics : float
+        Weight for gradient smoothness regularization
     """
 
     def __init__(
         self,
         *,
-        central_wavelength: u.Quantity = 6301.5 * u.Angstrom,
-        lande_factor: float = 1.67,
-        wl_range: Tuple[int, int] = (15, 60),
-        lambda_reg: float = 0.1,
-        use_physics: Optional[str] = 'both',
-        dropout_rate: float = 0.2,  # Add dropout parameter
+        use_physics: Optional[str] = None,
+        lambda_wfa: float = 0.01,
+        lambda_doppler: float = 0.01,
+        lambda_physics: float = 0.001,
+        dropout_rate: float = 0.2,
         **kwargs: Any,
     ) -> None:
-        # Pass dropout_rate to parent MSCNNInversionModel
         super().__init__(dropout_rate=dropout_rate, **kwargs)
-        
-        self.central_wavelength = central_wavelength
-        self.lande_factor = float(lande_factor)
-        self.wl_range = [int(wl_range[0]), int(wl_range[1])]
-        self.lambda_reg = float(lambda_reg)
         
         # Validate and store physics regularization mode
         valid_modes = [None, 'wfa', 'doppler', 'both']
         if use_physics not in valid_modes:
             raise ValueError(f"use_physics must be one of {valid_modes}, got {use_physics}")
+        
         self.use_physics = use_physics
+        self.lambda_wfa = float(lambda_wfa)
+        self.lambda_doppler = float(lambda_doppler)
+        self.lambda_physics = float(lambda_physics)
+        
+        # Physics computation state (set via set_physics_context)
+        self.mhd_normalizer = None
+        self.logtau_values = None
+        self.blos_approx = None
+        self.vlos_approx = None
+        self._tau_linear = None
+        self._dtau = None
+        self._integral_dtau = None
+
+    def set_physics_context(
+        self,
+        mhd_normalizer: 'MhdNormalizer',
+        logtau_values: np.ndarray,
+        blos_approx: Optional[np.ndarray] = None,
+        vlos_approx: Optional[np.ndarray] = None,
+    ):
+        """
+        Set physics computation context for the current training step.
+        
+        This should be called once per simulation step with the relevant
+        physics approximations and normalizer.
+        
+        Parameters
+        ----------
+        mhd_normalizer : MhdNormalizer
+            Normalizer for denormalizing predictions to physical units
+        logtau_values : np.ndarray
+            Log optical depth values (e.g., np.arange(-2.0, 0.1, 0.1))
+        blos_approx : np.ndarray, optional
+            WFA B_LOS approximation map (nx, ny) in Gauss
+        vlos_approx : np.ndarray, optional
+            Doppler V_LOS approximation map (nx, ny) in km/s
+        """
+        self.mhd_normalizer = mhd_normalizer
+        self.logtau_values = logtau_values
+        
+        # Pre-compute tau integration quantities
+        self._tau_linear = 10 ** logtau_values
+        self._dtau = np.diff(self._tau_linear)
+        self._integral_dtau = self._tau_linear[-1] - self._tau_linear[0]
+        
+        # Move approximations to device
+        device = self._get_device()
+        if blos_approx is not None:
+            self.blos_approx = torch.tensor(blos_approx, dtype=torch.float32, device=device)
+        if vlos_approx is not None:
+            self.vlos_approx = torch.tensor(vlos_approx, dtype=torch.float32, device=device)
 
     def _get_device(self) -> torch.device:
+        """Get device of model parameters."""
         try:
             return next(self.parameters()).device
         except StopIteration:
             return torch.device("cpu")
 
-    def _get_stokes_and_wavelength(
-        self,
-        stokes_input: Any,
-        wavelength: Optional[np.ndarray],
-    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-        if isinstance(stokes_input, dict):
-            stokes_dict = stokes_input
-            wl_array = wavelength
-        elif hasattr(stokes_input, "data"):
-            stokes_dict = stokes_input.data
-            wl_array = wavelength if wavelength is not None else getattr(stokes_input, "wl", None)
-        else:
-            raise ValueError("stokes_input must be a dict or expose 'data' and optionally 'wl'.")
-
-        if wl_array is None:
-            raise ValueError("Provide wavelength or ensure stokes_input has 'wl'.")
-        return stokes_dict, np.asarray(wl_array)
-
-    @staticmethod
-    def _best_rrmse_index(approx_map: np.ndarray, mhd_cube: np.ndarray) -> Tuple[int, np.ndarray]:
-        rrmse_values = []
-        for k in range(mhd_cube.shape[2]):
-            mhd_slice = mhd_cube[:, :, k]
-            rmse = np.sqrt(np.mean((approx_map - mhd_slice) ** 2))
-            denom = np.mean(np.abs(mhd_slice)) + 1e-8
-            rrmse_values.append(rmse / denom)
-        rrmse_values = np.asarray(rrmse_values)
-        return int(np.argmin(rrmse_values)), rrmse_values
-
-    def physics_regularization(
-        self,
-        *,
-        mhd_od_data: Dict[str, Any],
-        predicted_od_data: Optional[Dict[str, Any]] = None,
-        blos_approx: Optional[np.ndarray] = None,
-        vlos_approx: Optional[np.ndarray] = None,
-        logtau_values: Optional[np.ndarray] = None,
-        blos_best_index: Optional[int] = None,
-        vlos_best_index: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, Any]]:
-        """Compute physics regularization using pre-computed approximations.
-        
-        Parameters
-        ----------
-        mhd_od_data : Dict[str, Any]
-            MHD optical-depth cubes for height selection via RRMSE
-        predicted_od_data : Dict[str, Any], optional
-            Model-predicted optical-depth cubes for regularization mismatch
-        blos_approx : np.ndarray, optional
-            Pre-computed WFA B_LOS approximation map (ny, nx)
-        vlos_approx : np.ndarray, optional
-            Pre-computed Doppler V_LOS approximation map (ny, nx)
-        logtau_values : np.ndarray, optional
-            Log(tau) values for height reporting
-        blos_best_index : int, optional
-            Precomputed best-height index for B_LOS (global scene)
-        vlos_best_index : int, optional
-            Precomputed best-height index for V_LOS (global scene)
-            
-        Returns
-        -------
-        reg_tensor : torch.Tensor
-            Total regularization value
-        reg_components : Dict[str, torch.Tensor]
-            Individual regularization components
-        height_info : Dict[str, Any]
-            Information about selected heights
+    def _denormalize_predictions(self, predictions: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        # Return zero regularization if physics is disabled
-        if self.use_physics is None:
-            device = self._get_device()
-            zero_tensor = torch.tensor(0.0, dtype=torch.float32, device=device)
-            return zero_tensor, {}, {}
-
-        device = self._get_device()
-        reg_value = 0.0
-        reg_components = {}
-        height_info = {}
-        
-        # Compute WFA regularization if requested
-        if self.use_physics in ['wfa', 'both']:
-            if blos_approx is None:
-                raise ValueError("blos_approx must be provided for WFA regularization when use_physics='wfa' or 'both'")
-            blos = blos_approx
-            mhd_bz = mhd_od_data.get("Bz")
-            if mhd_bz is None:
-                raise ValueError("mhd_od_data must contain 'Bz' for WFA regularization.")
-            mhd_bz = mhd_bz.value if hasattr(mhd_bz, "value") else mhd_bz
-            
-            bz_rrmse = None
-            if blos_best_index is not None:
-                if blos_best_index < 0 or blos_best_index >= mhd_bz.shape[2]:
-                    raise ValueError("blos_best_index is out of bounds for provided MHD cube")
-                bz_idx = int(blos_best_index)
-            else:
-                bz_idx, bz_rrmse = self._best_rrmse_index(blos, mhd_bz)
-            # Prefer model-predicted optical-depth data for mismatch, if available
-            if predicted_od_data is not None and predicted_od_data.get("Bz") is not None:
-                pred_bz = predicted_od_data["Bz"]
-                pred_bz = pred_bz.value if hasattr(pred_bz, "value") else pred_bz
-                bz_target = pred_bz[:, :, bz_idx]
-            else:
-                raise ValueError("predicted data must contain 'Bz' for WFA regularization.")
-            reg_b = np.mean((blos - bz_target) ** 2)
-            reg_value += reg_b
-            
-            reg_components["blos_mse"] = torch.as_tensor(reg_b, dtype=torch.float32, device=device)
-            height_info.update({
-                "blos_best_logtau": None if logtau_values is None else logtau_values[bz_idx],
-                "blos_rrmse": bz_rrmse,
-                "blos_best_index": bz_idx,
-            })
-        
-        # Compute Doppler regularization if requested
-        if self.use_physics in ['doppler', 'both']:
-            if vlos_approx is None:
-                raise ValueError("vlos_approx must be provided for Doppler regularization when use_physics='doppler' or 'both'")
-            vlos = vlos_approx
-            mhd_vz = mhd_od_data.get("Vz")
-            if mhd_vz is None:
-                raise ValueError("mhd_od_data must contain 'Vz' for Doppler regularization.")
-            mhd_vz = mhd_vz.value if hasattr(mhd_vz, "value") else mhd_vz
-            
-            vz_rrmse = None
-            if vlos_best_index is not None:
-                if vlos_best_index < 0 or vlos_best_index >= mhd_vz.shape[2]:
-                    raise ValueError("vlos_best_index is out of bounds for provided MHD cube")
-                vz_idx = int(vlos_best_index)
-            else:
-                vz_idx, vz_rrmse = self._best_rrmse_index(vlos, mhd_vz)
-            # Prefer model-predicted optical-depth data for mismatch, if available
-            if predicted_od_data is not None and predicted_od_data.get("Vz") is not None:
-                pred_vz = predicted_od_data["Vz"]
-                pred_vz = pred_vz.value if hasattr(pred_vz, "value") else pred_vz
-                vz_target = pred_vz[:, :, vz_idx]
-            else:
-                raise ValueError("predicted data must contain 'Vz' for Doppler regularization.")
-            reg_v = np.mean((vlos - vz_target) ** 2)
-            reg_value += reg_v
-            
-            reg_components["vlos_mse"] = torch.as_tensor(reg_v, dtype=torch.float32, device=device)
-            height_info.update({
-                "vlos_best_logtau": None if logtau_values is None else logtau_values[vz_idx],
-                "vlos_rrmse": vz_rrmse,
-                "vlos_best_index": vz_idx,
-            })
-
-        reg_tensor = torch.as_tensor(reg_value, dtype=torch.float32, device=device)
-        return reg_tensor, reg_components, height_info
-
-    def compute_loss(
-        self,
-        *,
-        predictions: torch.Tensor,
-        targets: torch.Tensor,
-        mhd_od_data: Dict[str, Any],
-        predicted_od_data: Optional[Dict[str, Any]] = None,
-        blos_approx: Optional[np.ndarray] = None,
-        vlos_approx: Optional[np.ndarray] = None,
-        logtau_values: Optional[np.ndarray] = None,
-        blos_best_index: Optional[int] = None,
-        vlos_best_index: Optional[int] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """Compute total loss with optional physics regularization.
+        Denormalize model predictions to physical units.
         
         Parameters
         ----------
         predictions : torch.Tensor
-            Model predictions (batch_size, n_outputs)
+            Normalized predictions (batch_size, 63)
+            
+        Returns
+        -------
+        denorm_dict : Dict[str, torch.Tensor]
+            Dictionary with 'T', 'Vz', 'Bz' in physical units
+        """
+        if self.mhd_normalizer is None:
+            raise RuntimeError("MHD normalizer not set. Call set_physics_context() first.")
+        
+        # Convert to numpy for denormalization
+        predictions_np = predictions.detach().cpu().numpy()
+        
+        # Denormalize using the normalizer
+        denorm_dict = self.mhd_normalizer.inverse_transform(
+            predictions_np, param_order=['T', 'Vz', 'Bz']
+        )
+        
+        # Convert back to torch tensors on correct device
+        device = self._get_device()
+        denorm_torch = {
+            'T': torch.tensor(denorm_dict['T'], dtype=torch.float32, device=device),
+            'Vz': torch.tensor(denorm_dict['Vz'], dtype=torch.float32, device=device),
+            'Bz': torch.tensor(denorm_dict['Bz'], dtype=torch.float32, device=device),
+        }
+        
+        return denorm_torch
+
+    def _compute_tau_averaged_blos(self, bz: torch.Tensor) -> torch.Tensor:
+        """
+        Compute tau-averaged B_LOS from Bz profile.
+        
+        Parameters
+        ----------
+        bz : torch.Tensor
+            Bz values in physical units (batch_size, n_tau=21)
+            
+        Returns
+        -------
+        blos : torch.Tensor
+            Tau-averaged B_LOS (batch_size,)
+        """
+        device = self._get_device()
+        
+        # Trapezoidal integration
+        bz_avg = (bz[:, :-1] + bz[:, 1:]) / 2  # (batch_size, 20)
+        dtau_tensor = torch.tensor(self._dtau, dtype=torch.float32, device=device)
+        integral_bz = torch.sum(bz_avg * dtau_tensor[None, :], dim=1)  # (batch_size,)
+        
+        return integral_bz / self._integral_dtau
+
+    def _compute_tau_averaged_vlos(self, vz: torch.Tensor) -> torch.Tensor:
+        """
+        Compute tau-averaged V_LOS from Vz profile.
+        
+        Parameters
+        ----------
+        vz : torch.Tensor
+            Vz values in physical units (batch_size, n_tau=21)
+            
+        Returns
+        -------
+        vlos : torch.Tensor
+            Tau-averaged V_LOS (batch_size,)
+        """
+        device = self._get_device()
+        
+        # Trapezoidal integration
+        vz_avg = (vz[:, :-1] + vz[:, 1:]) / 2  # (batch_size, 20)
+        dtau_tensor = torch.tensor(self._dtau, dtype=torch.float32, device=device)
+        integral_vz = torch.sum(vz_avg * dtau_tensor[None, :], dim=1)  # (batch_size,)
+        
+        return integral_vz / self._integral_dtau
+
+    def _compute_wfa_loss(
+        self,
+        denorm_pred: Dict[str, torch.Tensor],
+        spatial_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute WFA-based B_LOS loss in physical units.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'Bz' (batch_size, n_tau)
+        spatial_indices : torch.Tensor
+            Spatial coordinates (batch_size, 2) as [y, x]
+            
+        Returns
+        -------
+        loss : torch.Tensor
+            WFA loss value
+        """
+        if self.blos_approx is None:
+            raise RuntimeError("B_LOS approximation not set. Call set_physics_context() first.")
+        
+        # Compute tau-averaged B_LOS from predictions
+        pred_blos = self._compute_tau_averaged_blos(denorm_pred['Bz'])
+        
+        # Get corresponding WFA approximations
+        y_idx = spatial_indices[:, 0].long()
+        x_idx = spatial_indices[:, 1].long()
+        approx_blos = self.blos_approx[y_idx, x_idx]  # (batch_size,)
+        
+        # MSE loss in physical units
+        return torch.mean((pred_blos - approx_blos) ** 2)
+
+    def _compute_doppler_loss(
+        self,
+        denorm_pred: Dict[str, torch.Tensor],
+        spatial_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute Doppler-based V_LOS loss in physical units.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'Vz' (batch_size, n_tau)
+        spatial_indices : torch.Tensor
+            Spatial coordinates (batch_size, 2) as [y, x]
+            
+        Returns
+        -------
+        loss : torch.Tensor
+            Doppler loss value
+        """
+        if self.vlos_approx is None:
+            raise RuntimeError("V_LOS approximation not set. Call set_physics_context() first.")
+        
+        # Compute tau-averaged V_LOS from predictions
+        pred_vlos = self._compute_tau_averaged_vlos(denorm_pred['Vz'])
+        
+        # Get corresponding Doppler approximations
+        y_idx = spatial_indices[:, 0].long()
+        x_idx = spatial_indices[:, 1].long()
+        approx_vlos = self.vlos_approx[y_idx, x_idx]  # (batch_size,)
+        
+        # MSE loss in physical units
+        return torch.mean((pred_vlos - approx_vlos) ** 2)
+
+    def _compute_gradient_smoothness(
+        self,
+        denorm_pred: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Compute gradient smoothness regularization in physical units.
+        
+        Penalizes large second derivatives (non-smooth profiles) across optical depth.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions (batch_size, n_tau) for each parameter
+            
+        Returns
+        -------
+        loss : torch.Tensor
+            Smoothness loss value (average over T, Vz, Bz)
+        """
+        device = self._get_device()
+        total_loss = torch.tensor(0.0, device=device)
+        
+        for param in ['T', 'Vz', 'Bz']:
+            values = denorm_pred[param]  # (batch_size, n_tau)
+            
+            # First derivative (central differences)
+            grad1 = values[:, 2:] - values[:, :-2]  # (batch_size, n_tau-2)
+            
+            # Second derivative approximation
+            grad2 = grad1[:, 1:] - grad1[:, :-1]  # (batch_size, n_tau-3)
+            
+            # L2 penalty on second derivatives
+            smoothness = torch.mean(grad2 ** 2)
+            total_loss = total_loss + smoothness
+        
+        return total_loss / 3  # Average over three parameters
+
+    def compute_physics_loss(
+        self,
+        predictions: torch.Tensor,
+        spatial_indices: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Compute physics-based regularization losses in physical units.
+        
+        This method computes all enabled physics losses by:
+        1. Denormalizing predictions to physical units
+        2. Computing tau-averaged quantities (B_LOS, V_LOS)
+        3. Comparing against physics approximations
+        4. Adding gradient smoothness regularization
+        
+        Parameters
+        ----------
+        predictions : torch.Tensor
+            Normalized model predictions (batch_size, 63)
+        spatial_indices : torch.Tensor
+            Spatial coordinates (batch_size, 2) as [y, x]
+            
+        Returns
+        -------
+        total_loss : torch.Tensor
+            Weighted sum of physics losses
+        loss_components : Dict[str, float]
+            Individual loss components for logging
+        """
+        # Return zero if physics is disabled
+        if self.use_physics is None:
+            device = self._get_device()
+            return torch.tensor(0.0, device=device), {}
+        
+        # Denormalize predictions to physical units
+        denorm_pred = self._denormalize_predictions(predictions)
+        
+        device = self._get_device()
+        total_loss = torch.tensor(0.0, device=device)
+        loss_components = {}
+        
+        # WFA B_LOS loss (if enabled)
+        if self.use_physics in ['wfa', 'both'] and self.lambda_wfa > 0:
+            wfa_loss = self._compute_wfa_loss(denorm_pred, spatial_indices)
+            loss_components['wfa'] = wfa_loss.item()
+            total_loss = total_loss + self.lambda_wfa * wfa_loss
+        
+        # Doppler V_LOS loss (if enabled)
+        if self.use_physics in ['doppler', 'both'] and self.lambda_doppler > 0:
+            doppler_loss = self._compute_doppler_loss(denorm_pred, spatial_indices)
+            loss_components['doppler'] = doppler_loss.item()
+            total_loss = total_loss + self.lambda_doppler * doppler_loss
+        
+        # Gradient smoothness loss (if enabled)
+        if self.lambda_physics > 0:
+            grad_loss = self._compute_gradient_smoothness(denorm_pred)
+            loss_components['gradient'] = grad_loss.item()
+            total_loss = total_loss + self.lambda_physics * grad_loss
+        
+        return total_loss, loss_components
+
+    def compute_loss(
+        self,
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+        spatial_indices: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute total loss with optional physics regularization.
+        
+        Parameters
+        ----------
+        predictions : torch.Tensor
+            Model predictions (batch_size, 63)
         targets : torch.Tensor
-            Ground truth targets (batch_size, n_outputs)
-        mhd_od_data : Dict[str, Any]
-            MHD optical-depth cubes for height selection
-        predicted_od_data : Dict[str, Any], optional
-            Model-predicted optical-depth cubes for regularization
-        blos_approx : np.ndarray, optional
-            Pre-computed WFA B_LOS approximation
-        vlos_approx : np.ndarray, optional
-            Pre-computed Doppler V_LOS approximation
-        logtau_values : np.ndarray, optional
-            Log(tau) values for height reporting
-        blos_best_index : int, optional
-            Precomputed best-height index for B_LOS (global scene)
-        vlos_best_index : int, optional
-            Precomputed best-height index for V_LOS (global scene)
+            Ground truth targets (batch_size, 63)
+        spatial_indices : torch.Tensor, optional
+            Spatial coordinates (batch_size, 2) for physics losses
             
         Returns
         -------
         loss_dict : Dict[str, torch.Tensor]
-            Dictionary containing 'loss', 'mse', 'regularization', etc.
+            Dictionary containing 'loss', 'mse', 'physics', and components
         """
-        base_mse = F.mse_loss(predictions, targets)
-        reg_tensor, reg_components, height_info = self.physics_regularization(
-            mhd_od_data=mhd_od_data,
-            predicted_od_data=predicted_od_data,
-            blos_approx=blos_approx,
-            vlos_approx=vlos_approx,
-            logtau_values=logtau_values,
-            blos_best_index=blos_best_index,
-            vlos_best_index=vlos_best_index,
-        )
-
-        total_loss = base_mse + self.lambda_reg * reg_tensor
+        # Supervised MSE loss
+        mse_loss = F.mse_loss(predictions, targets)
+        
+        # Physics regularization
+        if self.use_physics is not None and spatial_indices is not None:
+            physics_loss, physics_components = self.compute_physics_loss(
+                predictions, spatial_indices
+            )
+        else:
+            device = self._get_device()
+            physics_loss = torch.tensor(0.0, device=device)
+            physics_components = {}
+        
+        # Total loss
+        total_loss = mse_loss + physics_loss
 
         return {
             "loss": total_loss,
-            "mse": base_mse,
-            "regularization": reg_tensor,
-            "regularization_parts": reg_components,
-            "height_info": height_info,
+            "mse": mse_loss,
+            "physics": physics_loss,
+            **physics_components
         }

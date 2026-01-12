@@ -32,10 +32,10 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from utils.muram_data import MhdData, StokesData  # noqa: E402
-from utils.normalizer import MhdNormalizer, StokesNormalizer  # noqa: E402
-from models.pinn_mscnn_model import PhysicsInformedMSCNN  # noqa: E402
-from utils.physics_utils import ApproxInversions  # noqa: E402
+from utils.muram_data import MhdData, StokesData, MuramStepDataset
+from utils.normalizer import MhdNormalizer, StokesNormalizer
+from models.pinn_mscnn_model import PhysicsInformedMSCNN
+from utils.physics_utils import ApproxInversions
 
 
 @dataclass
@@ -130,75 +130,60 @@ class TrainingConfig:
             config_dict = json.load(f)
         return cls(**config_dict)
 
-
-class MuramStepDataset(Dataset):
-    """
-    Dataset for a single MURaM simulation step.
+class MetricsLogger:
+    """Tracks and logs training metrics."""
     
-    Returns normalized Stokes profiles and MHD targets for each spatial pixel.
-    Also provides spatial indices for physics regularization.
-    """
+    def __init__(self, log_dir: Path):
+        self.log_dir = log_dir
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.epoch_losses = []
+        self.batch_losses = []
+        self.lr_history = []
+        
+        # File handlers
+        self.epoch_log = open(log_dir / "epoch_log.csv", 'w')
+        self.batch_log = open(log_dir / "batch_log.csv", 'w')
+        
+        # Write headers
+        self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
+        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,gradient_loss\n")
     
-    def __init__(
-        self,
-        stokes_data: Dict[str, np.ndarray],
-        mhd_data: Dict[str, np.ndarray],
-        stokes_normalizer: StokesNormalizer,
-        mhd_normalizer: MhdNormalizer,
-    ):
-        """
-        Parameters
-        ----------
-        stokes_data : dict
-            Raw Stokes data {'I': (nx, ny, nλ), 'V': (nx, ny, nλ)}
-        mhd_data : dict
-            Raw MHD data {'T': (nx, ny, nτ), 'Vz': ..., 'Bz': ...}
-        stokes_normalizer : StokesNormalizer
-            Fitted normalizer for Stokes data
-        mhd_normalizer : MhdNormalizer
-            Fitted normalizer for MHD data
-        """
-        self.nx, self.ny = stokes_data['I'].shape[:2]
-        self.n_pixels = self.nx * self.ny
-        
-        # Normalize data
-        norm_stokes = stokes_normalizer.transform(stokes_data)
-        norm_mhd = mhd_normalizer.transform(mhd_data)
-        
-        # Flatten spatial dimensions: (nx, ny, ...) -> (nx*ny, ...)
-        # Stokes input: (n_pixels, 2, nλ)
-        I_flat = norm_stokes['I'].reshape(self.n_pixels, -1)  # (n_pixels, 112)
-        V_flat = norm_stokes['V'].reshape(self.n_pixels, -1)
-        self.stokes_input = np.stack([I_flat, V_flat], axis=1)  # (n_pixels, 2, 112)
-        
-        # MHD targets: concatenate T, Vz, Bz along feature dimension
-        # Each has shape (n_pixels, 21) -> concatenate to (n_pixels, 63)
-        T_flat = norm_mhd['T'].reshape(self.n_pixels, -1)
-        Vz_flat = norm_mhd['Vz'].reshape(self.n_pixels, -1)
-        Bz_flat = norm_mhd['Bz'].reshape(self.n_pixels, -1)
-        self.mhd_targets = np.concatenate([T_flat, Vz_flat, Bz_flat], axis=1)
-        
-        # Store spatial indices for physics regularization
-        ix, iy = np.meshgrid(np.arange(self.nx), np.arange(self.ny), indexing='ij')
-        self.spatial_indices = np.stack([ix.ravel(), iy.ravel()], axis=1)  # (n_pixels, 2)
-        
-    def __len__(self):
-        return self.n_pixels
-    
-    def __getitem__(self, idx):
-        return (
-            torch.from_numpy(self.stokes_input[idx]).float(),
-            torch.from_numpy(self.mhd_targets[idx]).float(),
-            torch.from_numpy(self.spatial_indices[idx]).long(),
+    def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
+        """Log batch-level metrics."""
+        self.batch_log.write(
+            f"{epoch},{step},{batch},"
+            f"{loss_dict.get('total', 0.0)},"
+            f"{loss_dict.get('mse', 0.0)},"
+            f"{loss_dict.get('physics', 0.0)},"
+            f"{loss_dict.get('wfa', 0.0)},"
+            f"{loss_dict.get('doppler', 0.0)},"
+            f"{loss_dict.get('gradient', 0.0)}\n"
         )
-
+        self.batch_log.flush()
+    
+    def log_epoch(self, epoch: int, train_loss: float, val_loss: float, lr: float):
+        """Log epoch-level metrics."""
+        self.epoch_log.write(f"{epoch},{train_loss},{val_loss},{lr}\n")
+        self.epoch_log.flush()
+        
+        self.epoch_losses.append({'epoch': epoch, 'train': train_loss, 'val': val_loss})
+        self.lr_history.append(lr)
+    
+    def close(self):
+        """Close file handlers."""
+        self.epoch_log.close()
+        self.batch_log.close()
+    
+    def __del__(self):
+        self.close()
 
 def load_and_prepare_step(
     step: int,
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-) -> Tuple[MuramStepDataset, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+) -> Tuple[MuramStepDataset, Dict[str, np.ndarray]]:
     """
     Load and prepare a single simulation step for training.
     
@@ -206,9 +191,6 @@ def load_and_prepare_step(
     -------
     dataset : MuramStepDataset
         Dataset containing normalized inputs/targets
-    physics_data : dict
-        Unnormalized MHD data for physics regularization
-        {'Bz': (nx, ny, 21), 'Vz': (nx, ny, 21)}
     approx_data : dict
         Physics approximations {'blos': (nx, ny), 'vlos': (nx, ny)}
     """
@@ -262,193 +244,13 @@ def load_and_prepare_step(
         'vlos': vlos_approx,
     }
     
-    # Keep unnormalized OD data for physics regularization
-    physics_data = {
-        'Bz': mhd.od_data['Bz'],
-        'Vz': mhd.od_data['Vz'],
-    }
-    
-    return dataset, physics_data, approx_data
-
-
-class PhysicsLossComputer:
-    """
-    Computes physics-informed loss for mini-batches.
-    
-    Handles indexing into full-resolution physics approximations
-    and predicted OD cubes.
-    """
-    
-    def __init__(
-        self,
-        physics_data: Dict[str, np.ndarray],
-        approx_data: Dict[str, np.ndarray],
-        logtau_values: np.ndarray,
-        config: TrainingConfig,
-        device: str = "cuda",
-    ):
-        self.config = config
-        self.device = device
-        self.logtau_values = logtau_values
-        
-        # Convert to tensors (keep on CPU for indexing, move to GPU when needed)
-        self.blos_full = torch.from_numpy(approx_data['blos']).float()
-        self.vlos_full = torch.from_numpy(approx_data['vlos']).float()
-        self.Bz_od_full = torch.from_numpy(physics_data['Bz']).float()
-        self.Vz_od_full = torch.from_numpy(physics_data['Vz']).float()
-        
-        self.nx, self.ny = self.blos_full.shape
-        self.n_tau = len(logtau_values)
-        
-    def compute_batch_physics_loss(
-        self,
-        predictions: torch.Tensor,
-        spatial_indices: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute physics regularization for a mini-batch.
-        
-        Parameters
-        ----------
-        predictions : Tensor, shape (batch_size, 63)
-            Model predictions (T, Vz, Bz concatenated)
-        spatial_indices : Tensor, shape (batch_size, 2)
-            Spatial (ix, iy) coordinates for each sample in batch
-        
-        Returns
-        -------
-        total_physics_loss : Tensor
-            Total physics regularization loss
-        loss_components : dict
-            Individual loss components for logging
-        """
-        batch_size = predictions.shape[0]
-        
-        # Extract predictions (already normalized)
-        # predictions: (batch_size, 63) = (batch_size, 21 + 21 + 21)
-        pred_T = predictions[:, :21]      # (batch_size, 21)
-        pred_Vz = predictions[:, 21:42]   # (batch_size, 21)
-        pred_Bz = predictions[:, 42:63]   # (batch_size, 21)
-        
-        # Get spatial coordinates
-        ix = spatial_indices[:, 0]  # (batch_size,)
-        iy = spatial_indices[:, 1]
-        
-        # Index into full-resolution data (on CPU, then move to device)
-        batch_blos = self.blos_full.to(self.device)[ix, iy]  # (batch_size,)
-        batch_vlos = self.vlos_full.to(self.device)[ix, iy]
-        batch_Bz_od = self.Bz_od_full.to(self.device)[ix, iy, :]  # (batch_size, 21)
-        batch_Vz_od = self.Vz_od_full.to(self.device)[ix, iy, :]
-        
-        loss_components = {}
-        total_loss = torch.tensor(0.0, device=self.device)
-        
-        # 1. Weak Field Approximation (WFA) loss
-        if self.config.use_physics in ['wfa', 'both']:
-            # Compute Bz_LOS from predictions using trapezoidal integration
-            # B_LOS = ∫ Bz(τ) dτ / ∫ dτ (τ in linear scale)
-            tau_linear = 10 ** self.logtau_values  # (21,) on CPU
-            tau_linear_tensor = torch.from_numpy(tau_linear).float().to(self.device)
-            
-            # Trapezoidal rule: integral ≈ Σ[(y_i + y_{i+1})/2 * (x_{i+1} - x_i)]
-            dtau = tau_linear_tensor[1:] - tau_linear_tensor[:-1]  # (20,)
-            
-            # Average Bz between consecutive points
-            Bz_avg = (pred_Bz[:, :-1] + pred_Bz[:, 1:]) / 2  # (batch_size, 20)
-            
-            # Compute integral of Bz
-            integral_Bz = torch.sum(Bz_avg * dtau.unsqueeze(0), dim=1)  # (batch_size,)
-            
-            # Compute integral of dτ (just the range)
-            integral_dtau = tau_linear_tensor[-1] - tau_linear_tensor[0]
-            
-            # Predicted B_LOS
-            pred_blos = integral_Bz / integral_dtau  # (batch_size,)
-            
-            # WFA loss
-            wfa_loss = nn.MSELoss()(pred_blos, batch_blos)
-            loss_components['wfa'] = wfa_loss.item()
-            total_loss += self.config.lambda_wfa * wfa_loss
-        
-        # 2. Doppler Shift loss
-        if self.config.use_physics in ['doppler', 'both']:
-            # Compute V_LOS from predictions using similar integration
-            Vz_avg = (pred_Vz[:, :-1] + pred_Vz[:, 1:]) / 2  # (batch_size, 20)
-            integral_Vz = torch.sum(Vz_avg * dtau.unsqueeze(0), dim=1)
-            pred_vlos = integral_Vz / integral_dtau  # (batch_size,)
-            
-            doppler_loss = nn.MSELoss()(pred_vlos, batch_vlos)
-            loss_components['doppler'] = doppler_loss.item()
-            total_loss += self.config.lambda_doppler * doppler_loss
-        
-        # 3. Gradient consistency (optional smoothness constraint)
-        # Penalize large changes in Bz and Vz along optical depth
-        if self.config.lambda_physics > 0:
-            # Compute finite differences
-            dBz_dtau = torch.diff(pred_Bz, dim=1)  # (batch_size, 20)
-            dVz_dtau = torch.diff(pred_Vz, dim=1)
-            
-            # L2 penalty on gradients (smoothness)
-            gradient_loss = torch.mean(dBz_dtau ** 2) + torch.mean(dVz_dtau ** 2)
-            loss_components['gradient'] = gradient_loss.item()
-            total_loss += self.config.lambda_physics * gradient_loss
-        
-        return total_loss, loss_components
-
-
-class MetricsLogger:
-    """Tracks and logs training metrics."""
-    
-    def __init__(self, log_dir: Path):
-        self.log_dir = log_dir
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.epoch_losses = []
-        self.batch_losses = []
-        self.lr_history = []
-        
-        # File handlers
-        self.epoch_log = open(log_dir / "epoch_log.csv", 'w')
-        self.batch_log = open(log_dir / "batch_log.csv", 'w')
-        
-        # Write headers
-        self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
-        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,gradient_loss\n")
-    
-    def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
-        """Log batch-level metrics."""
-        self.batch_log.write(
-            f"{epoch},{step},{batch},"
-            f"{loss_dict.get('total', 0.0)},"
-            f"{loss_dict.get('mse', 0.0)},"
-            f"{loss_dict.get('physics', 0.0)},"
-            f"{loss_dict.get('wfa', 0.0)},"
-            f"{loss_dict.get('doppler', 0.0)},"
-            f"{loss_dict.get('gradient', 0.0)}\n"
-        )
-        self.batch_log.flush()
-    
-    def log_epoch(self, epoch: int, train_loss: float, val_loss: float, lr: float):
-        """Log epoch-level metrics."""
-        self.epoch_log.write(f"{epoch},{train_loss},{val_loss},{lr}\n")
-        self.epoch_log.flush()
-        
-        self.epoch_losses.append({'epoch': epoch, 'train': train_loss, 'val': val_loss})
-        self.lr_history.append(lr)
-    
-    def close(self):
-        """Close file handlers."""
-        self.epoch_log.close()
-        self.batch_log.close()
-    
-    def __del__(self):
-        self.close()
-
+    return dataset, approx_data
 
 def train_one_step(
     model: PhysicsInformedMSCNN,
     dataloader: DataLoader,
-    physics_computer: PhysicsLossComputer,
+    approx_data: Dict[str, np.ndarray],
+    mhd_normalizer: MhdNormalizer,
     optimizer: torch.optim.Optimizer,
     config: TrainingConfig,
     epoch: int,
@@ -458,12 +260,42 @@ def train_one_step(
     """
     Train on one simulation step (one epoch through that step's data).
     
+    Parameters
+    ----------
+    model : PhysicsInformedMSCNN
+        Model with integrated physics computation
+    dataloader : DataLoader
+        DataLoader for this step
+    approx_data : Dict[str, np.ndarray]
+        Physics approximations for this step
+    mhd_normalizer : MhdNormalizer
+        Normalizer for denormalization
+    optimizer : torch.optim.Optimizer
+        Optimizer
+    config : TrainingConfig
+        Training configuration
+    epoch : int
+        Current epoch number
+    step_num : int
+        Current simulation step number
+    logger : MetricsLogger
+        Metrics logger
+        
     Returns
     -------
     avg_loss : float
         Average loss across all batches in this step
     """
     model.train()
+    
+    # Set physics context once for this step
+    model.set_physics_context(
+        mhd_normalizer=mhd_normalizer,
+        logtau_values=np.arange(-2.0, 0.1, 0.1),
+        blos_approx=approx_data.get('blos'),
+        vlos_approx=approx_data.get('vlos'),
+    )
+    
     step_loss = 0.0
     n_batches = 0
     
@@ -479,17 +311,14 @@ def train_one_step(
         # Forward pass
         predictions = model(stokes_batch)
         
-        # Supervised MSE loss
-        mse_loss = nn.MSELoss()(predictions, mhd_batch)
-        
-        # Physics regularization
-        physics_loss, physics_components = physics_computer.compute_batch_physics_loss(
+        # Compute total loss (MSE + physics)
+        loss_dict = model.compute_loss(
             predictions=predictions,
+            targets=mhd_batch,
             spatial_indices=spatial_idx_batch,
         )
         
-        # Total loss
-        total_loss = mse_loss + physics_loss
+        total_loss = loss_dict['loss']
         
         # Backward pass
         total_loss.backward()
@@ -505,17 +334,18 @@ def train_one_step(
         n_batches += 1
         
         # Log batch metrics
-        if batch_idx % config.log_every == 0:
-            loss_dict = {
-                'total': total_loss.item(),
-                'mse': mse_loss.item(),
-                'physics': physics_loss.item(),
-                **physics_components
+        if logger is not None and batch_idx % config.log_every == 0:
+            log_dict = {
+                'total': loss_dict['loss'].item(),
+                'mse': loss_dict['mse'].item(),
+                'physics': loss_dict['physics'].item(),
+                'wfa': loss_dict.get('wfa', 0.0),
+                'doppler': loss_dict.get('doppler', 0.0),
+                'gradient': loss_dict.get('gradient', 0.0),
             }
-            logger.log_batch(epoch, step_num, batch_idx, loss_dict)
+            logger.log_batch(epoch, step_num, batch_idx, log_dict)
     
     return step_loss / n_batches if n_batches > 0 else 0.0
-
 
 def validate(
     model: PhysicsInformedMSCNN,
@@ -539,7 +369,7 @@ def validate(
     with torch.no_grad():
         for step in val_steps:
             try:
-                dataset, physics_data, approx_data = load_and_prepare_step(
+                dataset, approx_data = load_and_prepare_step(
                     step=step,
                     config=config,
                     mhd_normalizer=mhd_normalizer,
@@ -550,16 +380,16 @@ def validate(
                     dataset,
                     batch_size=config.batch_size,
                     shuffle=False,
-                    num_workers=0,  # No multiprocessing for validation
+                    num_workers=0,
                     pin_memory=False,
                 )
                 
-                physics_computer = PhysicsLossComputer(
-                    physics_data=physics_data,
-                    approx_data=approx_data,
+                # Set physics context for validation
+                model.set_physics_context(
+                    mhd_normalizer=mhd_normalizer,
                     logtau_values=np.arange(-2.0, 0.1, 0.1),
-                    config=config,
-                    device=config.device,
+                    blos_approx=approx_data.get('blos'),
+                    vlos_approx=approx_data.get('vlos'),
                 )
                 
                 for stokes_batch, mhd_batch, spatial_idx_batch in dataloader:
@@ -568,12 +398,14 @@ def validate(
                     spatial_idx_batch = spatial_idx_batch.to(config.device)
                     
                     predictions = model(stokes_batch)
-                    mse_loss = nn.MSELoss()(predictions, mhd_batch)
-                    physics_loss, _ = physics_computer.compute_batch_physics_loss(
-                        predictions, spatial_idx_batch
+                    
+                    loss_dict = model.compute_loss(
+                        predictions=predictions,
+                        targets=mhd_batch,
+                        spatial_indices=spatial_idx_batch,
                     )
                     
-                    total_loss = mse_loss + physics_loss
+                    total_loss = loss_dict['loss']
                     total_val_loss += total_loss.item() * stokes_batch.size(0)
                     n_val_samples += stokes_batch.size(0)
             
@@ -582,7 +414,6 @@ def validate(
                 continue
     
     return total_val_loss / n_val_samples if n_val_samples > 0 else float('inf')
-
 
 def save_checkpoint(
     model: PhysicsInformedMSCNN,
@@ -617,7 +448,6 @@ def save_checkpoint(
         best_path = config.checkpoint_dir / "best_model.pth"
         torch.save(checkpoint, best_path)
         print(f"  Saved best model: {best_path}")
-
 
 def load_checkpoint(
     checkpoint_path: Path,
@@ -654,6 +484,123 @@ def load_checkpoint(
     
     return start_epoch, train_loss, val_loss
 
+def train_epoch(
+    model: PhysicsInformedMSCNN,
+    train_steps: List[int],
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    logger: Optional[MetricsLogger] = None,
+    n_steps_per_epoch: int = -1,
+) -> Dict[str, float]:
+    """
+    Train for one epoch across multiple simulation steps.
+    
+    Parameters
+    ----------
+    model : PhysicsInformedMSCNN
+        Model to train
+    train_steps : List[int]
+        List of simulation steps to use for training
+    config : TrainingConfig
+        Training configuration
+    mhd_normalizer : MhdNormalizer
+        MHD data normalizer
+    stokes_normalizer : StokesNormalizer
+        Stokes data normalizer
+    optimizer : torch.optim.Optimizer
+        Optimizer
+    epoch : int
+        Current epoch number (for logging)
+    logger : MetricsLogger, optional
+        Logger for batch-level metrics
+    n_steps_per_epoch : int, optional
+        Maximum number of steps to use per epoch (-1 for all steps)
+        
+    Returns
+    -------
+    epoch_metrics : Dict[str, float]
+        Aggregated metrics for the epoch
+    """
+    model.train()
+    
+    # Shuffle and limit steps
+    steps_to_use = train_steps.copy()
+    random.shuffle(steps_to_use)
+    if n_steps_per_epoch > 0:
+        steps_to_use = steps_to_use[:n_steps_per_epoch]
+    
+    # Initialize metrics
+    epoch_metrics = {
+        'total_loss': 0.0,
+        'mse_loss': 0.0,
+        'physics_loss': 0.0,
+        'wfa_loss': 0.0,
+        'doppler_loss': 0.0,
+        'smoothness_loss': 0.0,
+        'n_steps': 0
+    }
+    
+    # Progress bar
+    step_pbar = tqdm(steps_to_use, desc=f"Epoch {epoch + 1}", unit="step", leave=False)
+    
+    for step in step_pbar:
+        try:
+            # Load and prepare step
+            dataset, approx_data = load_and_prepare_step(
+                step=step,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+            )
+            
+            # Create dataloader
+            dataloader = DataLoader(
+                dataset,
+                batch_size=config.batch_size,
+                shuffle=True,
+                num_workers=0,  # Set to 0 to avoid multiprocessing issues
+                pin_memory=False,
+            )
+            
+            # Train on this step
+            step_loss = train_one_step(
+                model=model,
+                dataloader=dataloader,
+                approx_data=approx_data,
+                mhd_normalizer=mhd_normalizer,
+                optimizer=optimizer,
+                config=config,
+                epoch=epoch,
+                step_num=step,
+                logger=logger,
+            )
+            
+            # Accumulate step metrics
+            epoch_metrics['total_loss'] += step_loss
+            epoch_metrics['n_steps'] += 1
+            
+            # Update progress bar
+            step_pbar.set_postfix({'loss': f'{step_loss:.6f}'})
+            
+            # Clean up
+            del dataset, dataloader
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            print(f"\n  Error processing step {step}: {e}")
+            continue
+    
+    # Compute averages
+    n_steps = epoch_metrics['n_steps']
+    if n_steps > 0:
+        for key in epoch_metrics:
+            if key != 'n_steps':
+                epoch_metrics[key] /= n_steps
+    
+    return epoch_metrics
 
 def train_pinn_model(config: TrainingConfig):
     """Main training loop with interleaved epoch training."""
@@ -689,6 +636,10 @@ def train_pinn_model(config: TrainingConfig):
         pool_size=config.pool_size,
         n_linear_layers=config.n_linear_layers,
         dropout_rate=config.dropout_rate,
+        use_physics=config.use_physics,
+        lambda_wfa=config.lambda_wfa,
+        lambda_doppler=config.lambda_doppler,
+        lambda_physics=config.lambda_physics,
     ).to(config.device)
     
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -758,71 +709,20 @@ def train_pinn_model(config: TrainingConfig):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         print("-" * 70)
         
-        # Shuffle training steps each epoch
-        random.shuffle(train_steps)
+        # Train for one epoch using the extracted function
+        epoch_metrics = train_epoch(
+            model=model,
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            optimizer=optimizer,
+            epoch=epoch,
+            logger=logger,
+            n_steps_per_epoch=-1,  # Use all training steps
+        )
         
-        epoch_train_loss = 0.0
-        n_successful_steps = 0
-        
-        # Progress bar for steps
-        step_pbar = tqdm(train_steps, desc=f"Epoch {epoch + 1}", unit="step")
-        
-        for step in step_pbar:
-            try:
-                # Load and prepare step
-                dataset, physics_data, approx_data = load_and_prepare_step(
-                    step=step,
-                    config=config,
-                    mhd_normalizer=mhd_normalizer,
-                    stokes_normalizer=stokes_normalizer,
-                )
-                
-                # Create dataloader
-                dataloader = DataLoader(
-                    dataset,
-                    batch_size=config.batch_size,
-                    shuffle=True,
-                    num_workers=config.num_workers,
-                    pin_memory=config.pin_memory,
-                )
-                
-                # Create physics computer
-                physics_computer = PhysicsLossComputer(
-                    physics_data=physics_data,
-                    approx_data=approx_data,
-                    logtau_values=np.arange(-2.0, 0.1, 0.1),
-                    config=config,
-                    device=config.device,
-                )
-                
-                # Train on this step
-                step_loss = train_one_step(
-                    model=model,
-                    dataloader=dataloader,
-                    physics_computer=physics_computer,
-                    optimizer=optimizer,
-                    config=config,
-                    epoch=epoch,
-                    step_num=step,
-                    logger=logger,
-                )
-                
-                epoch_train_loss += step_loss
-                n_successful_steps += 1
-                
-                # Update progress bar
-                step_pbar.set_postfix({'loss': f'{step_loss:.6f}'})
-                
-                # Clean up to free memory
-                del dataset, dataloader, physics_computer
-                torch.cuda.empty_cache()
-                
-            except Exception as e:
-                print(f"\n  Error processing step {step}: {e}")
-                continue
-        
-        # Average training loss
-        avg_train_loss = epoch_train_loss / n_successful_steps if n_successful_steps > 0 else float('inf')
+        avg_train_loss = epoch_metrics['total_loss']
         
         # Validation
         print("\nValidating...")
@@ -876,7 +776,6 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Best validation loss: {best_val_loss:.6f}")
     
     logger.close()
-
 
 def main():
     parser = argparse.ArgumentParser(description="Train PINN MSCNN model")

@@ -12,6 +12,10 @@ import matplotlib.patches as patches
 from scipy.ndimage import convolve1d
 from scipy.interpolate import RegularGridInterpolator, interp1d
 from scipy.integrate import cumulative_trapezoid
+import torch
+from torch.utils.data import Dataset
+
+from utils.normalizer import MhdNormalizer, StokesNormalizer
 
 
 class MhdData:
@@ -747,6 +751,7 @@ class MhdData:
         if return_figs:
             return figs
 
+
 # ============================================================================
 # EXAMPLE USAGE (MHD)
 # ============================================================================
@@ -812,7 +817,7 @@ logtau = mhd.logtau  # Optical depth map
 """
 
 # ============================================================================
-# StokesData class (moved from utils/stokes_data.py)
+# StokesData class
 # ============================================================================
 class StokesData:
     """
@@ -1096,3 +1101,91 @@ class StokesData:
         else:
             plt.show()
             plt.close(fig)
+
+
+# ============================================================================
+# MuramStepDataset class - PyTorch Dataset for training
+# ============================================================================
+class MuramStepDataset(Dataset):
+    """
+    PyTorch Dataset for a single MURaM simulation step.
+    
+    Returns normalized Stokes profiles and MHD targets for each spatial pixel.
+    Also provides spatial indices for physics regularization.
+    
+    Parameters
+    ----------
+    stokes_data : dict
+        Raw Stokes data {'I': (nx, ny, nλ), 'V': (nx, ny, nλ)}
+    mhd_data : dict
+        Raw MHD data {'T': (nx, ny, nτ), 'Vz': ..., 'Bz': ...}
+    stokes_normalizer : StokesNormalizer
+        Fitted normalizer for Stokes data
+    mhd_normalizer : MhdNormalizer
+        Fitted normalizer for MHD data
+        
+    Returns
+    -------
+    tuple
+        (stokes_input, mhd_targets, spatial_indices)
+        - stokes_input: (2, nλ) normalized Stokes I and V
+        - mhd_targets: (3 * nτ,) normalized concatenated T, Vz, Bz
+        - spatial_indices: (2,) [x, y] pixel coordinates
+        
+    Example
+    -------
+    >>> from torch.utils.data import DataLoader
+    >>> dataset = MuramStepDataset(stokes_data, mhd_data, stokes_norm, mhd_norm)
+    >>> dataloader = DataLoader(dataset, batch_size=512, shuffle=True)
+    >>> for stokes, mhd, indices in dataloader:
+    ...     predictions = model(stokes)
+    ...     loss = criterion(predictions, mhd)
+    """
+    
+    def __init__(
+        self,
+        stokes_data: Dict[str, np.ndarray],
+        mhd_data: Dict[str, np.ndarray],
+        stokes_normalizer: StokesNormalizer,
+        mhd_normalizer: MhdNormalizer,
+    ):
+        self.nx, self.ny = stokes_data['I'].shape[:2]
+        self.n_pixels = self.nx * self.ny
+        
+        # Normalize data
+        norm_stokes = stokes_normalizer.transform(stokes_data)
+        norm_mhd = mhd_normalizer.transform(mhd_data)
+        
+        # Flatten spatial dimensions: (nx, ny, ...) -> (nx*ny, ...)
+        # Stokes input: (n_pixels, 2, nλ)
+        I_flat = norm_stokes['I'].reshape(self.n_pixels, -1)  # (n_pixels, 112)
+        V_flat = norm_stokes['V'].reshape(self.n_pixels, -1)
+        self.stokes_input = np.stack([I_flat, V_flat], axis=1)  # (n_pixels, 2, 112)
+        
+        # MHD targets: concatenate T, Vz, Bz along feature dimension
+        # Each has shape (n_pixels, 21) -> concatenate to (n_pixels, 63)
+        T_flat = norm_mhd['T'].reshape(self.n_pixels, -1)
+        Vz_flat = norm_mhd['Vz'].reshape(self.n_pixels, -1)
+        Bz_flat = norm_mhd['Bz'].reshape(self.n_pixels, -1)
+        self.mhd_targets = np.concatenate([T_flat, Vz_flat, Bz_flat], axis=1)
+        
+        # Store spatial indices for physics regularization
+        ix, iy = np.meshgrid(np.arange(self.nx), np.arange(self.ny), indexing='ij')
+        self.spatial_indices = np.stack([ix.ravel(), iy.ravel()], axis=1)  # (n_pixels, 2)
+        
+    def __len__(self):
+        return self.n_pixels
+    
+    def __getitem__(self, idx):
+        return (
+            torch.from_numpy(self.stokes_input[idx]).float(),
+            torch.from_numpy(self.mhd_targets[idx]).float(),
+            torch.from_numpy(self.spatial_indices[idx]).long(),
+        )
+
+
+__all__ = [
+    "MhdData",
+    "StokesData",
+    "MuramStepDataset",
+]
