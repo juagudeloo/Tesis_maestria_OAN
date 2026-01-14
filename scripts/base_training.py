@@ -256,7 +256,7 @@ def train_one_step(
     epoch: int,
     step_num: int,
     logger: MetricsLogger,
-) -> float:
+) -> Dict[str, float]:
     """
     Train on one simulation step (one epoch through that step's data).
     
@@ -283,8 +283,8 @@ def train_one_step(
         
     Returns
     -------
-    avg_loss : float
-        Average loss across all batches in this step
+    step_metrics : Dict[str, float]
+        Dictionary containing average loss components for this step
     """
     model.train()
     
@@ -296,7 +296,15 @@ def train_one_step(
         vlos_approx=approx_data.get('vlos'),
     )
     
-    step_loss = 0.0
+    # Initialize accumulators for all loss components
+    step_metrics = {
+        'total_loss': 0.0,
+        'mse_loss': 0.0,
+        'physics_loss': 0.0,
+        'wfa_loss': 0.0,
+        'doppler_loss': 0.0,
+        'gradient_loss': 0.0,
+    }
     n_batches = 0
     
     for batch_idx, (stokes_batch, mhd_batch, spatial_idx_batch) in enumerate(dataloader):
@@ -329,8 +337,13 @@ def train_one_step(
         
         optimizer.step()
         
-        # Accumulate loss
-        step_loss += total_loss.item()
+        # Accumulate all loss components
+        step_metrics['total_loss'] += loss_dict['loss'].item()
+        step_metrics['mse_loss'] += loss_dict['mse'].item()
+        step_metrics['physics_loss'] += loss_dict['physics'].item()
+        step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
+        step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
+        step_metrics['gradient_loss'] += loss_dict.get('gradient', 0.0)
         n_batches += 1
         
         # Log batch metrics
@@ -345,7 +358,12 @@ def train_one_step(
             }
             logger.log_batch(epoch, step_num, batch_idx, log_dict)
     
-    return step_loss / n_batches if n_batches > 0 else 0.0
+    # Average all metrics
+    if n_batches > 0:
+        for key in step_metrics:
+            step_metrics[key] /= n_batches
+    
+    return step_metrics
 
 def validate(
     model: PhysicsInformedMSCNN,
@@ -565,8 +583,8 @@ def train_epoch(
                 pin_memory=False,
             )
             
-            # Train on this step
-            step_loss = train_one_step(
+            # Train on this step and get all loss components
+            step_metrics = train_one_step(
                 model=model,
                 dataloader=dataloader,
                 approx_data=approx_data,
@@ -579,11 +597,16 @@ def train_epoch(
             )
             
             # Accumulate step metrics
-            epoch_metrics['total_loss'] += step_loss
+            epoch_metrics['total_loss'] += step_metrics['total_loss']
+            epoch_metrics['mse_loss'] += step_metrics['mse_loss']
+            epoch_metrics['physics_loss'] += step_metrics['physics_loss']
+            epoch_metrics['wfa_loss'] += step_metrics['wfa_loss']
+            epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
+            epoch_metrics['smoothness_loss'] += step_metrics['gradient_loss']
             epoch_metrics['n_steps'] += 1
             
             # Update progress bar
-            step_pbar.set_postfix({'loss': f'{step_loss:.6f}'})
+            step_pbar.set_postfix({'loss': f'{step_metrics["total_loss"]:.6f}'})
             
             # Clean up
             del dataset, dataloader

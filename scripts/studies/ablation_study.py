@@ -613,11 +613,17 @@ def run_single_experiment(
         scheduler.step(avg_val_loss)
         current_lr = optimizer.param_groups[0]['lr']
         
-        print("=" * 50)
+        print("=" * 100)
         print(f"Epoch {epoch + 1} Summary:")
-        print(f"  Train: {avg_train_loss:.6f} (MSE: {avg_mse_loss:.6f}, Physics: {avg_physics_loss:.6f})")
-        print(f"  Val: {avg_val_loss:.6f} | LR: {current_lr:.2e}")
-        print("=" * 50)
+        print(f"  Total Loss:      {avg_train_loss:.6f}")
+        print(f"  MSE Loss:        {avg_mse_loss:.6f}")
+        print(f"  Physics Loss:    {avg_physics_loss:.6f}")
+        print(f"    ├─ WFA Loss:        {avg_wfa_loss:.6f}")
+        print(f"    ├─ Doppler Loss:    {avg_doppler_loss:.6f}")
+        print(f"    └─ Smoothness Loss: {avg_smoothness_loss:.6f}")
+        print(f"  Validation Loss: {avg_val_loss:.6f}")
+        print(f"  Learning Rate:   {current_lr:.2e}")
+        print("=" * 100)
     
     training_time = (time.time() - start_time) / 60
     
@@ -667,7 +673,7 @@ def main():
     parser.add_argument('--n_steps', type=int, default=-1, help='Number of training steps per epoch (-1 for all steps)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
     parser.add_argument('--min_step', type=int, default=60, help='Minimum training step (inclusive)')
-    parser.add_argument('--max_step', type=int, default=200, help='Maximum training step (exclusive)')
+    parser.add_argument('--max_step', type=int, default=201, help='Maximum training step (exclusive)')
     parser.add_argument('--experiment_name', type=str, default='physics_regularization_ablation',
                        help='Name for the experiment folder')
     parser.add_argument('--output_dir', type=str, 
@@ -694,31 +700,7 @@ def main():
     
     # Define experiments using TrainingConfig
     experiments = [
-        # 1. WFA only
-        TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            use_physics='wfa',
-            lambda_wfa=0.01,
-            lambda_doppler=0.0,
-            lambda_physics=0.0,
-            device=args.device,
-            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
-            log_dir=output_dir / "wfa_only" / "logs",
-        ),
-        # 2. All physics
-        TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            use_physics='wfa',
-            lambda_wfa=0.01,
-            lambda_doppler=0.0,
-            lambda_physics=0.02,
-            device=args.device,
-            checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
-            log_dir=output_dir / "all_physics_terms" / "logs",
-        ),
-        # 3. No physics
+        # 1. No physics (baseline)
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -730,9 +712,33 @@ def main():
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
         ),
+        # 2. WFA only
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics='wfa',
+            lambda_wfa=0.01,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            device=args.device,
+            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
+            log_dir=output_dir / "wfa_only" / "logs",
+        ),
+        # 3. All physics
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics='wfa',
+            lambda_wfa=0.01,
+            lambda_doppler=0.0,
+            lambda_physics=0.02,
+            device=args.device,
+            checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
+            log_dir=output_dir / "all_physics_terms" / "logs",
+        ),
     ]
     
-    experiment_names = ['wfa_only', 'all_physics_terms','no_physics']
+    experiment_names = ['no_physics', 'wfa_only', 'all_physics_terms']
     
     # Run experiments
     for name, config in zip(experiment_names, experiments):
