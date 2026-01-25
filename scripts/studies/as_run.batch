@@ -22,4 +22,4 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
 ##cd $SCRATCH_DIR ##ehjecutar en  /scratchsan
 
-python3 ablation_study.py --n_epochs 30 --min_step 60 --max_step 100 --n_steps -1 --experiment_name  'physics_regularization_ablation_60_to_100'
+python3 ablation_study.py --n_epochs 30 --min_step 100 --max_step 200 --n_steps -1 --experiment_name  'physics_regularization_ablation_100_to_200'
