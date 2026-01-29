@@ -7,6 +7,7 @@ error analysis across optical depths.
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Union
 
@@ -198,13 +199,20 @@ def plot_prediction_comparison(
         "n_pixels": int(pred_mean.size)
     }
     
-    if save_dir is not None and filename is not None:
-        save_dir = Path(save_dir) / "prediction_comparison"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / filename
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    # --- NEW: build output path ---
+    if save_dir is not None and model_label is not None:
+        model_name = model_label.lower().replace(" ", "_")
+        out_dir = os.path.join(
+            str(save_dir),
+            "prediction_comparison",
+            model_name,
+            str(od_to_plot)
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, filename)
+        plt.savefig(out_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
-        _save_metrics_json(metrics, save_dir, filename)
+        _save_metrics_json(metrics, out_dir, filename)
     else:
         plt.show()
     
@@ -1075,15 +1083,25 @@ def plot_jointplot_comparison(
         g.ax_joint.legend(loc='lower right', fontsize=10)
         g.ax_joint.grid(alpha=0.3)
         
+        # --- NEW: build output path ---
         if save_dir is not None and filename_prefix is not None:
-            save_dir_path = Path(save_dir) / "jointplot_comparison"
-            save_dir_path.mkdir(parents=True, exist_ok=True)
-            save_path = save_dir_path / f"{filename_prefix}_{model_name}.png"
-            g.savefig(save_path, dpi=300, bbox_inches='tight')
+            out_dir = os.path.join(
+                str(save_dir),
+                "jointplot_comparison",
+                model_name,
+                str(od_val)
+            )
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(
+                out_dir,
+                f"{filename_prefix}_{model_name}.png"
+            )
+            g.savefig(out_path, dpi=300, bbox_inches='tight')
             plt.close(g.fig)
-            _save_metrics_json(metrics, save_dir_path, f"{filename_prefix}_{model_name}.png")
+            _save_metrics_json(metrics, out_dir, out_path)
         else:
-            plt.show()
+            # ...existing fallback...
+            pass
         
         # Print summary
         print(f"\n{pred_data['label']} - {title_map[mag_to_plot]} at log(τ)={od_val:.1f}")
@@ -1231,15 +1249,21 @@ def plot_combined_jointplot(
     
     plt.tight_layout()
     
-    if save_dir is not None and filename is not None:
-        save_dir = Path(save_dir) / "combined_jointplot"
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path = save_dir / filename
-        g.savefig(save_path, dpi=300, bbox_inches='tight')
+    # --- NEW: build output path ---
+    if save_dir is not None:
+        out_dir = os.path.join(
+            str(save_dir),
+            "combined_jointplot",
+            str(od_val)
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir, filename)
+        g.savefig(out_path, dpi=300, bbox_inches='tight')
         plt.close(g.fig)
-        _save_metrics_json(metrics, save_dir, filename)
+        _save_metrics_json(metrics, out_dir, filename)
     else:
-        plt.show()
+        # ...existing fallback...
+        pass
     
     # Print summary for each model
     print("\n" + "="*70)
