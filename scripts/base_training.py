@@ -78,10 +78,20 @@ class TrainingConfig:
     central_wavelength: float = 6301.5  # Angstroms
     lande_factor: float = 1.67
     wl_range: Tuple[int, int] = (15, 60)
-    lambda_physics: float = 0.001  # Physics regularization weight
+    lambda_physics: float = 0  # Physics regularization weight
     lambda_wfa: float = 0.01      # WFA term weight
     lambda_doppler: float = 0.01  # Doppler term weight
-    use_physics: str = "wfa"  # 'wfa', 'doppler', 'both', or None
+    lambda_temp: float = 0.01     # Temperature term weight
+    use_physics: str = "wfa"  # 'wfa', 'doppler', 'temperature', 'both', 'all', or None
+    blos_physics_mode: str = "tau_averaged"  # 'tau_averaged' or 'single_height'
+    blos_target_logtau: Optional[float] = None  # Target log(tau) for B_LOS single_height mode
+    vlos_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
+    vlos_target_logtau: Optional[float] = -1.0  # Target log(tau) for V_LOS single_height mode
+    temp_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
+    temp_target_logtau: Optional[float] = 0.0  # Target log(tau) for temperature single_height mode
+    temp_reference_temperature: float = 6000.0  # Reference temperature for blackbody (Kelvin)
+    temp_continuum_indices: List[int] = None  # Continuum indices for temperature estimation
+    temp_continuum_wavelength: float = 6300.5  # Angstroms
     
     # Checkpointing
     checkpoint_dir: str = "checkpoints"
@@ -105,6 +115,8 @@ class TrainingConfig:
     def __post_init__(self):
         if self.scales is None:
             self.scales = [1, 2, 3]
+        if self.temp_continuum_indices is None:
+            self.temp_continuum_indices = [0, 1, 2, 3]
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
         self.checkpoint_dir = Path(self.checkpoint_dir)
@@ -147,7 +159,7 @@ class MetricsLogger:
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
-        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,gradient_loss\n")
+        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss,gradient_loss\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
         """Log batch-level metrics."""
@@ -158,6 +170,7 @@ class MetricsLogger:
             f"{loss_dict.get('physics', 0.0)},"
             f"{loss_dict.get('wfa', 0.0)},"
             f"{loss_dict.get('doppler', 0.0)},"
+            f"{loss_dict.get('temperature', 0.0)},"
             f"{loss_dict.get('gradient', 0.0)}\n"
         )
         self.batch_log.flush()
@@ -192,7 +205,7 @@ def load_and_prepare_step(
     dataset : MuramStepDataset
         Dataset containing normalized inputs/targets
     approx_data : dict
-        Physics approximations {'blos': (nx, ny), 'vlos': (nx, ny)}
+        Physics approximations {'blos': (nx, ny), 'vlos': (nx, ny), 'temp': (nx, ny)}
     """
     # Load MHD data
     mhd = MhdData(
@@ -237,11 +250,19 @@ def load_and_prepare_step(
     )
     
     blos_approx = inv.compute_blos_wfa(wl_range=config.wl_range).value  # (nx, ny)
-    vlos_approx = inv.compute_vlos_doppler(wl_range=config.wl_range).value
+    vlos_approx = inv.compute_vlos_doppler(wl_range=config.wl_range).value  # (nx, ny)
+    
+    # Compute temperature approximation using blackbody method
+    temp_approx = inv.compute_temperature_blackbody(
+        cont_indices=config.temp_continuum_indices,
+        reference_temperature=config.temp_reference_temperature * u.K,
+        continuum_wavelength=config.temp_continuum_wavelength * u.Angstrom
+    ).value  # (nx, ny)
     
     approx_data = {
         'blos': blos_approx,
         'vlos': vlos_approx,
+        'temp': temp_approx,
     }
     
     return dataset, approx_data
@@ -267,7 +288,7 @@ def train_one_step(
     dataloader : DataLoader
         DataLoader for this step
     approx_data : Dict[str, np.ndarray]
-        Physics approximations for this step
+        Physics approximations for this step (blos, vlos, temp)
     mhd_normalizer : MhdNormalizer
         Normalizer for denormalization
     optimizer : torch.optim.Optimizer
@@ -288,12 +309,13 @@ def train_one_step(
     """
     model.train()
     
-    # Set physics context once for this step
+    # Set physics context once for this step (including temperature)
     model.set_physics_context(
         mhd_normalizer=mhd_normalizer,
         logtau_values=np.arange(-2.0, 0.1, 0.1),
         blos_approx=approx_data.get('blos'),
         vlos_approx=approx_data.get('vlos'),
+        temp_approx=approx_data.get('temp'),
     )
     
     # Initialize accumulators for all loss components
@@ -303,6 +325,7 @@ def train_one_step(
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
+        'temperature_loss': 0.0,
         'gradient_loss': 0.0,
     }
     n_batches = 0
@@ -343,25 +366,16 @@ def train_one_step(
         step_metrics['physics_loss'] += loss_dict['physics'].item()
         step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
         step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
+        step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
         step_metrics['gradient_loss'] += loss_dict.get('gradient', 0.0)
         n_batches += 1
-        
-        # Log batch metrics
-        if logger is not None and batch_idx % config.log_every == 0:
-            log_dict = {
-                'total': loss_dict['loss'].item(),
-                'mse': loss_dict['mse'].item(),
-                'physics': loss_dict['physics'].item(),
-                'wfa': loss_dict.get('wfa', 0.0),
-                'doppler': loss_dict.get('doppler', 0.0),
-                'gradient': loss_dict.get('gradient', 0.0),
-            }
-            logger.log_batch(epoch, step_num, batch_idx, log_dict)
     
-    # Average all metrics
-    if n_batches > 0:
-        for key in step_metrics:
-            step_metrics[key] /= n_batches
+    # Average metrics over all batches
+    for key in step_metrics.keys():
+        step_metrics[key] /= n_batches
+    
+    # Log metrics
+    logger.log_batch(epoch=epoch, step=step_num, batch=0, loss_dict=step_metrics)
     
     return step_metrics
 
@@ -402,12 +416,13 @@ def validate(
                     pin_memory=False,
                 )
                 
-                # Set physics context for validation
+                # Set physics context for validation (including temperature)
                 model.set_physics_context(
                     mhd_normalizer=mhd_normalizer,
                     logtau_values=np.arange(-2.0, 0.1, 0.1),
                     blos_approx=approx_data.get('blos'),
                     vlos_approx=approx_data.get('vlos'),
+                    temp_approx=approx_data.get('temp'),
                 )
                 
                 for stokes_batch, mhd_batch, spatial_idx_batch in dataloader:
@@ -550,13 +565,14 @@ def train_epoch(
     if n_steps_per_epoch > 0:
         steps_to_use = steps_to_use[:n_steps_per_epoch]
     
-    # Initialize metrics
+    # Initialize metrics (including temperature)
     epoch_metrics = {
         'total_loss': 0.0,
         'mse_loss': 0.0,
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
+        'temperature_loss': 0.0,
         'smoothness_loss': 0.0,
         'n_steps': 0
     }
@@ -596,12 +612,13 @@ def train_epoch(
                 logger=logger,
             )
             
-            # Accumulate step metrics
+            # Accumulate step metrics (including temperature)
             epoch_metrics['total_loss'] += step_metrics['total_loss']
             epoch_metrics['mse_loss'] += step_metrics['mse_loss']
             epoch_metrics['physics_loss'] += step_metrics['physics_loss']
             epoch_metrics['wfa_loss'] += step_metrics['wfa_loss']
             epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
+            epoch_metrics['temperature_loss'] += step_metrics['temperature_loss']
             epoch_metrics['smoothness_loss'] += step_metrics['gradient_loss']
             epoch_metrics['n_steps'] += 1
             
@@ -638,6 +655,20 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Batch size: {config.batch_size}")
     print(f"Learning rate: {config.learning_rate}")
     print(f"Physics regularization: {config.use_physics}")
+    print(f"Lambda WFA: {config.lambda_wfa}")
+    print(f"Lambda Doppler: {config.lambda_doppler}")
+    print(f"Lambda Temperature: {config.lambda_temp}")
+    print(f"Lambda Physics (smoothness): {config.lambda_physics}")
+    print(f"B_LOS physics mode: {config.blos_physics_mode}")
+    if config.blos_physics_mode == "single_height":
+        print(f"B_LOS target log(tau): {config.blos_target_logtau}")
+    print(f"V_LOS physics mode: {config.vlos_physics_mode}")
+    if config.vlos_physics_mode == "single_height":
+        print(f"V_LOS target log(tau): {config.vlos_target_logtau}")
+    print(f"Temperature physics mode: {config.temp_physics_mode}")
+    if config.temp_physics_mode == "single_height":
+        print(f"Temperature target log(tau): {config.temp_target_logtau}")
+    print(f"Temperature reference: {config.temp_reference_temperature} K")
     print("=" * 70)
     
     # Load normalizers
@@ -648,7 +679,7 @@ def train_pinn_model(config: TrainingConfig):
     stokes_normalizer.load(filepath=config.data_path / config.stokes_normalizer_path)
     print("  ✓ Normalizers loaded")
     
-    # Initialize model
+    # Initialize model (including temperature parameters)
     print("\nInitializing model...")
     model = PhysicsInformedMSCNN(
         scales=config.scales,
@@ -662,7 +693,14 @@ def train_pinn_model(config: TrainingConfig):
         use_physics=config.use_physics,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
+        lambda_temp=config.lambda_temp,
         lambda_physics=config.lambda_physics,
+        blos_physics_mode=config.blos_physics_mode,
+        blos_target_logtau=config.blos_target_logtau,
+        vlos_physics_mode=config.vlos_physics_mode,
+        vlos_target_logtau=config.vlos_target_logtau,
+        temp_physics_mode=config.temp_physics_mode,
+        temp_target_logtau=config.temp_target_logtau,
     ).to(config.device)
     
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -775,6 +813,15 @@ def train_pinn_model(config: TrainingConfig):
         print(f"  Val Loss:   {avg_val_loss:.6f}")
         print(f"  LR:         {current_lr:.2e}")
         
+        # Print detailed loss breakdown
+        print(f"  Loss Components:")
+        print(f"    ├─ MSE Loss:         {epoch_metrics['mse_loss']:.6f}")
+        print(f"    ├─ Physics Loss:     {epoch_metrics['physics_loss']:.6f}")
+        print(f"    │   ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
+        print(f"    │   ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
+        print(f"    │   ├─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
+        print(f"    │   └─ Smoothness Loss:  {epoch_metrics['smoothness_loss']:.6f}")
+        
         # Save checkpoint
         is_best = avg_val_loss < best_val_loss
         if is_best:
@@ -799,6 +846,7 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Best validation loss: {best_val_loss:.6f}")
     
     logger.close()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Train PINN MSCNN model")

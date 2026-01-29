@@ -29,10 +29,8 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
-from utils.muram_data import MhdData, StokesData, MuramStepDataset  # Add MuramStepDataset
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
-from utils.physics_utils import ApproxInversions
 from scripts.base_training import (
     TrainingConfig,  # Remove MuramStepDataset from here
     load_and_prepare_step, validate, train_epoch  # Import train_epoch
@@ -464,8 +462,18 @@ def run_single_experiment(
     print(f"Number of epochs: {config.n_epochs}")
     print(f"Training step range: {min_step} to {max_step}")
     print(f"Physics regularization: {config.use_physics}")
+    print(f"B_LOS physics mode: {config.blos_physics_mode}")
+    if config.blos_physics_mode == 'single_height':
+        print(f"B_LOS target log(tau): {config.blos_target_logtau}")
+    print(f"V_LOS physics mode: {config.vlos_physics_mode}")
+    if config.vlos_physics_mode == 'single_height':
+        print(f"V_LOS target log(tau): {config.vlos_target_logtau}")
+    print(f"Temperature physics mode: {config.temp_physics_mode}")
+    if config.temp_physics_mode == 'single_height':
+        print(f"Temperature target log(tau): {config.temp_target_logtau}")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
+    print(f"Lambda Temperature: {config.lambda_temp}")
     print(f"Lambda Physics: {config.lambda_physics}")
     print(f"Learning rate: {config.learning_rate}")
     print(f"Weight decay: {config.weight_decay}")
@@ -488,7 +496,12 @@ def run_single_experiment(
             'use_physics': config.use_physics,
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
+            'lambda_temp': config.lambda_temp,
             'lambda_physics': config.lambda_physics,
+            'blos_physics_mode': config.blos_physics_mode,
+            'blos_target_logtau': config.blos_target_logtau,
+            'vlos_physics_mode': config.vlos_physics_mode,
+            'vlos_target_logtau': config.vlos_target_logtau,
         },
         'data_config': {
             'min_step': min_step,
@@ -507,7 +520,7 @@ def run_single_experiment(
             'dropout_rate': 0.2,
         },
         'device': config.device,
-        'data_path': str(config.data_path),  # Convert Path to string
+        'data_path': str(config.data_path),
     }
     
     # Create experiment directory and save config
@@ -531,7 +544,14 @@ def run_single_experiment(
         use_physics=config.use_physics,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
+        lambda_temp=config.lambda_temp,
         lambda_physics=config.lambda_physics,
+        blos_physics_mode=config.blos_physics_mode,
+        blos_target_logtau=config.blos_target_logtau,
+        vlos_physics_mode=config.vlos_physics_mode,
+        vlos_target_logtau=config.vlos_target_logtau,
+        temp_physics_mode=config.temp_physics_mode,
+        temp_target_logtau=config.temp_target_logtau,
     ).to(config.device)
     
     optimizer = torch.optim.Adam(
@@ -580,7 +600,7 @@ def run_single_experiment(
             stokes_normalizer=stokes_normalizer,
             optimizer=optimizer,
             epoch=epoch,
-            logger=None,  # No detailed batch logging for ablation study
+            logger=None,
             n_steps_per_epoch=n_steps_per_epoch,
         )
         
@@ -661,7 +681,12 @@ def run_single_experiment(
             'use_physics': config.use_physics,
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
+            'lambda_temp': config.lambda_temp,
             'lambda_physics': config.lambda_physics,
+            'blos_physics_mode': config.blos_physics_mode,
+            'blos_target_logtau': config.blos_target_logtau,
+            'vlos_physics_mode': config.vlos_physics_mode,
+            'vlos_target_logtau': config.vlos_target_logtau,
         }
     }
 
@@ -679,6 +704,21 @@ def main():
     parser.add_argument('--output_dir', type=str, 
                        default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments',
                        help='Base output directory')
+    parser.add_argument('--physics_mode', type=str, default='tau_averaged',
+                       choices=['tau_averaged', 'single_height'],
+                       help='Physics comparison mode: tau_averaged or single_height')
+    parser.add_argument('--target_logtau', type=float, default=-1.0,
+                       help='Target log(tau) for single_height mode (e.g., -1.0)')
+    parser.add_argument('--blos_physics_mode', type=str, default='tau_averaged',
+                       choices=['tau_averaged', 'single_height'],
+                       help='B_LOS physics comparison mode')
+    parser.add_argument('--blos_target_logtau', type=float, default=None,
+                       help='Target log(tau) for B_LOS single_height mode (e.g., -1.0)')
+    parser.add_argument('--vlos_physics_mode', type=str, default='tau_averaged',
+                       choices=['tau_averaged', 'single_height'],
+                       help='V_LOS physics comparison mode')
+    parser.add_argument('--vlos_target_logtau', type=float, default=None,
+                       help='Target log(tau) for V_LOS single_height mode (e.g., -0.5)')
     
     args = parser.parse_args()
     
@@ -698,6 +738,9 @@ def main():
     
     tracker = ExperimentTracker(output_dir)
     
+    # Determine target_logtau (None if tau_averaged mode)
+    target_logtau = args.target_logtau if args.physics_mode == 'single_height' else None
+    
     # Define experiments using TrainingConfig
     experiments = [
         # 1. No physics (baseline)
@@ -708,11 +751,15 @@ def main():
             lambda_wfa=0.0,
             lambda_doppler=0.0,
             lambda_physics=0.0,
+            blos_physics_mode=args.blos_physics_mode,
+            blos_target_logtau=args.blos_target_logtau,
+            vlos_physics_mode=args.vlos_physics_mode,
+            vlos_target_logtau=args.vlos_target_logtau,
             device=args.device,
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
         ),
-        # 2. WFA only
+        # 1. WFA only
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -720,11 +767,47 @@ def main():
             lambda_wfa=0.01,
             lambda_doppler=0.0,
             lambda_physics=0.0,
+            blos_physics_mode=args.blos_physics_mode,
+            blos_target_logtau=args.blos_target_logtau,
+            vlos_physics_mode=args.vlos_physics_mode,
+            vlos_target_logtau=args.vlos_target_logtau,
             device=args.device,
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
         ),
-        # 3. All physics
+        # 2. Doppler only (no physics)
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics=None,
+            lambda_wfa=0.0,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            blos_physics_mode=args.blos_physics_mode,
+            blos_target_logtau=args.blos_target_logtau,
+            vlos_physics_mode=args.vlos_physics_mode,
+            vlos_target_logtau=args.vlos_target_logtau,
+            device=args.device,
+            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
+            log_dir=output_dir / "no_physics" / "logs",
+        ),
+        # 3. Black Body approximation only
+        TrainingConfig(
+            data_path=str(data_path),
+            n_epochs=args.n_epochs,
+            use_physics='wfa',
+            lambda_wfa=0.01,
+            lambda_doppler=0.0,
+            lambda_physics=0.0,
+            blos_physics_mode=args.blos_physics_mode,
+            blos_target_logtau=args.blos_target_logtau,
+            vlos_physics_mode=args.vlos_physics_mode,
+            vlos_target_logtau=args.vlos_target_logtau,
+            device=args.device,
+            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
+            log_dir=output_dir / "wfa_only" / "logs",
+        ),
+        # 4. All terms
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -732,28 +815,48 @@ def main():
             lambda_wfa=0.01,
             lambda_doppler=0.0,
             lambda_physics=0.02,
+            blos_physics_mode=args.blos_physics_mode,
+            blos_target_logtau=args.blos_target_logtau,
+            vlos_physics_mode=args.vlos_physics_mode,
+            vlos_target_logtau=args.vlos_target_logtau,
             device=args.device,
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
         ),
+        # # 3. All physics
+        # TrainingConfig(
+        #     data_path=str(data_path),
+        #     n_epochs=args.n_epochs,
+        #     use_physics='wfa',
+        #     lambda_wfa=0.01,
+        #     lambda_doppler=0.0,
+        #     lambda_physics=0.02,
+        #     blos_physics_mode=args.blos_physics_mode,
+        #     blos_target_logtau=args.blos_target_logtau,
+        #     vlos_physics_mode=args.vlos_physics_mode,
+        #     vlos_target_logtau=args.vlos_target_logtau,
+        #     device=args.device,
+        #     checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
+        #     log_dir=output_dir / "all_physics_terms" / "logs",
+        # ),
     ]
     
     experiment_names = ['no_physics', 'wfa_only', 'all_physics_terms']
     
     # Run experiments
     for name, config in zip(experiment_names, experiments):
-            results = run_single_experiment(
-                experiment_name=name,
-                config=config,
-                mhd_normalizer=mhd_normalizer,
-                stokes_normalizer=stokes_normalizer,
-                test_steps=test_steps,
-                n_steps_per_epoch=args.n_steps,
-                min_step=args.min_step,
-                max_step=args.max_step,
-            )
-            
-            tracker.add_experiment(name, results)
+        results = run_single_experiment(
+            experiment_name=name,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            test_steps=test_steps,
+            n_steps_per_epoch=args.n_steps,
+            min_step=args.min_step,
+            max_step=args.max_step,
+        )
+        
+        tracker.add_experiment(name, results)
             
     tracker.save_results()
     tracker.print_summary_table()

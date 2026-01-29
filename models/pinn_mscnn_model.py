@@ -1,6 +1,6 @@
 """Physics-informed MSCNN model definition."""
 
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Literal
 from pathlib import Path
 
 import numpy as np
@@ -21,18 +21,34 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
     
     Parameters
     ----------
-    use_physics : {None, 'wfa', 'doppler', 'both'}, optional
+    use_physics : {None, 'wfa', 'doppler', 'temperature', 'both', 'all'}, optional
         Controls which physics regularization to apply:
         - None: No physics regularization (pure supervised learning)
         - 'wfa': Only WFA B_LOS regularization
-        - 'doppler': Only Doppler V_LOS regularization  
+        - 'doppler': Only Doppler V_LOS regularization
+        - 'temperature': Only temperature regularization
         - 'both': Both WFA and Doppler regularization
+        - 'all': All physics terms (WFA, Doppler, and Temperature)
     lambda_wfa : float
         Weight for WFA B_LOS loss term
     lambda_doppler : float
         Weight for Doppler V_LOS loss term
+    lambda_temp : float
+        Weight for temperature loss term
     lambda_physics : float
         Weight for gradient smoothness regularization
+    blos_physics_mode : {'tau_averaged', 'single_height'}, optional
+        Mode for computing B_LOS comparison
+    blos_target_logtau : float, optional
+        Target log(tau) value for B_LOS single_height mode
+    vlos_physics_mode : {'tau_averaged', 'single_height'}, optional
+        Mode for computing V_LOS comparison
+    vlos_target_logtau : float, optional
+        Target log(tau) value for V_LOS single_height mode
+    temp_physics_mode : {'tau_averaged', 'single_height'}, optional
+        Mode for computing temperature comparison (default: 'single_height')
+    temp_target_logtau : float, optional
+        Target log(tau) for temperature single_height mode (default: 0.0, photosphere)
     """
 
     def __init__(
@@ -41,30 +57,57 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         use_physics: Optional[str] = None,
         lambda_wfa: float = 0.01,
         lambda_doppler: float = 0.01,
+        lambda_temp: float = 0.01,
         lambda_physics: float = 0.001,
+        blos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
+        blos_target_logtau: Optional[float] = None,
+        vlos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
+        vlos_target_logtau: Optional[float] = None,
+        temp_physics_mode: Literal['tau_averaged', 'single_height'] = 'single_height',
+        temp_target_logtau: Optional[float] = 0.0,
         dropout_rate: float = 0.2,
         **kwargs: Any,
     ) -> None:
         super().__init__(dropout_rate=dropout_rate, **kwargs)
         
         # Validate and store physics regularization mode
-        valid_modes = [None, 'wfa', 'doppler', 'both']
+        valid_modes = [None, 'wfa', 'doppler', 'temperature', 'both', 'all']
         if use_physics not in valid_modes:
             raise ValueError(f"use_physics must be one of {valid_modes}, got {use_physics}")
+        
+        # Validate physics_mode for each quantity
+        valid_physics_modes = ['tau_averaged', 'single_height']
+        if blos_physics_mode not in valid_physics_modes:
+            raise ValueError(f"blos_physics_mode must be one of {valid_physics_modes}, got {blos_physics_mode}")
+        if vlos_physics_mode not in valid_physics_modes:
+            raise ValueError(f"vlos_physics_mode must be one of {valid_physics_modes}, got {vlos_physics_mode}")
+        if temp_physics_mode not in valid_physics_modes:
+            raise ValueError(f"temp_physics_mode must be one of {valid_physics_modes}, got {temp_physics_mode}")
         
         self.use_physics = use_physics
         self.lambda_wfa = float(lambda_wfa)
         self.lambda_doppler = float(lambda_doppler)
+        self.lambda_temp = float(lambda_temp)
         self.lambda_physics = float(lambda_physics)
+        self.blos_physics_mode = blos_physics_mode
+        self.blos_target_logtau = blos_target_logtau
+        self.vlos_physics_mode = vlos_physics_mode
+        self.vlos_target_logtau = vlos_target_logtau
+        self.temp_physics_mode = temp_physics_mode
+        self.temp_target_logtau = temp_target_logtau
         
         # Physics computation state (set via set_physics_context)
         self.mhd_normalizer = None
         self.logtau_values = None
         self.blos_approx = None
         self.vlos_approx = None
+        self.temp_approx = None
         self._tau_linear = None
         self._dtau = None
         self._integral_dtau = None
+        self._blos_target_logtau_idx = None
+        self._vlos_target_logtau_idx = None
+        self._temp_target_logtau_idx = None
 
     def set_physics_context(
         self,
@@ -72,12 +115,16 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         logtau_values: np.ndarray,
         blos_approx: Optional[np.ndarray] = None,
         vlos_approx: Optional[np.ndarray] = None,
+        temp_approx: Optional[np.ndarray] = None,
+        blos_physics_mode: Optional[Literal['tau_averaged', 'single_height']] = None,
+        blos_target_logtau: Optional[float] = None,
+        vlos_physics_mode: Optional[Literal['tau_averaged', 'single_height']] = None,
+        vlos_target_logtau: Optional[float] = None,
+        temp_physics_mode: Optional[Literal['tau_averaged', 'single_height']] = None,
+        temp_target_logtau: Optional[float] = None,
     ):
         """
         Set physics computation context for the current training step.
-        
-        This should be called once per simulation step with the relevant
-        physics approximations and normalizer.
         
         Parameters
         ----------
@@ -89,14 +136,77 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             WFA B_LOS approximation map (nx, ny) in Gauss
         vlos_approx : np.ndarray, optional
             Doppler V_LOS approximation map (nx, ny) in km/s
+        temp_approx : np.ndarray, optional
+            Black-body temperature approximation map (nx, ny) in Kelvin
+        blos_physics_mode : {'tau_averaged', 'single_height'}, optional
+            Override the blos_physics_mode set at initialization
+        blos_target_logtau : float, optional
+            Override the blos_target_logtau set at initialization
+        vlos_physics_mode : {'tau_averaged', 'single_height'}, optional
+            Override the vlos_physics_mode set at initialization
+        vlos_target_logtau : float, optional
+            Override the vlos_target_logtau set at initialization
+        temp_physics_mode : {'tau_averaged', 'single_height'}, optional
+            Override the temp_physics_mode set at initialization
+        temp_target_logtau : float, optional
+            Override the temp_target_logtau set at initialization
         """
         self.mhd_normalizer = mhd_normalizer
         self.logtau_values = logtau_values
+        
+        # Update physics modes if provided
+        valid_physics_modes = ['tau_averaged', 'single_height']
+        if blos_physics_mode is not None:
+            if blos_physics_mode not in valid_physics_modes:
+                raise ValueError(f"blos_physics_mode must be one of {valid_physics_modes}")
+            self.blos_physics_mode = blos_physics_mode
+        if vlos_physics_mode is not None:
+            if vlos_physics_mode not in valid_physics_modes:
+                raise ValueError(f"vlos_physics_mode must be one of {valid_physics_modes}")
+            self.vlos_physics_mode = vlos_physics_mode
+        if temp_physics_mode is not None:
+            if temp_physics_mode not in valid_physics_modes:
+                raise ValueError(f"temp_physics_mode must be one of {valid_physics_modes}")
+            self.temp_physics_mode = temp_physics_mode
+        
+        # Update target logtau values if provided
+        if blos_target_logtau is not None:
+            self.blos_target_logtau = blos_target_logtau
+        if vlos_target_logtau is not None:
+            self.vlos_target_logtau = vlos_target_logtau
+        if temp_target_logtau is not None:
+            self.temp_target_logtau = temp_target_logtau
         
         # Pre-compute tau integration quantities
         self._tau_linear = 10 ** logtau_values
         self._dtau = np.diff(self._tau_linear)
         self._integral_dtau = self._tau_linear[-1] - self._tau_linear[0]
+        
+        # Compute target logtau indices for single_height mode
+        if self.blos_physics_mode == 'single_height':
+            if self.blos_target_logtau is None:
+                self._blos_target_logtau_idx = len(logtau_values) // 2
+                self.blos_target_logtau = logtau_values[self._blos_target_logtau_idx]
+            else:
+                self._blos_target_logtau_idx = int(np.argmin(np.abs(logtau_values - self.blos_target_logtau)))
+                self.blos_target_logtau = logtau_values[self._blos_target_logtau_idx]
+        
+        if self.vlos_physics_mode == 'single_height':
+            if self.vlos_target_logtau is None:
+                self._vlos_target_logtau_idx = len(logtau_values) // 2
+                self.vlos_target_logtau = logtau_values[self._vlos_target_logtau_idx]
+            else:
+                self._vlos_target_logtau_idx = int(np.argmin(np.abs(logtau_values - self.vlos_target_logtau)))
+                self.vlos_target_logtau = logtau_values[self._vlos_target_logtau_idx]
+        
+        if self.temp_physics_mode == 'single_height':
+            if self.temp_target_logtau is None:
+                # Default to log(tau) = 0.0 (photosphere)
+                self._temp_target_logtau_idx = int(np.argmin(np.abs(logtau_values - 0.0)))
+                self.temp_target_logtau = logtau_values[self._temp_target_logtau_idx]
+            else:
+                self._temp_target_logtau_idx = int(np.argmin(np.abs(logtau_values - self.temp_target_logtau)))
+                self.temp_target_logtau = logtau_values[self._temp_target_logtau_idx]
         
         # Move approximations to device
         device = self._get_device()
@@ -104,6 +214,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             self.blos_approx = torch.tensor(blos_approx, dtype=torch.float32, device=device)
         if vlos_approx is not None:
             self.vlos_approx = torch.tensor(vlos_approx, dtype=torch.float32, device=device)
+        if temp_approx is not None:
+            self.temp_approx = torch.tensor(temp_approx, dtype=torch.float32, device=device)
 
     def _get_device(self) -> torch.device:
         """Get device of model parameters."""
@@ -193,6 +305,110 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         
         return integral_vz / self._integral_dtau
 
+    def _compute_tau_averaged_temperature(self, temp: torch.Tensor) -> torch.Tensor:
+        """
+        Compute tau-averaged temperature from T profile.
+        
+        Parameters
+        ----------
+        temp : torch.Tensor
+            Temperature values in physical units (batch_size, n_tau=21)
+            
+        Returns
+        -------
+        temp_avg : torch.Tensor
+            Tau-averaged temperature (batch_size,)
+        """
+        device = self._get_device()
+        
+        # Trapezoidal integration
+        temp_avg = (temp[:, :-1] + temp[:, 1:]) / 2  # (batch_size, 20)
+        dtau_tensor = torch.tensor(self._dtau, dtype=torch.float32, device=device)
+        integral_temp = torch.sum(temp_avg * dtau_tensor[None, :], dim=1)  # (batch_size,)
+        
+        return integral_temp / self._integral_dtau
+
+    def _extract_at_logtau(self, values: torch.Tensor, target_idx: int) -> torch.Tensor:
+        """
+        Extract values at the specified optical depth index.
+        
+        Parameters
+        ----------
+        values : torch.Tensor
+            Values across optical depths (batch_size, n_tau)
+        target_idx : int
+            Target optical depth index
+            
+        Returns
+        -------
+        torch.Tensor
+            Values at target optical depth (batch_size,)
+        """
+        return values[:, target_idx]
+
+    def _compute_predicted_blos(self, denorm_pred: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute B_LOS from predictions based on blos_physics_mode.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'Bz' (batch_size, n_tau)
+            
+        Returns
+        -------
+        torch.Tensor
+            B_LOS values (batch_size,)
+        """
+        if self.blos_physics_mode == 'tau_averaged':
+            return self._compute_tau_averaged_blos(denorm_pred['Bz'])
+        else:  # single_height
+            if self._blos_target_logtau_idx is None:
+                raise RuntimeError("B_LOS target logtau index not set. Call set_physics_context() first.")
+            return self._extract_at_logtau(denorm_pred['Bz'], self._blos_target_logtau_idx)
+
+    def _compute_predicted_vlos(self, denorm_pred: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute V_LOS from predictions based on vlos_physics_mode.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'Vz' (batch_size, n_tau)
+            
+        Returns
+        -------
+        torch.Tensor
+            V_LOS values (batch_size,)
+        """
+        if self.vlos_physics_mode == 'tau_averaged':
+            return self._compute_tau_averaged_vlos(denorm_pred['Vz'])
+        else:  # single_height
+            if self._vlos_target_logtau_idx is None:
+                raise RuntimeError("V_LOS target logtau index not set. Call set_physics_context() first.")
+            return self._extract_at_logtau(denorm_pred['Vz'], self._vlos_target_logtau_idx)
+
+    def _compute_predicted_temperature(self, denorm_pred: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Compute temperature from predictions based on temp_physics_mode.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'T' (batch_size, n_tau)
+            
+        Returns
+        -------
+        torch.Tensor
+            Temperature values (batch_size,)
+        """
+        if self.temp_physics_mode == 'tau_averaged':
+            return self._compute_tau_averaged_temperature(denorm_pred['T'])
+        else:  # single_height
+            if self._temp_target_logtau_idx is None:
+                raise RuntimeError("Temperature target logtau index not set. Call set_physics_context() first.")
+            return self._extract_at_logtau(denorm_pred['T'], self._temp_target_logtau_idx)
+
     def _compute_wfa_loss(
         self,
         denorm_pred: Dict[str, torch.Tensor],
@@ -216,8 +432,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         if self.blos_approx is None:
             raise RuntimeError("B_LOS approximation not set. Call set_physics_context() first.")
         
-        # Compute tau-averaged B_LOS from predictions
-        pred_blos = self._compute_tau_averaged_blos(denorm_pred['Bz'])
+        # Compute B_LOS from predictions based on physics_mode
+        pred_blos = self._compute_predicted_blos(denorm_pred)
         
         # Get corresponding WFA approximations
         y_idx = spatial_indices[:, 0].long()
@@ -250,16 +466,55 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         if self.vlos_approx is None:
             raise RuntimeError("V_LOS approximation not set. Call set_physics_context() first.")
         
-        # Compute tau-averaged V_LOS from predictions
-        pred_vlos = self._compute_tau_averaged_vlos(denorm_pred['Vz'])
+        # Compute V_LOS from predictions based on physics_mode
+        pred_vlos = self._compute_predicted_vlos(denorm_pred)
         
         # Get corresponding Doppler approximations
         y_idx = spatial_indices[:, 0].long()
         x_idx = spatial_indices[:, 1].long()
         approx_vlos = self.vlos_approx[y_idx, x_idx]  # (batch_size,)
         
-        # MSE loss in physical units
-        return torch.mean((pred_vlos - approx_vlos) ** 2)
+        # Handle NaN values in approximations (from failed Gaussian fits)
+        valid_mask = ~torch.isnan(approx_vlos)
+        if valid_mask.sum() == 0:
+            return torch.tensor(0.0, device=self._get_device())
+        
+        # MSE loss in physical units (only valid pixels)
+        return torch.mean((pred_vlos[valid_mask] - approx_vlos[valid_mask]) ** 2)
+
+    def _compute_temperature_loss(
+        self,
+        denorm_pred: Dict[str, torch.Tensor],
+        spatial_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute temperature loss in physical units.
+        
+        Parameters
+        ----------
+        denorm_pred : Dict[str, torch.Tensor]
+            Denormalized predictions with 'T' (batch_size, n_tau)
+        spatial_indices : torch.Tensor
+            Spatial coordinates (batch_size, 2) as [y, x]
+            
+        Returns
+        -------
+        loss : torch.Tensor
+            Temperature loss value
+        """
+        if self.temp_approx is None:
+            raise RuntimeError("Temperature approximation not set. Call set_physics_context() first.")
+        
+        # Compute temperature from predictions based on physics_mode
+        pred_temp = self._compute_predicted_temperature(denorm_pred)
+        
+        # Get corresponding temperature approximations
+        y_idx = spatial_indices[:, 0].long()
+        x_idx = spatial_indices[:, 1].long()
+        approx_temp = self.temp_approx[y_idx, x_idx]  # (batch_size,)
+        
+        # MSE loss in physical units (Kelvin)
+        return torch.mean((pred_temp - approx_temp) ** 2)
 
     def _compute_gradient_smoothness(
         self,
@@ -308,7 +563,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         
         This method computes all enabled physics losses by:
         1. Denormalizing predictions to physical units
-        2. Computing tau-averaged quantities (B_LOS, V_LOS)
+        2. Computing tau-averaged or single-height quantities (B_LOS, V_LOS, T)
         3. Comparing against physics approximations
         4. Adding gradient smoothness regularization
         
@@ -338,17 +593,34 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         total_loss = torch.tensor(0.0, device=device)
         loss_components = {}
         
+        # Add physics mode info to components
+        loss_components['blos_physics_mode'] = self.blos_physics_mode
+        loss_components['vlos_physics_mode'] = self.vlos_physics_mode
+        loss_components['temp_physics_mode'] = self.temp_physics_mode
+        if self.blos_physics_mode == 'single_height':
+            loss_components['blos_target_logtau'] = self.blos_target_logtau
+        if self.vlos_physics_mode == 'single_height':
+            loss_components['vlos_target_logtau'] = self.vlos_target_logtau
+        if self.temp_physics_mode == 'single_height':
+            loss_components['temp_target_logtau'] = self.temp_target_logtau
+        
         # WFA B_LOS loss (if enabled)
-        if self.use_physics in ['wfa', 'both'] and self.lambda_wfa > 0:
+        if self.use_physics in ['wfa', 'both', 'all'] and self.lambda_wfa > 0:
             wfa_loss = self._compute_wfa_loss(denorm_pred, spatial_indices)
             loss_components['wfa'] = wfa_loss.item()
             total_loss = total_loss + self.lambda_wfa * wfa_loss
         
         # Doppler V_LOS loss (if enabled)
-        if self.use_physics in ['doppler', 'both'] and self.lambda_doppler > 0:
+        if self.use_physics in ['doppler', 'both', 'all'] and self.lambda_doppler > 0:
             doppler_loss = self._compute_doppler_loss(denorm_pred, spatial_indices)
             loss_components['doppler'] = doppler_loss.item()
             total_loss = total_loss + self.lambda_doppler * doppler_loss
+        
+        # Temperature loss (if enabled)
+        if self.use_physics in ['temperature', 'all'] and self.lambda_temp > 0:
+            temp_loss = self._compute_temperature_loss(denorm_pred, spatial_indices)
+            loss_components['temperature'] = temp_loss.item()
+            total_loss = total_loss + self.lambda_temp * temp_loss
         
         # Gradient smoothness loss (if enabled)
         if self.lambda_physics > 0:

@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.stats import pearsonr
+from scipy.optimize import curve_fit
 
 
 class ApproxInversions:
@@ -38,6 +39,8 @@ class ApproxInversions:
         Computed B_LOS map (2D)
     vlos : Optional[np.ndarray]
         Computed V_LOS map (2D)
+    temperature : Optional[np.ndarray]
+        Computed temperature map (2D)
     """
     
     def __init__(self, stokes: Dict[str, np.ndarray], wavelength: np.ndarray,
@@ -76,6 +79,7 @@ class ApproxInversions:
         # Computed inversions (initialized as None)
         self.blos: Optional[np.ndarray] = None
         self.vlos: Optional[np.ndarray] = None
+        self.temperature: Optional[np.ndarray] = None
     
     def compute_blos_wfa(self, wl_range: List[int]) -> u.Quantity:
         """
@@ -141,56 +145,140 @@ class ApproxInversions:
     
     def compute_vlos_doppler(self, wl_range: List[int]) -> u.Quantity:
         """
-        Compute line-of-sight velocity using Doppler shift method.
+        Compute line-of-sight velocity using Doppler shift method with Gaussian fitting.
         
-        The velocity is computed from the wavelength shift of the zero-crossing
-        of Stokes V:
-        v_LOS = (Δλ / λ₀) · c
+        The velocity is computed by fitting a Gaussian to the Stokes I profile
+        to find the line center wavelength, then applying the Doppler formula:
+        v_LOS = (λ₀ - λ_fit) / λ₀ · c
         
         Parameters
         ----------
         wl_range : list of int
-            [start_index, end_index] for the wavelength range to search for the zero-crossing
+            [start_index, end_index] for the wavelength range to use for Gaussian fitting
             
         Returns
         -------
         astropy.units.Quantity
             Line-of-sight velocity map with shape (nx, ny) in km/s
         """
-        # Find the positions of minimum and maximum in the Stokes V range
-        V_range = self.stokes["V"][:, :, wl_range[0]:wl_range[1]]
-        center_range = np.stack([
-            np.argmin(np.abs(V_range), axis=2),
-            np.argmax(np.abs(V_range), axis=2)
-        ], axis=-1)
+        def gaussian_func(x, a, x0, sigma, offset):
+            """Gaussian function for fitting absorption line profile."""
+            return a * np.exp(-(x - x0)**2 / (2 * sigma**2)) + offset
         
-        vlos_map = np.zeros(center_range.shape[0:2])
+        NX = self.stokes["I"].shape[0]
+        NY = self.stokes["I"].shape[1]
+        vlos_map = np.zeros((NX, NY))
+        
+        # Extract wavelength range for fitting
+        wl_fit = self.wavelength[:wl_range[1]]
+        central_wl_value = self.central_wavelength.to(u.Angstrom).value
         
         # Compute velocity for each pixel
-        for ix in range(center_range.shape[0]):
-            for iy in range(center_range.shape[1]):
-                # Identify left and right extrema
-                if center_range[ix, iy, 0] > center_range[ix, iy, 1]:
-                    right_idx = center_range[ix, iy, 0]
-                    left_idx = center_range[ix, iy, 1]
-                else:
-                    right_idx = center_range[ix, iy, 1]
-                    left_idx = center_range[ix, iy, 0]
+        for ix in range(NX):
+            for iy in range(NY):
+                I_profile = self.stokes["I"][ix, iy, :wl_range[1]]
                 
-                # Interpolate wavelength at zero-crossing of Stokes V
-                V_segment = self.stokes["V"][ix, iy, left_idx:right_idx]
-                wl_segment = self.wavelength[left_idx:right_idx]
-                
-                # Find zero-crossing
-                wl_zero = np.interp(0, V_segment[::-1], wl_segment[::-1])
-                
-                # Compute velocity from Doppler shift
-                delta_wl = wl_zero * u.Angstrom - self.central_wavelength
-                v_los = (c * delta_wl / self.central_wavelength).to(u.km / u.s)
-                vlos_map[ix, iy] = v_los.value
+                try:
+                    # Fit Gaussian to Stokes I profile
+                    popt, _ = curve_fit(
+                        gaussian_func, 
+                        wl_fit, 
+                        I_profile,
+                        p0=[1.0, central_wl_value, 0.1, 0.0],
+                        maxfev=5000
+                    )
+                    x0_fit = popt[1]  # Fitted line center wavelength
+                    
+                    # Compute velocity from Doppler shift
+                    # v_LOS = c * (λ₀ - λ_fit) / λ₀
+                    delta_wl = central_wl_value - x0_fit
+                    v_los = (c * delta_wl / central_wl_value).to(u.km / u.s)
+                    vlos_map[ix, iy] = v_los.value
+                    
+                except (RuntimeError, ValueError):
+                    # If fit fails, set to NaN or zero
+                    vlos_map[ix, iy] = np.nan
         
         self.vlos = vlos_map * u.km / u.s
         return self.vlos
+    
+    def compute_temperature_blackbody(
+        self, 
+        cont_indices: List[int] = [0, 1, 2, 3],
+        reference_temperature: u.Quantity = 6000 * u.K,
+        continuum_wavelength: Optional[u.Quantity] = None
+    ) -> u.Quantity:
+        """
+        Estimate temperature from Stokes I continuum intensity using black-body approximation.
+        
+        The temperature is derived from the normalized continuum intensity contrast
+        using the linearized Planck function relation:
+        
+        T = T_0 * (1 + (I_norm,c - 1) / α)
+        
+        where α = x * e^x / (e^x - 1) with x = hc / (λ k_B T_0)
+        
+        Parameters
+        ----------
+        cont_indices : list of int
+            Wavelength indices corresponding to continuum (line-free) regions.
+            Default uses the first 4 wavelength points [0, 1, 2, 3].
+        reference_temperature : astropy.units.Quantity
+            Reference temperature for the quiet-Sun photosphere (default: 6000 K).
+        continuum_wavelength : astropy.units.Quantity, optional
+            Representative wavelength for the continuum region. If None, uses
+            the central wavelength of the spectral line.
+            
+        Returns
+        -------
+        astropy.units.Quantity
+            Temperature map with shape (nx, ny) in Kelvin.
+            
+        Notes
+        -----
+        The approximation assumes:
+        1. Local Thermodynamic Equilibrium (LTE): I_c ≈ B_λ(T)
+        2. Small intensity contrasts (|C| < 20%)
+        3. Disk-center observations (μ ≈ 1)
+        
+        The continuum at ~6302 Å forms around log(τ_500) ≈ 0, so this
+        temperature represents conditions in the low photosphere.
+        """
+        from astropy.constants import h, k_B, c
+        
+        # Use central wavelength if not specified
+        if continuum_wavelength is None:
+            continuum_wavelength = self.central_wavelength
+        
+        # Extract temperature value for calculations
+        T_0 = reference_temperature.to(u.K).value  # K
+        lambda_0 = continuum_wavelength.to(u.m).value  # meter
+        
+        # Compute dimensionless parameter x = hc / (λ k_B T_0)
+        x = (h * c / (lambda_0 * k_B * T_0)).decompose().value
+        
+        # Compute Planck sensitivity α = x * e^x / (e^x - 1)
+        exp_x = np.exp(x)
+        alpha = x * exp_x / (exp_x - 1)
+        
+        # Compute continuum intensity for each pixel (average over continuum indices)
+        # Shape: (nx, ny)
+        I_c_per_pixel = np.mean(self.stokes["I"][:, :, cont_indices], axis=2)
+        
+        # Compute reference continuum (spatial mean = quiet-Sun average)
+        I_c_reference = np.mean(I_c_per_pixel)
+        
+        # Normalized continuum intensity: I_norm,c = I_c / I_c,ref
+        I_norm_c = I_c_per_pixel / I_c_reference
+        
+        # Intensity contrast: C = I_norm,c - 1
+        contrast = I_norm_c - 1.0
+        
+        # Temperature: T = T_0 * (1 + C/α)
+        temperature = T_0 * (1.0 + contrast / alpha)
+        
+        self.temperature = temperature * u.K
+        return self.temperature
     
     def compare_with_mhd(self, mhd_od_data: Dict[str, np.ndarray],
                          approximation: str = "blos",
@@ -400,6 +488,9 @@ blos = inversions.compute_blos_wfa(wl_range=[15, 60])
 # Compute V_LOS
 vlos = inversions.compute_vlos_doppler(wl_range=[15, 60])
 
+# Compute temperature
+temperature = inversions.compute_temperature_blackbody()
+
 # Compare with MHD at different heights
 metrics = inversions.compare_with_mhd(
     mhd_od_data=mhd.od_data,
@@ -410,5 +501,5 @@ metrics = inversions.compare_with_mhd(
 
 print(f"Best RRMSE: {metrics['min_rrmse']:.4f} at τ={metrics['min_rrmse_logtau']:.2f}")
 print(f"Best Corr: {metrics['max_corr']:.4f} at τ={metrics['max_corr_logtau']:.2f}")
-"""    
+"""
 
