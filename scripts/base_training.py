@@ -78,7 +78,6 @@ class TrainingConfig:
     central_wavelength: float = 6301.5  # Angstroms
     lande_factor: float = 1.67
     wl_range: Tuple[int, int] = (15, 60)
-    lambda_physics: float = 0  # Physics regularization weight
     lambda_wfa: float = 0.01      # WFA term weight
     lambda_doppler: float = 0.01  # Doppler term weight
     lambda_temp: float = 0.01     # Temperature term weight
@@ -159,7 +158,7 @@ class MetricsLogger:
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
-        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss,gradient_loss\n")
+        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
         """Log batch-level metrics."""
@@ -170,8 +169,7 @@ class MetricsLogger:
             f"{loss_dict.get('physics', 0.0)},"
             f"{loss_dict.get('wfa', 0.0)},"
             f"{loss_dict.get('doppler', 0.0)},"
-            f"{loss_dict.get('temperature', 0.0)},"
-            f"{loss_dict.get('gradient', 0.0)}\n"
+            f"{loss_dict.get('temperature', 0.0)}\n"
         )
         self.batch_log.flush()
     
@@ -326,7 +324,6 @@ def train_one_step(
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
         'temperature_loss': 0.0,
-        'gradient_loss': 0.0,
     }
     n_batches = 0
     
@@ -367,7 +364,6 @@ def train_one_step(
         step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
         step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
         step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
-        step_metrics['gradient_loss'] += loss_dict.get('gradient', 0.0)
         n_batches += 1
     
     # Average metrics over all batches
@@ -573,7 +569,6 @@ def train_epoch(
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
         'temperature_loss': 0.0,
-        'smoothness_loss': 0.0,
         'n_steps': 0
     }
     
@@ -619,7 +614,6 @@ def train_epoch(
             epoch_metrics['wfa_loss'] += step_metrics['wfa_loss']
             epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
             epoch_metrics['temperature_loss'] += step_metrics['temperature_loss']
-            epoch_metrics['smoothness_loss'] += step_metrics['gradient_loss']
             epoch_metrics['n_steps'] += 1
             
             # Update progress bar
@@ -658,7 +652,6 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
-    print(f"Lambda Physics (smoothness): {config.lambda_physics}")
     print(f"B_LOS physics mode: {config.blos_physics_mode}")
     if config.blos_physics_mode == "single_height":
         print(f"B_LOS target log(tau): {config.blos_target_logtau}")
@@ -694,7 +687,6 @@ def train_pinn_model(config: TrainingConfig):
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
-        lambda_physics=config.lambda_physics,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -816,11 +808,10 @@ def train_pinn_model(config: TrainingConfig):
         # Print detailed loss breakdown
         print(f"  Loss Components:")
         print(f"    ├─ MSE Loss:         {epoch_metrics['mse_loss']:.6f}")
-        print(f"    ├─ Physics Loss:     {epoch_metrics['physics_loss']:.6f}")
-        print(f"    │   ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
-        print(f"    │   ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
-        print(f"    │   ├─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
-        print(f"    │   └─ Smoothness Loss:  {epoch_metrics['smoothness_loss']:.6f}")
+        print(f"    └─ Physics Loss:     {epoch_metrics['physics_loss']:.6f}")
+        print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
+        print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
+        print(f"        └─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
         
         # Save checkpoint
         is_best = avg_val_loss < best_val_loss

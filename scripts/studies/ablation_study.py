@@ -145,8 +145,8 @@ class ExperimentTracker:
                 ax3.plot(epochs, results['wfa_loss_history'], 'm--', label='WFA', linewidth=1.5)
             if 'doppler_loss_history' in results and any(l > 0 for l in results['doppler_loss_history']):
                 ax3.plot(epochs, results['doppler_loss_history'], 'c--', label='Doppler', linewidth=1.5)
-            if 'smoothness_loss_history' in results and any(l > 0 for l in results['smoothness_loss_history']):
-                ax3.plot(epochs, results['smoothness_loss_history'], 'y--', label='Smoothness', linewidth=1.5)
+            if 'temperature_loss_history' in results and any(l > 0 for l in results['temperature_loss_history']):
+                ax3.plot(epochs, results['temperature_loss_history'], 'y--', label='Temperature', linewidth=1.5)
             ax3.set_xlabel('Epoch')
             ax3.set_ylabel('Loss')
             ax3.set_title('Physics Loss Components')
@@ -474,7 +474,6 @@ def run_single_experiment(
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
-    print(f"Lambda Physics: {config.lambda_physics}")
     print(f"Learning rate: {config.learning_rate}")
     print(f"Weight decay: {config.weight_decay}")
     print(f"Gradient clip: {config.gradient_clip}")
@@ -497,7 +496,6 @@ def run_single_experiment(
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
-            'lambda_physics': config.lambda_physics,
             'blos_physics_mode': config.blos_physics_mode,
             'blos_target_logtau': config.blos_target_logtau,
             'vlos_physics_mode': config.vlos_physics_mode,
@@ -545,7 +543,6 @@ def run_single_experiment(
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
-        lambda_physics=config.lambda_physics,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -586,7 +583,7 @@ def run_single_experiment(
     physics_loss_history = []
     wfa_loss_history = []
     doppler_loss_history = []
-    smoothness_loss_history = []
+    temperature_loss_history = []
     
     for epoch in range(config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
@@ -610,7 +607,7 @@ def run_single_experiment(
         avg_physics_loss = epoch_metrics['physics_loss']
         avg_wfa_loss = epoch_metrics['wfa_loss']
         avg_doppler_loss = epoch_metrics['doppler_loss']
-        avg_smoothness_loss = epoch_metrics['smoothness_loss']
+        avg_temperature_loss = epoch_metrics['temperature_loss']
         
         # Store histories
         train_loss_history.append(avg_train_loss)
@@ -618,7 +615,7 @@ def run_single_experiment(
         physics_loss_history.append(avg_physics_loss)
         wfa_loss_history.append(avg_wfa_loss)
         doppler_loss_history.append(avg_doppler_loss)
-        smoothness_loss_history.append(avg_smoothness_loss)
+        temperature_loss_history.append(avg_temperature_loss)
         
         # Validation
         avg_val_loss = validate(
@@ -638,9 +635,9 @@ def run_single_experiment(
         print(f"  Total Loss:      {avg_train_loss:.6f}")
         print(f"  MSE Loss:        {avg_mse_loss:.6f}")
         print(f"  Physics Loss:    {avg_physics_loss:.6f}")
-        print(f"    ├─ WFA Loss:        {avg_wfa_loss:.6f}")
-        print(f"    ├─ Doppler Loss:    {avg_doppler_loss:.6f}")
-        print(f"    └─ Smoothness Loss: {avg_smoothness_loss:.6f}")
+        print(f"    ├─ WFA Loss:         {avg_wfa_loss:.6f}")
+        print(f"    ├─ Doppler Loss:     {avg_doppler_loss:.6f}")
+        print(f"    └─ Temperature Loss: {avg_temperature_loss:.6f}")
         print(f"  Validation Loss: {avg_val_loss:.6f}")
         print(f"  Learning Rate:   {current_lr:.2e}")
         print("=" * 100)
@@ -674,7 +671,7 @@ def run_single_experiment(
         'physics_loss_history': physics_loss_history,
         'wfa_loss_history': wfa_loss_history,
         'doppler_loss_history': doppler_loss_history,
-        'smoothness_loss_history': smoothness_loss_history,
+        'temperature_loss_history': temperature_loss_history,
         'training_time_minutes': training_time,
         'test_metrics': test_metrics,
         'config': {
@@ -682,7 +679,6 @@ def run_single_experiment(
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
-            'lambda_physics': config.lambda_physics,
             'blos_physics_mode': config.blos_physics_mode,
             'blos_target_logtau': config.blos_target_logtau,
             'vlos_physics_mode': config.vlos_physics_mode,
@@ -750,7 +746,7 @@ def main():
             use_physics=None,
             lambda_wfa=0.0,
             lambda_doppler=0.0,
-            lambda_physics=0.0,
+            lambda_temp=0.0,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
@@ -759,14 +755,13 @@ def main():
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
         ),
-        # 1. WFA only
+        # 2. WFA only
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             use_physics='wfa',
             lambda_wfa=0.01,
             lambda_doppler=0.0,
-            lambda_physics=0.0,
             lambda_temp=0.0,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
@@ -776,49 +771,46 @@ def main():
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
         ),
-        # 2. Doppler only (no physics)
+        # 3. Doppler only
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
-            use_physics=None,
+            use_physics='doppler',
             lambda_wfa=0.0,
             lambda_doppler=0.1,
-            lambda_physics=0.0,
             lambda_temp=0.0,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
             vlos_target_logtau=args.vlos_target_logtau,
             device=args.device,
-            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
-            log_dir=output_dir / "no_physics" / "logs",
+            checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
+            log_dir=output_dir / "doppler_only" / "logs",
         ),
-        # 3. Black Body approximation only
+        # 4. Temperature only
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
-            use_physics='wfa',
+            use_physics='temperature',
             lambda_wfa=0.0,
             lambda_doppler=0.0,
             lambda_temp=0.01,
-            lambda_physics=0.0,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
             vlos_target_logtau=args.vlos_target_logtau,
             device=args.device,
-            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
-            log_dir=output_dir / "wfa_only" / "logs",
+            checkpoint_dir=output_dir / "temperature_only" / "checkpoints",
+            log_dir=output_dir / "temperature_only" / "logs",
         ),
-        # 4. All terms
+        # 5. All terms
         TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
-            use_physics='wfa',
+            use_physics='all',
             lambda_wfa=0.01,
             lambda_doppler=0.01,
             lambda_temp=0.01,
-            lambda_physics=0.00,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
@@ -827,25 +819,9 @@ def main():
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
         ),
-        # # 3. All physics
-        # TrainingConfig(
-        #     data_path=str(data_path),
-        #     n_epochs=args.n_epochs,
-        #     use_physics='wfa',
-        #     lambda_wfa=0.01,
-        #     lambda_doppler=0.0,
-        #     lambda_physics=0.02,
-        #     blos_physics_mode=args.blos_physics_mode,
-        #     blos_target_logtau=args.blos_target_logtau,
-        #     vlos_physics_mode=args.vlos_physics_mode,
-        #     vlos_target_logtau=args.vlos_target_logtau,
-        #     device=args.device,
-        #     checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
-        #     log_dir=output_dir / "all_physics_terms" / "logs",
-        # ),
     ]
     
-    experiment_names = ['no_physics', 'wfa_only', 'all_physics_terms']
+    experiment_names = ['no_physics', 'wfa_only', 'doppler_only', 'temperature_only', 'all_physics_terms']
     
     # Run experiments
     for name, config in zip(experiment_names, experiments):

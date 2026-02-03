@@ -13,11 +13,7 @@ from models.mscnn_model import MSCNNInversionModel
 
 
 class PhysicsInformedMSCNN(MSCNNInversionModel):
-    """MSCNN inversion model with integrated physics-informed loss computation.
-
-    This model extends the base MSCNN architecture with physics-based regularization
-    computed in physical units (after denormalization). All physics computations are
-    self-contained within the model.
+    """MSCNN inversion model with integrated physics-based regularization computed in physical units.
     
     Parameters
     ----------
@@ -35,8 +31,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Weight for Doppler V_LOS loss term
     lambda_temp : float
         Weight for temperature loss term
-    lambda_physics : float
-        Weight for gradient smoothness regularization
     blos_physics_mode : {'tau_averaged', 'single_height'}, optional
         Mode for computing B_LOS comparison
     blos_target_logtau : float, optional
@@ -58,7 +52,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         lambda_wfa: float = 0.01,
         lambda_doppler: float = 0.01,
         lambda_temp: float = 0.01,
-        lambda_physics: float = 0.001,
         blos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
         blos_target_logtau: Optional[float] = None,
         vlos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
@@ -88,7 +81,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         self.lambda_wfa = float(lambda_wfa)
         self.lambda_doppler = float(lambda_doppler)
         self.lambda_temp = float(lambda_temp)
-        self.lambda_physics = float(lambda_physics)
         self.blos_physics_mode = blos_physics_mode
         self.blos_target_logtau = blos_target_logtau
         self.vlos_physics_mode = vlos_physics_mode
@@ -516,43 +508,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         # MSE loss in physical units (Kelvin)
         return torch.mean((pred_temp - approx_temp) ** 2)
 
-    def _compute_gradient_smoothness(
-        self,
-        denorm_pred: Dict[str, torch.Tensor],
-    ) -> torch.Tensor:
-        """
-        Compute gradient smoothness regularization in physical units.
-        
-        Penalizes large second derivatives (non-smooth profiles) across optical depth.
-        
-        Parameters
-        ----------
-        denorm_pred : Dict[str, torch.Tensor]
-            Denormalized predictions (batch_size, n_tau) for each parameter
-            
-        Returns
-        -------
-        loss : torch.Tensor
-            Smoothness loss value (average over T, Vz, Bz)
-        """
-        device = self._get_device()
-        total_loss = torch.tensor(0.0, device=device)
-        
-        for param in ['T', 'Vz', 'Bz']:
-            values = denorm_pred[param]  # (batch_size, n_tau)
-            
-            # First derivative (central differences)
-            grad1 = values[:, 2:] - values[:, :-2]  # (batch_size, n_tau-2)
-            
-            # Second derivative approximation
-            grad2 = grad1[:, 1:] - grad1[:, :-1]  # (batch_size, n_tau-3)
-            
-            # L2 penalty on second derivatives
-            smoothness = torch.mean(grad2 ** 2)
-            total_loss = total_loss + smoothness
-        
-        return total_loss / 3  # Average over three parameters
-
     def compute_physics_loss(
         self,
         predictions: torch.Tensor,
@@ -565,7 +520,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         1. Denormalizing predictions to physical units
         2. Computing tau-averaged or single-height quantities (B_LOS, V_LOS, T)
         3. Comparing against physics approximations
-        4. Adding gradient smoothness regularization
         
         Parameters
         ----------
@@ -621,12 +575,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             temp_loss = self._compute_temperature_loss(denorm_pred, spatial_indices)
             loss_components['temperature'] = temp_loss.item()
             total_loss = total_loss + self.lambda_temp * temp_loss
-        
-        # Gradient smoothness loss (if enabled)
-        if self.lambda_physics > 0:
-            grad_loss = self._compute_gradient_smoothness(denorm_pred)
-            loss_components['gradient'] = grad_loss.item()
-            total_loss = total_loss + self.lambda_physics * grad_loss
         
         return total_loss, loss_components
 
