@@ -34,7 +34,7 @@ MAX_STEP=153
 
 # Training hyperparameters
 LEARNING_RATE=1e-2
-N_EPOCHS=50
+N_EPOCHS=5
 
 # Physics regularization weights (set to 0.0 to disable)
 LAMBDA_WFA=1e-4

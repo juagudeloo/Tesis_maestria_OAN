@@ -35,7 +35,7 @@ from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.grad_norm import GradNormScheduler
 from scripts.base_training import (
     TrainingConfig,
-    load_and_prepare_step, validate, train_epoch
+    load_and_prepare_step, validate, train_epoch, MetricsLogger
 )
 
 
@@ -596,6 +596,9 @@ def run_single_experiment(
     val_steps = random.sample(train_steps, n_val)
     train_steps = [s for s in train_steps if s not in val_steps]
     
+    # Initialize logger
+    logger = MetricsLogger(config.log_dir)
+
     # Training loop
     start_time = time.time()
     val_loss_history = []
@@ -618,7 +621,7 @@ def run_single_experiment(
             stokes_normalizer=stokes_normalizer,
             optimizer=optimizer,
             epoch=epoch,
-            logger=None,
+            logger=logger,
             n_steps_per_epoch=n_steps_per_epoch,
             gradnorm_scheduler=gradnorm_scheduler,
         )
@@ -700,6 +703,7 @@ def run_single_experiment(
         
         torch.save(checkpoint_data, model_path)
     
+    logger.close()
     return {
         'final_val_loss': val_loss_history[-1],
         'val_loss_history': val_loss_history,
