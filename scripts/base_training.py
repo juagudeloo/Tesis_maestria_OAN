@@ -27,6 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 import astropy.units as u
 from tqdm import tqdm
+from utils.grad_norm import GradNormScheduler, log_gradient_norms_by_task
 
 # Ensure utils and models are importable
 ROOT = Path(__file__).resolve().parent.parent
@@ -78,10 +79,12 @@ class TrainingConfig:
     central_wavelength: float = 6301.5  # Angstroms
     lande_factor: float = 1.67
     wl_range: Tuple[int, int] = (15, 60)
-    lambda_wfa: float = 0.01      # WFA term weight
-    lambda_doppler: float = 0.01  # Doppler term weight
-    lambda_temp: float = 0.01     # Temperature term weight
-    use_physics: str = "wfa"  # 'wfa', 'doppler', 'temperature', 'both', 'all', or None
+    lambda_wfa: float = 0.01      # WFA term weight (if not using GradNorm)
+    lambda_doppler: float = 0.01  # Doppler term weight (if not using GradNorm)
+    lambda_temp: float = 0.01     # Temperature term weight (if not using GradNorm)
+    use_gradnorm: bool = True  # Enable GradNorm automatic balancing
+    gradnorm_alpha: float = 1.5  # GradNorm alpha parameter
+    gradnorm_update_freq: int = 100  # Update GradNorm weights every N batches
     blos_physics_mode: str = "tau_averaged"  # 'tau_averaged' or 'single_height'
     blos_target_logtau: Optional[float] = None  # Target log(tau) for B_LOS single_height mode
     vlos_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
@@ -155,10 +158,12 @@ class MetricsLogger:
         # File handlers
         self.epoch_log = open(log_dir / "epoch_log.csv", 'w')
         self.batch_log = open(log_dir / "batch_log.csv", 'w')
+        self.gradnorm_log = open(log_dir / "gradnorm_log.csv", 'w')
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
         self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
+        self.gradnorm_log.write("epoch,step,batch,grad_norm_loss,mse_grad,wfa_grad,doppler_grad,temp_grad,mse_weight,wfa_weight,doppler_weight,temp_weight\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
         """Log batch-level metrics."""
@@ -173,6 +178,22 @@ class MetricsLogger:
         )
         self.batch_log.flush()
     
+    def log_gradnorm(self, epoch: int, step: int, batch: int, gradnorm_dict: Dict[str, float]):
+        """Log GradNorm metrics."""
+        self.gradnorm_log.write(
+            f"{epoch},{step},{batch},"
+            f"{gradnorm_dict.get('grad_norm_loss', 0.0)},"
+            f"{gradnorm_dict.get('mse_grad_norm', 0.0)},"
+            f"{gradnorm_dict.get('wfa_grad_norm', 0.0)},"
+            f"{gradnorm_dict.get('doppler_grad_norm', 0.0)},"
+            f"{gradnorm_dict.get('temperature_grad_norm', 0.0)},"
+            f"{gradnorm_dict.get('mse_weight', 1.0)},"
+            f"{gradnorm_dict.get('wfa_weight', 1.0)},"
+            f"{gradnorm_dict.get('doppler_weight', 1.0)},"
+            f"{gradnorm_dict.get('temperature_weight', 1.0)}\n"
+        )
+        self.gradnorm_log.flush()
+    
     def log_epoch(self, epoch: int, train_loss: float, val_loss: float, lr: float):
         """Log epoch-level metrics."""
         self.epoch_log.write(f"{epoch},{train_loss},{val_loss},{lr}\n")
@@ -185,6 +206,7 @@ class MetricsLogger:
         """Close file handlers."""
         self.epoch_log.close()
         self.batch_log.close()
+        self.gradnorm_log.close()
     
     def __del__(self):
         self.close()
@@ -275,6 +297,7 @@ def train_one_step(
     epoch: int,
     step_num: int,
     logger: MetricsLogger,
+    gradnorm_scheduler: Optional[GradNormScheduler] = None,
 ) -> Dict[str, float]:
     """
     Train on one simulation step (one epoch through that step's data).
@@ -299,6 +322,8 @@ def train_one_step(
         Current simulation step number
     logger : MetricsLogger
         Metrics logger
+    gradnorm_scheduler : Optional[GradNormScheduler]
+        GradNorm scheduler
         
     Returns
     -------
@@ -325,7 +350,23 @@ def train_one_step(
         'doppler_loss': 0.0,
         'temperature_loss': 0.0,
     }
+    
+    # GradNorm tracking
+    if gradnorm_scheduler is not None:
+        step_metrics.update({
+            'mse_grad_norm': 0.0,
+            'wfa_grad_norm': 0.0,
+            'doppler_grad_norm': 0.0,
+            'temperature_grad_norm': 0.0,
+            'mse_weight': 0.0,
+            'wfa_weight': 0.0,
+            'doppler_weight': 0.0,
+            'temperature_weight': 0.0,
+            'grad_norm_loss': 0.0,
+        })
+    
     n_batches = 0
+    batch_count = 0
     
     for batch_idx, (stokes_batch, mhd_batch, spatial_idx_batch) in enumerate(dataloader):
         # Move to device
@@ -339,17 +380,69 @@ def train_one_step(
         # Forward pass
         predictions = model(stokes_batch)
         
-        # Compute total loss (MSE + physics)
-        loss_dict = model.compute_loss(
-            predictions=predictions,
-            targets=mhd_batch,
-            spatial_indices=spatial_idx_batch,
-        )
-        
-        total_loss = loss_dict['loss']
-        
-        # Backward pass
-        total_loss.backward()
+        if config.use_gradnorm and gradnorm_scheduler is not None:
+            # Compute individual unweighted losses for GradNorm
+            loss_dict = model.compute_loss(
+                predictions=predictions,
+                targets=mhd_batch,
+                spatial_indices=spatial_idx_batch,
+                return_individual=True,
+            )
+            
+            individual_losses = loss_dict['individual']
+            
+            # Compute weighted loss using GradNorm
+            total_loss = gradnorm_scheduler.compute_weighted_loss(individual_losses)
+            
+            # Backward pass
+            total_loss.backward()
+            
+            # Update GradNorm weights every N batches
+            if batch_count % config.gradnorm_update_freq == 0:
+                current_losses = {k: v.item() for k, v in individual_losses.items()}
+                gradnorm_diagnostics = gradnorm_scheduler.step(
+                    individual_losses,
+                    model,
+                    current_losses
+                )
+                
+                # Log GradNorm metrics
+                if logger is not None:
+                    logger.log_gradnorm(epoch, step_num, batch_idx, gradnorm_diagnostics)
+                
+                # Accumulate GradNorm metrics
+                for key, value in gradnorm_diagnostics.items():
+                    metric_key = key
+                    if metric_key in step_metrics:
+                        step_metrics[metric_key] += value
+            
+            # Track individual loss components for logging
+            step_metrics['mse_loss'] += loss_dict['mse'].item()
+            step_metrics['physics_loss'] += loss_dict['physics'].item()
+            step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
+            step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
+            step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
+            
+        else:
+            # Standard training with manual lambda weights
+            loss_dict = model.compute_loss(
+                predictions=predictions,
+                targets=mhd_batch,
+                spatial_indices=spatial_idx_batch,
+                return_individual=False,
+            )
+            
+            total_loss = loss_dict['loss']
+            
+            # Backward pass
+            total_loss.backward()
+            
+            # Accumulate loss components
+            step_metrics['mse_loss'] += loss_dict['mse'].item()
+            step_metrics['physics_loss'] += loss_dict['physics'].item()
+            step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
+            step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
+            step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
         
         # Gradient clipping
         if config.gradient_clip > 0:
@@ -357,14 +450,9 @@ def train_one_step(
         
         optimizer.step()
         
-        # Accumulate all loss components
-        step_metrics['total_loss'] += loss_dict['loss'].item()
-        step_metrics['mse_loss'] += loss_dict['mse'].item()
-        step_metrics['physics_loss'] += loss_dict['physics'].item()
-        step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
-        step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
-        step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
+        step_metrics['total_loss'] += total_loss.item()
         n_batches += 1
+        batch_count += 1
     
     # Average metrics over all batches
     for key in step_metrics.keys():
@@ -523,6 +611,7 @@ def train_epoch(
     epoch: int,
     logger: Optional[MetricsLogger] = None,
     n_steps_per_epoch: int = -1,
+    gradnorm_scheduler: Optional[GradNormScheduler] = None,
 ) -> Dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
@@ -547,6 +636,8 @@ def train_epoch(
         Logger for batch-level metrics
     n_steps_per_epoch : int, optional
         Maximum number of steps to use per epoch (-1 for all steps)
+    gradnorm_scheduler : Optional[GradNormScheduler]
+        GradNorm scheduler
         
     Returns
     -------
@@ -605,6 +696,7 @@ def train_epoch(
                 epoch=epoch,
                 step_num=step,
                 logger=logger,
+                gradnorm_scheduler=gradnorm_scheduler,
             )
             
             # Accumulate step metrics (including temperature)
@@ -648,10 +740,13 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Epochs: {config.n_epochs}")
     print(f"Batch size: {config.batch_size}")
     print(f"Learning rate: {config.learning_rate}")
-    print(f"Physics regularization: {config.use_physics}")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
+    print(f"Use GradNorm: {config.use_gradnorm}")
+    if config.use_gradnorm:
+        print(f"GradNorm alpha: {config.gradnorm_alpha}")
+        print(f"GradNorm update frequency: {config.gradnorm_update_freq}")
     print(f"B_LOS physics mode: {config.blos_physics_mode}")
     if config.blos_physics_mode == "single_height":
         print(f"B_LOS target log(tau): {config.blos_target_logtau}")
@@ -683,7 +778,6 @@ def train_pinn_model(config: TrainingConfig):
         pool_size=config.pool_size,
         n_linear_layers=config.n_linear_layers,
         dropout_rate=config.dropout_rate,
-        use_physics=config.use_physics,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
@@ -704,6 +798,19 @@ def train_pinn_model(config: TrainingConfig):
         lr=config.learning_rate,
         weight_decay=config.weight_decay
     )
+    
+    # GradNorm scheduler
+    gradnorm_scheduler = None
+    if config.use_gradnorm and any([config.lambda_wfa > 0, config.lambda_doppler > 0, config.lambda_temp > 0]):
+        print("\nInitializing GradNorm scheduler...")
+        initial_weights = [1.0, 1.0, 1.0, 1.0]  # MSE, WFA, Doppler, Temp
+        gradnorm_scheduler = GradNormScheduler(
+            num_tasks=4,
+            alpha=config.gradnorm_alpha,
+            initial_weights=initial_weights,
+            device=config.device
+        )
+        print(f"  ✓ GradNorm initialized with alpha={config.gradnorm_alpha}")
     
     # Scheduler
     if config.scheduler_type == 'plateau':
@@ -773,6 +880,7 @@ def train_pinn_model(config: TrainingConfig):
             epoch=epoch,
             logger=logger,
             n_steps_per_epoch=-1,  # Use all training steps
+            gradnorm_scheduler=gradnorm_scheduler,
         )
         
         avg_train_loss = epoch_metrics['total_loss']
@@ -812,6 +920,13 @@ def train_pinn_model(config: TrainingConfig):
         print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
         print(f"        └─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
+        
+        # Print GradNorm weights if enabled
+        if gradnorm_scheduler is not None:
+            weights = gradnorm_scheduler.task_weights.detach().cpu().numpy()
+            print(f"  GradNorm Weights:")
+            print(f"    MSE: {weights[0]:.4f}, WFA: {weights[1]:.4f}, "
+                  f"Doppler: {weights[2]:.4f}, Temp: {weights[3]:.4f}")
         
         # Save checkpoint
         is_best = avg_val_loss < best_val_loss

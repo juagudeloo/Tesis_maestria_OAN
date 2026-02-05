@@ -17,20 +17,12 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
     
     Parameters
     ----------
-    use_physics : {None, 'wfa', 'doppler', 'temperature', 'both', 'all'}, optional
-        Controls which physics regularization to apply:
-        - None: No physics regularization (pure supervised learning)
-        - 'wfa': Only WFA B_LOS regularization
-        - 'doppler': Only Doppler V_LOS regularization
-        - 'temperature': Only temperature regularization
-        - 'both': Both WFA and Doppler regularization
-        - 'all': All physics terms (WFA, Doppler, and Temperature)
     lambda_wfa : float
-        Weight for WFA B_LOS loss term
+        Weight for WFA B_LOS loss term (0.0 to disable)
     lambda_doppler : float
-        Weight for Doppler V_LOS loss term
+        Weight for Doppler V_LOS loss term (0.0 to disable)
     lambda_temp : float
-        Weight for temperature loss term
+        Weight for temperature loss term (0.0 to disable)
     blos_physics_mode : {'tau_averaged', 'single_height'}, optional
         Mode for computing B_LOS comparison
     blos_target_logtau : float, optional
@@ -48,7 +40,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
     def __init__(
         self,
         *,
-        use_physics: Optional[str] = None,
         lambda_wfa: float = 0.01,
         lambda_doppler: float = 0.01,
         lambda_temp: float = 0.01,
@@ -63,11 +54,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
     ) -> None:
         super().__init__(dropout_rate=dropout_rate, **kwargs)
         
-        # Validate and store physics regularization mode
-        valid_modes = [None, 'wfa', 'doppler', 'temperature', 'both', 'all']
-        if use_physics not in valid_modes:
-            raise ValueError(f"use_physics must be one of {valid_modes}, got {use_physics}")
-        
         # Validate physics_mode for each quantity
         valid_physics_modes = ['tau_averaged', 'single_height']
         if blos_physics_mode not in valid_physics_modes:
@@ -77,7 +63,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         if temp_physics_mode not in valid_physics_modes:
             raise ValueError(f"temp_physics_mode must be one of {valid_physics_modes}, got {temp_physics_mode}")
         
-        self.use_physics = use_physics
         self.lambda_wfa = float(lambda_wfa)
         self.lambda_doppler = float(lambda_doppler)
         self.lambda_temp = float(lambda_temp)
@@ -535,8 +520,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         loss_components : Dict[str, float]
             Individual loss components for logging
         """
-        # Return zero if physics is disabled
-        if self.use_physics is None:
+        # Return zero if all physics terms are disabled
+        if self.lambda_wfa == 0 and self.lambda_doppler == 0 and self.lambda_temp == 0:
             device = self._get_device()
             return torch.tensor(0.0, device=device), {}
         
@@ -559,19 +544,19 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             loss_components['temp_target_logtau'] = self.temp_target_logtau
         
         # WFA B_LOS loss (if enabled)
-        if self.use_physics in ['wfa', 'both', 'all'] and self.lambda_wfa > 0:
+        if self.lambda_wfa > 0:
             wfa_loss = self._compute_wfa_loss(denorm_pred, spatial_indices)
             loss_components['wfa'] = wfa_loss.item()
             total_loss = total_loss + self.lambda_wfa * wfa_loss
         
         # Doppler V_LOS loss (if enabled)
-        if self.use_physics in ['doppler', 'both', 'all'] and self.lambda_doppler > 0:
+        if self.lambda_doppler > 0:
             doppler_loss = self._compute_doppler_loss(denorm_pred, spatial_indices)
             loss_components['doppler'] = doppler_loss.item()
             total_loss = total_loss + self.lambda_doppler * doppler_loss
         
         # Temperature loss (if enabled)
-        if self.use_physics in ['temperature', 'all'] and self.lambda_temp > 0:
+        if self.lambda_temp > 0:
             temp_loss = self._compute_temperature_loss(denorm_pred, spatial_indices)
             loss_components['temperature'] = temp_loss.item()
             total_loss = total_loss + self.lambda_temp * temp_loss
@@ -583,6 +568,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         predictions: torch.Tensor,
         targets: torch.Tensor,
         spatial_indices: Optional[torch.Tensor] = None,
+        return_individual: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute total loss with optional physics regularization.
@@ -595,31 +581,55 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Ground truth targets (batch_size, 63)
         spatial_indices : torch.Tensor, optional
             Spatial coordinates (batch_size, 2) for physics losses
+        return_individual : bool
+            If True, return unweighted individual loss terms for GradNorm
             
         Returns
         -------
         loss_dict : Dict[str, torch.Tensor]
-            Dictionary containing 'loss', 'mse', 'physics', and components
+            Dictionary containing loss terms
         """
         # Supervised MSE loss
         mse_loss = F.mse_loss(predictions, targets)
         
-        # Physics regularization
-        if self.use_physics is not None and spatial_indices is not None:
-            physics_loss, physics_components = self.compute_physics_loss(
+        # Physics regularization - check if ANY lambda is non-zero and spatial_indices provided
+        use_physics = spatial_indices is not None and any([
+            self.lambda_wfa > 0,
+            self.lambda_doppler > 0,
+            self.lambda_temp > 0
+        ])
+        
+        if use_physics:
+            physics_loss_total, physics_components = self.compute_physics_loss(
                 predictions, spatial_indices
             )
         else:
             device = self._get_device()
-            physics_loss = torch.tensor(0.0, device=device)
+            physics_loss_total = torch.tensor(0.0, device=device)
             physics_components = {}
         
-        # Total loss
-        total_loss = mse_loss + physics_loss
+        if return_individual:
+            # Return individual unweighted terms for GradNorm
+            individual_losses = {
+                'mse': mse_loss,
+                'wfa': torch.tensor(physics_components.get('wfa', 0.0), device=self._get_device()),
+                'doppler': torch.tensor(physics_components.get('doppler', 0.0), device=self._get_device()),
+                'temperature': torch.tensor(physics_components.get('temperature', 0.0), device=self._get_device()),
+            }
+            return {
+                'individual': individual_losses,
+                'total': mse_loss + physics_loss_total,
+                'mse': mse_loss,
+                'physics': physics_loss_total,
+                **physics_components
+            }
+        
+        # Total loss (with manual lambda weighting if not using GradNorm)
+        total_loss = mse_loss + physics_loss_total
 
         return {
             "loss": total_loss,
             "mse": mse_loss,
-            "physics": physics_loss,
+            "physics": physics_loss_total,
             **physics_components
         }
