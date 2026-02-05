@@ -1,0 +1,76 @@
+#!/bin/bash -l
+## "%j" es el JobID, un numero asignado por el sistema a su proceso
+#SBATCH --job-name=experiment         #Nombre del Trabajo
+#SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
+#SBATCH -wmaxwell               #Nombre del nodo a usar (opcional)
+#SBATCH --partition=gpu.cecc            #Particion a usar(puede ser: cpu.cecc o gpu.cecc)
+##SBATCH --time=15-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
+#SBATCH --nodes=1                       #Numberode nodos a usar
+#SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
+#SBATCH --mem=10G                       #Total de memoria RAM por nodo en Gbytes
+#SBATCH --gres=gpu:1              # Numbers of needed GPU.
+#SBATCH --output=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/experiments/experiment_%j.out      #archivo salida estandar(seguimiento)
+#SBATCH --error=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/experiments/experiment_%j.err       #archivo de Errores
+###SBATCH --mail-type=begin             #Send email when job begins
+###SBATCH --mail-type=end               #Send email when job ends
+###SBATCH --mail-user=juagudeloo@unal.edu.co
+#SBATCH --export=SCRATCH_DIR=/scratch/$SLURM_JOB_ACCOUNT/$SLURM_JOB_USER/$SLURM_JOB_ID
+
+
+
+module purge
+module load envs/anaconda3
+conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
+
+##cd $SCRATCH_DIR ##ehjecutar en  /scratchsan
+
+# ==============================================================================
+# EXPERIMENT CONFIGURATION
+# ==============================================================================
+
+# Data range
+MIN_STEP=150
+MAX_STEP=153
+
+# Training hyperparameters
+LEARNING_RATE=1e-2
+N_EPOCHS=50
+
+# Physics regularization weights (set to 0.0 to disable)
+LAMBDA_WFA=1e-4
+LAMBDA_DOPPLER=1e-2
+LAMBDA_TEMP=1e-2
+
+# Physics modes
+BLOS_MODE='tau_averaged'        # 'tau_averaged' or 'single_height'
+BLOS_TARGET_LOGTAU=-1.0         # Only used if BLOS_MODE='single_height'
+
+VLOS_MODE='single_height'       # 'tau_averaged' or 'single_height'
+VLOS_TARGET_LOGTAU=-1.0         # Only used if VLOS_MODE='single_height'
+
+TEMP_MODE='single_height'       # 'tau_averaged' or 'single_height'
+TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = photosphere)
+
+# ==============================================================================
+# RUN EXPERIMENT
+# ==============================================================================
+
+python3 ablation_study.py \
+    --n_epochs "${N_EPOCHS}" \
+    --min_step "${MIN_STEP}" \
+    --max_step "${MAX_STEP}" \
+    --n_steps -1 \
+    --device cuda \
+    --experiment_name "physics_regularization_ablation_${MIN_STEP}_to_${MAX_STEP}-fixed_lambdas" \
+    --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
+    --learning_rate "${LEARNING_RATE}" \
+    --lambda_wfa "${LAMBDA_WFA}" \
+    --lambda_doppler "${LAMBDA_DOPPLER}" \
+    --lambda_temp "${LAMBDA_TEMP}" \
+    --blos_physics_mode "${BLOS_MODE}" \
+    --vlos_physics_mode "${VLOS_MODE}" \
+    --vlos_target_logtau "${VLOS_TARGET_LOGTAU}" \
+    --temp_physics_mode "${TEMP_MODE}" \
+    --temp_target_logtau "${TEMP_TARGET_LOGTAU}"
+    # Note: --use_gradnorm flag is omitted, so GradNorm is disabled (naive approach)
+
