@@ -783,6 +783,12 @@ def main():
     parser.add_argument('--gradnorm_alpha', type=float, default=1.5,
                        help='GradNorm alpha parameter (default: 1.5)')
     
+    # Experiment selection
+    parser.add_argument('--experiments', type=str, nargs='+',
+                       choices=['all_physics_terms', 'wfa_only', 'doppler_only', 'black_body_only', 'no_physics', 'all'],
+                       default=['all'],
+                       help='Which experiments to run (default: all)')
+    
     args = parser.parse_args()
     
     # Base configuration
@@ -815,9 +821,8 @@ def main():
     print("=" * 80 + "\n")
     
     # Define experiments using TrainingConfig with command-line arguments
-    experiments = [
-        # 1. All physics terms with specified lambdas
-        TrainingConfig(
+    all_experiment_configs = {
+        'all_physics_terms': TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
@@ -836,8 +841,7 @@ def main():
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
         ),
-        # 2. WFA only
-        TrainingConfig(
+        'wfa_only': TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
@@ -855,8 +859,7 @@ def main():
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
         ),
-        # 3. Doppler only
-        TrainingConfig(
+        'doppler_only': TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
@@ -874,8 +877,7 @@ def main():
             checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
             log_dir=output_dir / "doppler_only" / "logs",
         ),
-        # 4. Black-body temperature only
-        TrainingConfig(
+        'black_body_only': TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
@@ -893,8 +895,7 @@ def main():
             checkpoint_dir=output_dir / "black_body_only" / "checkpoints",
             log_dir=output_dir / "black_body_only" / "logs",
         ),
-        # 5. No physics (baseline)
-        TrainingConfig(
+        'no_physics': TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
@@ -912,18 +913,28 @@ def main():
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
         ),
-    ]
+    }
     
-    experiment_names = [
-        'all_physics_terms',
-        'wfa_only',
-        'doppler_only',
-        'black_body_only',
-        'no_physics'
-    ]
+    # Parse experiments to run
+    if 'all' in args.experiments:
+        experiments_to_run = list(all_experiment_configs.keys())
+    else:
+        experiments_to_run = args.experiments
     
-    # Run experiments
-    for name, config in zip(experiment_names, experiments):
+    print("\n" + "=" * 80)
+    print("EXPERIMENTS TO RUN".center(80))
+    print("=" * 80)
+    for i, exp_name in enumerate(experiments_to_run, 1):
+        print(f"  {i}. {exp_name}")
+    print("=" * 80 + "\n")
+    
+    # Run selected experiments
+    for name in experiments_to_run:
+        if name not in all_experiment_configs:
+            print(f"⚠ Warning: Unknown experiment '{name}', skipping...")
+            continue
+        
+        config = all_experiment_configs[name]
         results = run_single_experiment(
             experiment_name=name,
             config=config,
@@ -936,7 +947,7 @@ def main():
         )
         
         tracker.add_experiment(name, results)
-            
+    
     tracker.save_results()
     tracker.print_summary_table()
     tracker.generate_comparison_plots()
