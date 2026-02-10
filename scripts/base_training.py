@@ -57,6 +57,7 @@ class TrainingConfig:
     min_step: int = 60
     max_step: int = 200
     dz_km: float = 10.0
+    step_size: int = 1  # Step size between simulation steps
     
     # Training parameters
     n_epochs: int = 20
@@ -459,7 +460,8 @@ def train_one_step(
         step_metrics[key] /= n_batches
     
     # Log metrics
-    logger.log_batch(epoch=epoch, step=step_num, batch=0, loss_dict=step_metrics)
+    if logger is not None:
+        logger.log_batch(epoch=epoch, step=step_num, batch=0, loss_dict=step_metrics)
     
     return step_metrics
 
@@ -736,7 +738,7 @@ def train_pinn_model(config: TrainingConfig):
     print("=" * 70)
     print(f"Device: {config.device}")
     print(f"Data path: {config.data_path}")
-    print(f"Steps: {config.min_step} to {config.max_step}")
+    print(f"Steps: {config.min_step} to {config.max_step} (step size: {config.step_size})")
     print(f"Epochs: {config.n_epochs}")
     print(f"Batch size: {config.batch_size}")
     print(f"Learning rate: {config.learning_rate}")

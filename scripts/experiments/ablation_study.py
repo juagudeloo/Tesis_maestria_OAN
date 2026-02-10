@@ -63,14 +63,14 @@ class ExperimentTracker:
             print("No results to display")
             return
         
-        print("\n" + "=" * 120)
-        print("PHYSICS REGULARIZATION ABLATION STUDY - SUMMARY".center(120))
-        print("=" * 120)
+        print("\n" + "=" * 140)
+        print("PHYSICS REGULARIZATION ABLATION STUDY - SUMMARY".center(140))
+        print("=" * 140)
         
         # Header
-        header = f"{'Experiment':<25} {'Val Loss':<12} {'Time (min)':<12} {'B_LOS RRMSE':<15} {'V_LOS RRMSE':<15} {'Best?':<8}"
+        header = f"{'Experiment':<25} {'Val Loss':<12} {'Time (min)':<12} {'B_LOS RRMSE':<15} {'V_LOS RRMSE':<15} {'Temp RRMSE':<15} {'Best?':<8}"
         print(header)
-        print("-" * 120)
+        print("-" * 140)
         
         # Find best model
         best_exp = min(self.results.keys(), 
@@ -86,14 +86,15 @@ class ExperimentTracker:
                   f"{metrics['training_time_minutes']:<12.1f} "
                   f"{metrics['test_metrics']['blos_rrmse_tau_avg']:<15.6f} "
                   f"{metrics['test_metrics']['vlos_rrmse_tau_avg']:<15.6f} "
+                  f"{metrics['test_metrics']['temp_rrmse_tau_avg']:<15.6f} "
                   f"{is_best:<8}")
             print(row)
         
-        print("=" * 120)
+        print("=" * 140)
         
         # Print key findings
         print("\n📊 KEY FINDINGS:")
-        print("-" * 120)
+        print("-" * 140)
         
         baseline_name = 'no_physics'
         if baseline_name in self.results and best_exp != baseline_name:
@@ -108,7 +109,7 @@ class ExperimentTracker:
             print("⚠ Physics regularization did NOT improve performance")
             print("  Recommendation: Check lambda values or physics approximation quality")
         
-        print("=" * 120 + "\n")
+        print("=" * 140 + "\n")
     
     def plot_individual_loss_curves(self):
         """Generate individual plots for each experiment showing all loss components."""
@@ -180,13 +181,13 @@ class ExperimentTracker:
             print("No results to plot")
             return
         
-        fig = plt.figure(figsize=(20, 18))
+        fig = plt.figure(figsize=(20, 24))
         
         # Extract data
         experiments = list(self.results.keys())
         
         # 1. Validation Loss Comparison
-        ax1 = plt.subplot(3, 3, 1)
+        ax1 = plt.subplot(4, 3, 1)
         val_losses = [self.results[exp]['final_val_loss'] for exp in experiments]
         bars1 = ax1.bar(range(len(experiments)), val_losses, color='steelblue', alpha=0.7)
         ax1.set_xticks(range(len(experiments)))
@@ -200,7 +201,7 @@ class ExperimentTracker:
                     f'{val:.4f}', ha='center', va='bottom', fontsize=9)
         
         # 2. Training Time Comparison
-        ax2 = plt.subplot(3, 3, 2)
+        ax2 = plt.subplot(4, 3, 2)
         train_times = [self.results[exp]['training_time_minutes'] for exp in experiments]
         bars2 = ax2.bar(range(len(experiments)), train_times, color='coral', alpha=0.7)
         ax2.set_xticks(range(len(experiments)))
@@ -214,7 +215,7 @@ class ExperimentTracker:
                     f'{val:.1f}', ha='center', va='bottom', fontsize=9)
         
         # 3. B_LOS RRMSE (Tau-averaged)
-        ax3 = plt.subplot(3, 3, 3)
+        ax3 = plt.subplot(4, 3, 3)
         blos_rrmse = [self.results[exp]['test_metrics']['blos_rrmse_tau_avg'] 
                       for exp in experiments]
         bars3 = ax3.bar(range(len(experiments)), blos_rrmse, color='forestgreen', alpha=0.7)
@@ -231,7 +232,7 @@ class ExperimentTracker:
                     f'{val:.4f}', ha='center', va='bottom', fontsize=9)
         
         # 4. V_LOS RRMSE (Tau-averaged)
-        ax4 = plt.subplot(3, 3, 4)
+        ax4 = plt.subplot(4, 3, 4)
         vlos_rrmse = [self.results[exp]['test_metrics']['vlos_rrmse_tau_avg'] 
                       for exp in experiments]
         bars4 = ax4.bar(range(len(experiments)), vlos_rrmse, color='purple', alpha=0.7)
@@ -247,94 +248,132 @@ class ExperimentTracker:
             ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
                     f'{val:.4f}', ha='center', va='bottom', fontsize=9)
         
-        # 5. Convergence curves (validation loss)
-        ax5 = plt.subplot(3, 3, 5)
+        # 5. Temperature RRMSE (Tau-averaged) - NEW
+        ax5 = plt.subplot(4, 3, 5)
+        temp_rrmse = [self.results[exp]['test_metrics']['temp_rrmse_tau_avg'] 
+                      for exp in experiments]
+        bars5 = ax5.bar(range(len(experiments)), temp_rrmse, color='darkorange', alpha=0.7)
+        ax5.set_xticks(range(len(experiments)))
+        ax5.set_xticklabels(experiments, rotation=45, ha='right')
+        ax5.set_ylabel('RRMSE')
+        ax5.set_title('Temperature RRMSE (Tau-Averaged)')
+        ax5.grid(True, alpha=0.3)
+        ax5.axhline(y=min(temp_rrmse), color='red', linestyle='--', alpha=0.5, label='Best')
+        ax5.legend()
+        
+        for i, (bar, val) in enumerate(zip(bars5, temp_rrmse)):
+            ax5.text(bar.get_x() + bar.get_width()/2, bar.get_height(), 
+                    f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # 6. Convergence curves (validation loss)
+        ax6 = plt.subplot(4, 3, 6)
         for exp in experiments:
             val_history = self.results[exp]['val_loss_history']
             epochs = range(1, len(val_history) + 1)
-            ax5.plot(epochs, val_history, marker='o', label=exp, linewidth=2)
-        ax5.set_xlabel('Epoch')
-        ax5.set_ylabel('Validation Loss')
-        ax5.set_title('Validation Loss Convergence')
-        ax5.legend()
-        ax5.grid(True, alpha=0.3)
+            ax6.plot(epochs, val_history, marker='o', label=exp, linewidth=2)
+        ax6.set_xlabel('Epoch')
+        ax6.set_ylabel('Validation Loss')
+        ax6.set_title('Validation Loss Convergence')
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
         
-        # 6. Relative improvement matrix
-        ax6 = plt.subplot(3, 3, 6)
+        # 7. Relative improvement matrix
+        ax7 = plt.subplot(4, 3, 7)
         baseline_name = 'no_physics'
         if baseline_name in self.results:
             baseline_val = self.results[baseline_name]['final_val_loss']
             baseline_blos = self.results[baseline_name]['test_metrics']['blos_rrmse_tau_avg']
             baseline_vlos = self.results[baseline_name]['test_metrics']['vlos_rrmse_tau_avg']
+            baseline_temp = self.results[baseline_name]['test_metrics']['temp_rrmse_tau_avg']
             
             improvements = []
             for exp in experiments:
                 if exp == baseline_name:
-                    improvements.append([0, 0, 0])
+                    improvements.append([0, 0, 0, 0])
                 else:
                     val_imp = (baseline_val - self.results[exp]['final_val_loss']) / baseline_val * 100
                     blos_imp = (baseline_blos - self.results[exp]['test_metrics']['blos_rrmse_tau_avg']) / baseline_blos * 100
                     vlos_imp = (baseline_vlos - self.results[exp]['test_metrics']['vlos_rrmse_tau_avg']) / baseline_vlos * 100
-                    improvements.append([val_imp, blos_imp, vlos_imp])
+                    temp_imp = (baseline_temp - self.results[exp]['test_metrics']['temp_rrmse_tau_avg']) / baseline_temp * 100
+                    improvements.append([val_imp, blos_imp, vlos_imp, temp_imp])
             
             improvements = np.array(improvements)
             
-            im = ax6.imshow(improvements.T, cmap='RdYlGn', aspect='auto', vmin=-20, vmax=20)
-            ax6.set_xticks(range(len(experiments)))
-            ax6.set_xticklabels(experiments, rotation=45, ha='right')
-            ax6.set_yticks([0, 1, 2])
-            ax6.set_yticklabels(['Val Loss', 'B_LOS RRMSE', 'V_LOS RRMSE'])
-            ax6.set_title('% Improvement over Baseline\n(Positive = Better)')
+            im = ax7.imshow(improvements.T, cmap='RdYlGn', aspect='auto', vmin=-20, vmax=20)
+            ax7.set_xticks(range(len(experiments)))
+            ax7.set_xticklabels(experiments, rotation=45, ha='right')
+            ax7.set_yticks([0, 1, 2, 3])
+            ax7.set_yticklabels(['Val Loss', 'B_LOS RRMSE', 'V_LOS RRMSE', 'Temp RRMSE'])
+            ax7.set_title('% Improvement over Baseline\n(Positive = Better)')
             
             for i in range(len(experiments)):
-                for j in range(3):
-                    ax6.text(i, j, f'{improvements[i, j]:.1f}%',
-                           ha="center", va="center", color="black", fontsize=9)
+                for j in range(4):
+                    ax7.text(i, j, f'{improvements[i, j]:.1f}%',
+                           ha="center", va="center", color="black", fontsize=8)
             
-            plt.colorbar(im, ax=ax6, label='% Improvement')
+            plt.colorbar(im, ax=ax7, label='% Improvement')
         
-        # 7. Total Loss Curves
-        ax7 = plt.subplot(3, 3, 7)
+        # 8. Total Loss Curves
+        ax8 = plt.subplot(4, 3, 8)
         for exp in experiments:
             if 'train_loss_history' in self.results[exp]:
                 loss_history = self.results[exp]['train_loss_history']
                 epochs = range(1, len(loss_history) + 1)
-                ax7.plot(epochs, loss_history, marker='o', label=exp, linewidth=2, markersize=4)
-        ax7.set_xlabel('Epoch')
-        ax7.set_ylabel('Total Loss')
-        ax7.set_title('Total Loss Convergence (Training)')
-        ax7.legend(fontsize=8)
-        ax7.grid(True, alpha=0.3)
-        ax7.set_yscale('log')
-        
-        # 8. MSE Loss Component
-        ax8 = plt.subplot(3, 3, 8)
-        for exp in experiments:
-            if 'mse_loss_history' in self.results[exp]:
-                loss_history = self.results[exp]['mse_loss_history']
-                epochs = range(1, len(loss_history) + 1)
-                ax8.plot(epochs, loss_history, marker='s', label=exp, linewidth=2, markersize=4)
+                ax8.plot(epochs, loss_history, marker='o', label=exp, linewidth=2, markersize=4)
         ax8.set_xlabel('Epoch')
-        ax8.set_ylabel('MSE Loss')
-        ax8.set_title('MSE Loss Component')
+        ax8.set_ylabel('Total Loss')
+        ax8.set_title('Total Loss Convergence (Training)')
         ax8.legend(fontsize=8)
         ax8.grid(True, alpha=0.3)
         ax8.set_yscale('log')
         
-        # 9. Physics Loss Components
-        ax9 = plt.subplot(3, 3, 9)
+        # 9. MSE Loss Component
+        ax9 = plt.subplot(4, 3, 9)
+        for exp in experiments:
+            if 'mse_loss_history' in self.results[exp]:
+                loss_history = self.results[exp]['mse_loss_history']
+                epochs = range(1, len(loss_history) + 1)
+                ax9.plot(epochs, loss_history, marker='s', label=exp, linewidth=2, markersize=4)
+        ax9.set_xlabel('Epoch')
+        ax9.set_ylabel('MSE Loss')
+        ax9.set_title('MSE Loss Component')
+        ax9.legend(fontsize=8)
+        ax9.grid(True, alpha=0.3)
+        ax9.set_yscale('log')
+        
+        # 10. Physics Loss Components
+        ax10 = plt.subplot(4, 3, 10)
         for exp in experiments:
             if 'physics_loss_history' in self.results[exp]:
                 loss_history = self.results[exp]['physics_loss_history']
                 if len(loss_history) > 0 and any(l > 0 for l in loss_history):
                     epochs = range(1, len(loss_history) + 1)
-                    ax9.plot(epochs, loss_history, marker='^', label=exp, linewidth=2, markersize=4)
-        ax9.set_xlabel('Epoch')
-        ax9.set_ylabel('Physics Loss')
-        ax9.set_title('Physics Loss Components')
-        ax9.legend(fontsize=8)
-        ax9.grid(True, alpha=0.3)
-        ax9.set_yscale('log')
+                    ax10.plot(epochs, loss_history, marker='^', label=exp, linewidth=2, markersize=4)
+        ax10.set_xlabel('Epoch')
+        ax10.set_ylabel('Physics Loss')
+        ax10.set_title('Physics Loss Components')
+        ax10.legend(fontsize=8)
+        ax10.grid(True, alpha=0.3)
+        ax10.set_yscale('log')
+        
+        # 11. Correlation Comparison - NEW
+        ax11 = plt.subplot(4, 3, 11)
+        blos_corr = [self.results[exp]['test_metrics']['blos_correlation'] for exp in experiments]
+        vlos_corr = [self.results[exp]['test_metrics']['vlos_correlation'] for exp in experiments]
+        temp_corr = [self.results[exp]['test_metrics']['temp_correlation'] for exp in experiments]
+        
+        x = np.arange(len(experiments))
+        width = 0.25
+        ax11.bar(x - width, blos_corr, width, label='B_LOS', color='forestgreen', alpha=0.7)
+        ax11.bar(x, vlos_corr, width, label='V_LOS', color='purple', alpha=0.7)
+        ax11.bar(x + width, temp_corr, width, label='Temperature', color='darkorange', alpha=0.7)
+        ax11.set_xticks(x)
+        ax11.set_xticklabels(experiments, rotation=45, ha='right')
+        ax11.set_ylabel('Pearson Correlation')
+        ax11.set_title('Correlation Coefficients')
+        ax11.legend()
+        ax11.grid(True, alpha=0.3)
+        ax11.set_ylim([0, 1])
         
         plt.suptitle('Physics Regularization Ablation Study', fontsize=16, y=0.997)
         plt.tight_layout()
@@ -362,6 +401,8 @@ def compute_tau_averaged_metrics(
     all_true_blos = []
     all_pred_vlos = []
     all_true_vlos = []
+    all_pred_temp = []
+    all_true_temp = []
     
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
@@ -379,9 +420,11 @@ def compute_tau_averaged_metrics(
                 
                 true_blos = approx_data['blos'].flatten()
                 true_vlos = approx_data['vlos'].flatten()
+                true_temp = approx_data['temperature'].flatten()
                 
                 step_pred_blos = []
                 step_pred_vlos = []
+                step_pred_temp = []
                 
                 for stokes_batch, _, spatial_idx_batch in dataloader:
                     stokes_batch = stokes_batch.to(device)
@@ -411,13 +454,22 @@ def compute_tau_averaged_metrics(
                     integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
                     pred_vlos_batch = integral_Vz / integral_dtau
                     
+                    # Compute tau-averaged Temperature
+                    # T shape: (batch_size, n_tau=21)
+                    T_avg = (pred_denorm["T"][:, :-1] + pred_denorm["T"][:, 1:]) / 2
+                    integral_T = np.sum(T_avg * dtau[np.newaxis, :], axis=1)
+                    pred_temp_batch = integral_T / integral_dtau
+                    
                     step_pred_blos.append(pred_blos_batch)
                     step_pred_vlos.append(pred_vlos_batch)
+                    step_pred_temp.append(pred_temp_batch)
                 
                 all_pred_blos.append(np.concatenate(step_pred_blos))
                 all_true_blos.append(true_blos)
                 all_pred_vlos.append(np.concatenate(step_pred_vlos))
                 all_true_vlos.append(true_vlos)
+                all_pred_temp.append(np.concatenate(step_pred_temp))
+                all_true_temp.append(true_temp)
                 
             except Exception as e:
                 print(f"Warning: Failed to evaluate step {step}: {e}")
@@ -427,6 +479,8 @@ def compute_tau_averaged_metrics(
     all_true_blos = np.concatenate(all_true_blos)
     all_pred_vlos = np.concatenate(all_pred_vlos)
     all_true_vlos = np.concatenate(all_true_vlos)
+    all_pred_temp = np.concatenate(all_pred_temp)
+    all_true_temp = np.concatenate(all_true_temp)
     
     rmse_blos = np.sqrt(np.mean((all_pred_blos - all_true_blos) ** 2))
     rrmse_blos = rmse_blos / (np.mean(np.abs(all_true_blos)) + 1e-10)
@@ -434,16 +488,23 @@ def compute_tau_averaged_metrics(
     rmse_vlos = np.sqrt(np.mean((all_pred_vlos - all_true_vlos) ** 2))
     rrmse_vlos = rmse_vlos / (np.mean(np.abs(all_true_vlos)) + 1e-10)
     
+    rmse_temp = np.sqrt(np.mean((all_pred_temp - all_true_temp) ** 2))
+    rrmse_temp = rmse_temp / (np.mean(np.abs(all_true_temp)) + 1e-10)
+    
     corr_blos, _ = pearsonr(all_pred_blos, all_true_blos)
     corr_vlos, _ = pearsonr(all_pred_vlos, all_true_vlos)
+    corr_temp, _ = pearsonr(all_pred_temp, all_true_temp)
     
     return {
         'blos_rrmse_tau_avg': float(rrmse_blos),
         'vlos_rrmse_tau_avg': float(rrmse_vlos),
+        'temp_rrmse_tau_avg': float(rrmse_temp),
         'blos_correlation': float(corr_blos),
         'vlos_correlation': float(corr_vlos),
+        'temp_correlation': float(corr_temp),
         'blos_rmse': float(rmse_blos),
         'vlos_rmse': float(rmse_vlos),
+        'temp_rmse': float(rmse_temp),
     }
 
 def run_single_experiment(
@@ -455,6 +516,7 @@ def run_single_experiment(
     n_steps_per_epoch: int = 20,
     min_step: int = 60,
     max_step: int = 200,
+    step_size: int = 1,
 ) -> Dict:
     """Run a single training experiment."""
     print("\n" + "=" * 100)
@@ -462,7 +524,7 @@ def run_single_experiment(
     print("=" * 100)
     print(f"Device: {config.device}")
     print(f"Number of epochs: {config.n_epochs}")
-    print(f"Training step range: {min_step} to {max_step}")
+    print(f"Training step range: {min_step} to {max_step} (step size: {step_size})")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
@@ -587,7 +649,8 @@ def run_single_experiment(
         print(f"  ✓ GradNorm initialized with alpha={config.gradnorm_alpha}")
     
     # Prepare train/val split
-    all_steps = list(range(min_step, max_step+1))
+    step_size = getattr(config, "step_size", 1)
+    all_steps = list(range(min_step, max_step + 1, step_size))
     train_steps = [s for s in all_steps if s not in test_steps]
     
     import random
@@ -742,6 +805,8 @@ def main():
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
     parser.add_argument('--min_step', type=int, default=60, help='Minimum training step (inclusive)')
     parser.add_argument('--max_step', type=int, default=201, help='Maximum training step (exclusive)')
+    parser.add_argument('--step_size', type=int, default=1,
+                       help='Step size between simulation steps (default: 1)')
     parser.add_argument('--experiment_name', type=str, default='physics_regularization_ablation',
                        help='Name for the experiment folder')
     parser.add_argument('--output_dir', type=str, 
@@ -840,6 +905,7 @@ def main():
             device=args.device,
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
+            step_size=args.step_size,
         ),
         'wfa_only': TrainingConfig(
             data_path=str(data_path),
@@ -858,6 +924,7 @@ def main():
             device=args.device,
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
+            step_size=args.step_size,
         ),
         'doppler_only': TrainingConfig(
             data_path=str(data_path),
@@ -876,6 +943,7 @@ def main():
             device=args.device,
             checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
             log_dir=output_dir / "doppler_only" / "logs",
+            step_size=args.step_size,
         ),
         'black_body_only': TrainingConfig(
             data_path=str(data_path),
@@ -894,6 +962,7 @@ def main():
             device=args.device,
             checkpoint_dir=output_dir / "black_body_only" / "checkpoints",
             log_dir=output_dir / "black_body_only" / "logs",
+            step_size=args.step_size,
         ),
         'no_physics': TrainingConfig(
             data_path=str(data_path),
@@ -912,6 +981,7 @@ def main():
             device=args.device,
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
+            step_size=args.step_size,
         ),
     }
     
@@ -944,6 +1014,7 @@ def main():
             n_steps_per_epoch=args.n_steps,
             min_step=args.min_step,
             max_step=args.max_step,
+            step_size=args.step_size,
         )
         
         tracker.add_experiment(name, results)
