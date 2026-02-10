@@ -386,13 +386,40 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
                 raise RuntimeError("Temperature target logtau index not set. Call set_physics_context() first.")
             return self._extract_at_logtau(denorm_pred['T'], self._temp_target_logtau_idx)
 
+    def _compute_rrmse(self, predictions: torch.Tensor, targets: torch.Tensor, epsilon: float = 1e-8) -> torch.Tensor:
+        """
+        Compute Relative Root Mean Square Error (RRMSE).
+        
+        RRMSE = RMSE / mean(|targets|)
+              = sqrt(mean((pred - target)^2)) / mean(|target|)
+        
+        Parameters
+        ----------
+        predictions : torch.Tensor
+            Predicted values
+        targets : torch.Tensor
+            Target values
+        epsilon : float
+            Small value to prevent division by zero
+            
+        Returns
+        -------
+        torch.Tensor
+            RRMSE value (scalar)
+        """
+        mse = torch.mean((predictions - targets) ** 2)
+        rmse = torch.sqrt(mse)
+        mean_abs_target = torch.mean(torch.abs(targets))
+        rrmse = rmse / (mean_abs_target + epsilon)
+        return rrmse
+
     def _compute_wfa_loss(
         self,
         denorm_pred: Dict[str, torch.Tensor],
         spatial_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute WFA-based B_LOS loss in physical units.
+        Compute WFA-based B_LOS loss using RRMSE in physical units.
         
         Parameters
         ----------
@@ -404,7 +431,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Returns
         -------
         loss : torch.Tensor
-            WFA loss value
+            WFA RRMSE loss value
         """
         if self.blos_approx is None:
             raise RuntimeError("B_LOS approximation not set. Call set_physics_context() first.")
@@ -417,8 +444,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         x_idx = spatial_indices[:, 1].long()
         approx_blos = self.blos_approx[y_idx, x_idx]  # (batch_size,)
         
-        # MSE loss in physical units
-        return torch.mean((pred_blos - approx_blos) ** 2)
+        # RRMSE loss in physical units
+        return self._compute_rrmse(pred_blos, approx_blos)
 
     def _compute_doppler_loss(
         self,
@@ -426,7 +453,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         spatial_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute Doppler-based V_LOS loss in physical units.
+        Compute Doppler-based V_LOS loss using RRMSE in physical units.
         
         Parameters
         ----------
@@ -438,7 +465,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Returns
         -------
         loss : torch.Tensor
-            Doppler loss value
+            Doppler RRMSE loss value
         """
         if self.vlos_approx is None:
             raise RuntimeError("V_LOS approximation not set. Call set_physics_context() first.")
@@ -456,8 +483,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         if valid_mask.sum() == 0:
             return torch.tensor(0.0, device=self._get_device())
         
-        # MSE loss in physical units (only valid pixels)
-        return torch.mean((pred_vlos[valid_mask] - approx_vlos[valid_mask]) ** 2)
+        # RRMSE loss in physical units (only valid pixels)
+        return self._compute_rrmse(pred_vlos[valid_mask], approx_vlos[valid_mask])
 
     def _compute_temperature_loss(
         self,
@@ -465,7 +492,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         spatial_indices: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute temperature loss in physical units.
+        Compute temperature loss using RRMSE in physical units.
         
         Parameters
         ----------
@@ -477,7 +504,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Returns
         -------
         loss : torch.Tensor
-            Temperature loss value
+            Temperature RRMSE loss value
         """
         if self.temp_approx is None:
             raise RuntimeError("Temperature approximation not set. Call set_physics_context() first.")
@@ -490,8 +517,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         x_idx = spatial_indices[:, 1].long()
         approx_temp = self.temp_approx[y_idx, x_idx]  # (batch_size,)
         
-        # MSE loss in physical units (Kelvin)
-        return torch.mean((pred_temp - approx_temp) ** 2)
+        # RRMSE loss in physical units (Kelvin)
+        return self._compute_rrmse(pred_temp, approx_temp)
 
     def compute_physics_loss(
         self,
@@ -499,12 +526,12 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         spatial_indices: torch.Tensor,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
-        Compute physics-based regularization losses in physical units.
+        Compute physics-based regularization losses using RRMSE in physical units.
         
         This method computes all enabled physics losses by:
         1. Denormalizing predictions to physical units
         2. Computing tau-averaged or single-height quantities (B_LOS, V_LOS, T)
-        3. Comparing against physics approximations
+        3. Comparing against physics approximations using RRMSE
         
         Parameters
         ----------
