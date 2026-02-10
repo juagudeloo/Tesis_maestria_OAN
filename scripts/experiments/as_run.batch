@@ -30,11 +30,12 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
 # Data range
 MIN_STEP=150
-MAX_STEP=153
+MAX_STEP=151
+STEP_SIZE=1
 
 # Training hyperparameters
-LEARNING_RATE=1e-2
-N_EPOCHS=5
+LEARNING_RATE=1e-3
+N_EPOCHS=50
 
 # Physics regularization weights (set to 0.0 to disable)
 LAMBDA_WFA=1e-4
@@ -51,6 +52,10 @@ VLOS_TARGET_LOGTAU=-1.0         # Only used if VLOS_MODE='single_height'
 TEMP_MODE='single_height'       # 'tau_averaged' or 'single_height'
 TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = photosphere)
 
+# Experiments to run
+# Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
+EXPERIMENTS="doppler_only black_body_only all_physics_terms"
+
 # ==============================================================================
 # RUN EXPERIMENT
 # ==============================================================================
@@ -59,6 +64,7 @@ python3 ablation_study.py \
     --n_epochs "${N_EPOCHS}" \
     --min_step "${MIN_STEP}" \
     --max_step "${MAX_STEP}" \
+    --step_size "${STEP_SIZE}" \
     --n_steps -1 \
     --device cuda \
     --experiment_name "physics_regularization_ablation_${MIN_STEP}_to_${MAX_STEP}-fixed_lambdas" \
@@ -71,6 +77,6 @@ python3 ablation_study.py \
     --vlos_physics_mode "${VLOS_MODE}" \
     --vlos_target_logtau "${VLOS_TARGET_LOGTAU}" \
     --temp_physics_mode "${TEMP_MODE}" \
-    --temp_target_logtau "${TEMP_TARGET_LOGTAU}"
-    # Note: --use_gradnorm flag is omitted, so GradNorm is disabled (naive approach)
+    --temp_target_logtau "${TEMP_TARGET_LOGTAU}" \
+    --experiments ${EXPERIMENTS}
 
