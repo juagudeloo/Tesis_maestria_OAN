@@ -406,75 +406,70 @@ def compute_tau_averaged_metrics(
     
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
-            try:
-                dataset, approx_data = load_and_prepare_step(
-                    step=step,
-                    config=config,
-                    mhd_normalizer=mhd_normalizer,
-                    stokes_normalizer=stokes_normalizer,
+            dataset, approx_data = load_and_prepare_step(
+                step=step,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+            )
+            
+            dataloader = DataLoader(
+                dataset, batch_size=512, shuffle=False, num_workers=0
+            )
+            
+            true_blos = approx_data['blos'].flatten()
+            true_vlos = approx_data['vlos'].flatten()
+            true_temp = approx_data['temp'].flatten()
+            
+            step_pred_blos = []
+            step_pred_vlos = []
+            step_pred_temp = []
+            
+            for stokes_batch, _, spatial_idx_batch in dataloader:
+                stokes_batch = stokes_batch.to(device)
+                predictions = model(stokes_batch)
+                
+                # Convert predictions to numpy for denormalization
+                predictions_np = predictions.cpu().numpy()
+                
+                # Denormalize using inverse_transform (returns dict with 'T', 'Vz', 'Bz')
+                pred_denorm = mhd_normalizer.inverse_transform(
+                    predictions_np, param_order=['T', 'Vz', 'Bz']
                 )
                 
-                dataloader = DataLoader(
-                    dataset, batch_size=512, shuffle=False, num_workers=0
-                )
+                # Compute tau-averaged B_LOS
+                tau_linear = 10 ** logtau_values
+                dtau = np.diff(tau_linear)
+                integral_dtau = tau_linear[-1] - tau_linear[0]
                 
-                true_blos = approx_data['blos'].flatten()
-                true_vlos = approx_data['vlos'].flatten()
-                true_temp = approx_data['temperature'].flatten()
+                # Bz shape: (batch_size, n_tau=21)
+                Bz_avg = (pred_denorm["Bz"][:, :-1] + pred_denorm["Bz"][:, 1:]) / 2
+                integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
+                pred_blos_batch = integral_Bz / integral_dtau
                 
-                step_pred_blos = []
-                step_pred_vlos = []
-                step_pred_temp = []
+                # Compute tau-averaged V_LOS
+                # Vz shape: (batch_size, n_tau=21)
+                Vz_avg = (pred_denorm["Vz"][:, :-1] + pred_denorm["Vz"][:, 1:]) / 2
+                integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
+                pred_vlos_batch = integral_Vz / integral_dtau
                 
-                for stokes_batch, _, spatial_idx_batch in dataloader:
-                    stokes_batch = stokes_batch.to(device)
-                    predictions = model(stokes_batch)
-                    
-                    # Convert predictions to numpy for denormalization
-                    predictions_np = predictions.cpu().numpy()
-                    
-                    # Denormalize using inverse_transform (returns dict with 'T', 'Vz', 'Bz')
-                    pred_denorm = mhd_normalizer.inverse_transform(
-                        predictions_np, param_order=['T', 'Vz', 'Bz']
-                    )
-                    
-                    # Compute tau-averaged B_LOS
-                    tau_linear = 10 ** logtau_values
-                    dtau = np.diff(tau_linear)
-                    integral_dtau = tau_linear[-1] - tau_linear[0]
-                    
-                    # Bz shape: (batch_size, n_tau=21)
-                    Bz_avg = (pred_denorm["Bz"][:, :-1] + pred_denorm["Bz"][:, 1:]) / 2
-                    integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
-                    pred_blos_batch = integral_Bz / integral_dtau
-                    
-                    # Compute tau-averaged V_LOS
-                    # Vz shape: (batch_size, n_tau=21)
-                    Vz_avg = (pred_denorm["Vz"][:, :-1] + pred_denorm["Vz"][:, 1:]) / 2
-                    integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
-                    pred_vlos_batch = integral_Vz / integral_dtau
-                    
-                    # Compute tau-averaged Temperature
-                    # T shape: (batch_size, n_tau=21)
-                    T_avg = (pred_denorm["T"][:, :-1] + pred_denorm["T"][:, 1:]) / 2
-                    integral_T = np.sum(T_avg * dtau[np.newaxis, :], axis=1)
-                    pred_temp_batch = integral_T / integral_dtau
-                    
-                    step_pred_blos.append(pred_blos_batch)
-                    step_pred_vlos.append(pred_vlos_batch)
-                    step_pred_temp.append(pred_temp_batch)
+                # Compute tau-averaged Temperature
+                # T shape: (batch_size, n_tau=21)
+                T_avg = (pred_denorm["T"][:, :-1] + pred_denorm["T"][:, 1:]) / 2
+                integral_T = np.sum(T_avg * dtau[np.newaxis, :], axis=1)
+                pred_temp_batch = integral_T / integral_dtau
                 
-                all_pred_blos.append(np.concatenate(step_pred_blos))
-                all_true_blos.append(true_blos)
-                all_pred_vlos.append(np.concatenate(step_pred_vlos))
-                all_true_vlos.append(true_vlos)
-                all_pred_temp.append(np.concatenate(step_pred_temp))
-                all_true_temp.append(true_temp)
+                step_pred_blos.append(pred_blos_batch)
+                step_pred_vlos.append(pred_vlos_batch)
+                step_pred_temp.append(pred_temp_batch)
+            
+            all_pred_blos.append(np.concatenate(step_pred_blos))
+            all_true_blos.append(true_blos)
+            all_pred_vlos.append(np.concatenate(step_pred_vlos))
+            all_true_vlos.append(true_vlos)
+            all_pred_temp.append(np.concatenate(step_pred_temp))
+            all_true_temp.append(true_temp)
                 
-            except Exception as e:
-                print(f"Warning: Failed to evaluate step {step}: {e}")
-                continue
-    
     all_pred_blos = np.concatenate(all_pred_blos)
     all_true_blos = np.concatenate(all_true_blos)
     all_pred_vlos = np.concatenate(all_pred_vlos)
