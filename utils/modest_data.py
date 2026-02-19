@@ -111,6 +111,100 @@ class ModestData:
 		return self.wl, self.wl_inv
 
 	# ------------------------------------------------------------------
+	# Upsampling for fast-mode observations
+	# ------------------------------------------------------------------
+	def upsample_stokes(
+		self, 
+		upsampling_factor: int = 2,
+		aperture_m: float = 0.50,
+		pixel_scale_arcsec: float = 0.32,
+		lambda_angstrom: float = 6302.0,
+		seed: Optional[int] = None
+	) -> Dict[str, np.ndarray]:
+		"""Upsample observed Stokes data using FFT-based method with noise injection."""
+		if self.obs_stokes is None:
+			raise ValueError("Load observed Stokes before upsampling")
+
+		if seed is not None:
+			np.random.seed(seed)
+
+		ny, nx, nwl = self.obs_stokes["I"].shape
+		f = upsampling_factor
+
+		# Calculate diffraction limit
+		lambda_m = lambda_angstrom * 1e-10
+		scale_rad = pixel_scale_arcsec / (np.degrees(1) * 3600)
+		lambda_over_d = lambda_m / aperture_m
+		q_number = lambda_over_d / scale_rad
+
+		# Dimensions
+		dd = np.array([2 * ny, 2 * nx])
+		dh = dd // 2
+		dn = (dd * f) // 2
+
+		print(f"Upsampling from ({ny}, {nx}) to ({dn[0]}, {dn[1]})")
+
+		upsampled_stokes = {
+			"I": np.zeros((dn[0], dn[1], nwl), dtype=np.float32),
+			"V": np.zeros((dn[0], dn[1], nwl), dtype=np.float32)
+		}
+
+		def ellipse_mask(shape, q):
+			lfx = shape[1] / q
+			lfy = shape[0] / q
+			y, x = np.ogrid[:shape[0], :shape[1]]
+			x_norm = (x - shape[1] // 2) / lfx
+			y_norm = (y - shape[0] // 2) / lfy
+			return np.sqrt(x_norm**2 + y_norm**2)
+
+		aperture = ellipse_mask(dd, q_number)
+		idx_outside = aperture > 1.001
+
+		for key in ["I", "V"]:
+			print(f"Upsampling Stokes {key}...")
+			for iw in range(nwl):
+				if iw % 20 == 0:
+					print(f"  Wavelength {iw}/{nwl}")
+
+				# Step 1: Pad by mirroring
+				im = np.zeros(dd, dtype=np.float32)
+				im[:dh[0], :dh[1]] = self.obs_stokes[key][:, :, iw]
+				im[:dh[0], dh[1]:] = np.fliplr(self.obs_stokes[key][:, :, iw])
+				im[dh[0]:, :dh[1]] = np.flipud(self.obs_stokes[key][:, :, iw])
+				im[dh[0]:, dh[1]:] = np.flipud(np.fliplr(self.obs_stokes[key][:, :, iw]))
+
+				# Step 2: FFT and estimate noise from amplitude spectrum
+				fc = fftshift(fft2(im))
+				power = np.abs(fc)
+				if np.sum(idx_outside) > 10:
+					noise_power = np.median(power[idx_outside])
+				else:
+					noise_power = np.percentile(power, 85)
+
+				# Step 3: Create noise field at padded size
+				noise = np.random.randn(dd[0], dd[1]).astype(np.float32) * noise_power
+				noise_fft = fftshift(fft2(noise))
+
+				# Step 4: Zero-pad noise FFT to upsampled size
+				dfc_shape = (dn[0] * 2, dn[1] * 2)
+				noise_fft_upsampled = np.zeros(dfc_shape, dtype=np.complex64)
+				y_start = (dfc_shape[0] - dd[0]) // 2
+				y_end = y_start + dd[0]
+				x_start = (dfc_shape[1] - dd[1]) // 2
+				x_end = x_start + dd[1]
+				noise_fft_upsampled[y_start:y_end, x_start:x_end] = noise_fft
+
+				# Step 5: Replace center with real data
+				dfc = noise_fft_upsampled.copy()
+				dfc[y_start:y_end, x_start:x_end] = fc
+
+				# Step 6: Inverse FFT
+				upsampled = np.real(ifft2(fftshift(dfc)))
+				upsampled_stokes[key][:, :, iw] = upsampled[:dn[0], :dn[1]]
+
+		return upsampled_stokes
+
+	# ------------------------------------------------------------------
 	# Processing: deconvolution, smoothing, polarization, masking
 	# ------------------------------------------------------------------
 	@staticmethod
@@ -127,18 +221,33 @@ class ModestData:
 		wiener = np.conj(psf_fft) / (np.abs(psf_fft) ** 2 + noise_level)
 		return np.real(ifft2(img_fft * wiener))
 
-	def deconvolve_stokes(self, noise_level: float = 0.01) -> Dict[str, np.ndarray]:
-		if self.obs_stokes is None:
-			raise ValueError("Load observed Stokes before deconvolution")
+	def deconvolve_stokes(self, noise_level: float = 0.01, use_upsampled: bool = False) -> Dict[str, np.ndarray]:
+		"""Apply Wiener deconvolution to Stokes data.
+
+		Parameters
+		----------
+		noise_level : float
+			Noise parameter for Wiener filter
+		use_upsampled : bool
+			If True, use upsampled Stokes as input (must call upsample_stokes first)
+		"""
+		if use_upsampled:
+			if not hasattr(self, 'upsampled_stokes') or self.upsampled_stokes is None:
+				raise ValueError("Call upsample_stokes() before deconvolving upsampled data")
+			source = self.upsampled_stokes
+		else:
+			if self.obs_stokes is None:
+				raise ValueError("Load observed Stokes before deconvolution")
+			source = self.obs_stokes
 
 		psf = self._load_psf()
-		ny, nx, n_wl = self.obs_stokes["I"].shape
+		ny, nx, n_wl = source["I"].shape
 		self.deconvolved_stokes = {key: np.zeros((ny, nx, n_wl), dtype=np.float32) for key in ["I", "V"]}
 
 		for key in ["I", "V"]:
 			for iw in range(n_wl):
 				self.deconvolved_stokes[key][:, :, iw] = self._wiener_deconv(
-					self.obs_stokes[key][:, :, iw], psf, noise_level
+					source[key][:, :, iw], psf, noise_level
 				)
 		return self.deconvolved_stokes
 
@@ -497,14 +606,39 @@ class ModestData:
 	# ------------------------------------------------------------------
 	# Orchestration
 	# ------------------------------------------------------------------
-	def load_all(self, region_bounds: Optional[Tuple[int, int, int, int]] = None, apply_mask: bool = True) -> Dict[str, object]:
+	def load_all(
+		self, 
+		region_bounds: Optional[Tuple[int, int, int, int]] = None, 
+		apply_mask: bool = True,
+		upsample: bool = False,
+		upsampling_factor: int = 2
+	) -> Dict[str, object]:
+		"""Load all MODEST data products with optional upsampling.
+
+		Parameters
+		----------
+		region_bounds : tuple, optional
+			(y_start, y_end, x_start, x_end) for spatial subset
+		apply_mask : bool
+			Whether to apply circular polarization mask
+		upsample : bool
+			Whether to upsample fast-mode observations (0.32" → 0.16")
+		upsampling_factor : int
+			Spatial upsampling factor
+		"""
 		self.load_continuum()
 		self.load_obs_stokes()
 		self.compute_wavelength_arrays()
+
+		if upsample:
+			print("Upsampling Stokes data for PSF compatibility...")
+			self.upsampled_stokes = self.upsample_stokes(upsampling_factor=upsampling_factor)
+			self.deconvolve_stokes(use_upsampled=True)
+		else:
+			self.deconvolve_stokes(use_upsampled=False)
+
 		self.compute_circular_polarization()
 		self.find_sample_pixels()
-
-		self.deconvolve_stokes()
 		self.smooth_stokes()
 
 		self.load_inverted_profs()
@@ -531,68 +665,3 @@ class ModestData:
 			"circ_pol": self.circ_pol,
 			"sample_pixels": self.sample_pixels,
 		}
-  
-  
-"""Utilities for loading and visualizing MODEST Hinode/SP products.
-
-This module implements the ``ModestData`` class, mirroring the pipeline
-documented in ``notebooks/4-modest_data.ipynb``. It supports loading continuum
-maps, observed Stokes profiles, Wiener deconvolution, smoothing, inversion
-products, SPINOR atmosphere parameters, circular polarization masking, and a
-set of plotting helpers.
-
-Usage Example
-=============
-
-Basic usage—load all data with masking applied:
-
-    from utils.modest_data import ModestData
-
-    modest = ModestData()
-    bundle = modest.load_all(apply_mask=True)
-    print(modest.continuum.shape)
-    print(modest.wl)
-    print(modest.sample_pixels)
-
-Load without masking, then apply later:
-
-    modest = ModestData()
-    bundle = modest.load_all(apply_mask=False)
-    modest.compute_circular_polarization()
-    modest.create_mask_from_circular_polarization(threshold=0.015)
-    modest.apply_mask_to_data()
-
-Visualization—plot continuum with sample pixels:
-
-    modest.plot_continuum(save_path="continuum.png")
-
-Plot Stokes profiles for sample pixels at a specific wavelength:
-
-    modest.plot_stokes_profiles(
-        modest.smoothed_stokes,
-        modest.wl,
-        sample_wavelength_idx=50,
-        title="Smoothed Stokes Profiles",
-        save_path="profiles.png"
-    )
-
-Plot spatial Stokes maps:
-
-    modest.plot_stokes_images(
-        modest.deconvolved_stokes,
-        modest.wl,
-        sample_wavelength_idx=50,
-        title="Deconvolved Stokes",
-        save_path="stokes_maps.png"
-    )
-
-Plot SPINOR atmosphere parameters (T, v_los, B_los):
-
-    modest.plot_spinor_atmosphere(save_dir="./spinor_plots/")
-
-Extract a spatial region and get sub-bundles:
-
-    region = modest.extract_region(y_start=50, y_end=150, x_start=50, x_end=150)
-    print(region["continuum"].shape)
-    print(region["spinor_atm"]["T"][-2.0].shape)
-"""
