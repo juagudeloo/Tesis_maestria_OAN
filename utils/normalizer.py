@@ -147,50 +147,57 @@ class MhdNormalizer:
         
         return normalized
     
-    def inverse_transform(self, predictions: np.ndarray, param_order: list = ['T', 'Vz', 'Bz']) -> dict:
+    def denormalize(self, normalized_data: np.ndarray, param: str) -> np.ndarray:
         """
-        Denormalize model predictions back to physical units per τ level.
+        Denormalize predictions back to physical units (per-τ).
         
-        Args:
-            predictions: (n_samples, n_params * n_heights) array from model
-            param_order: order of parameters in predictions
+        Parameters
+        ----------
+        normalized_data : np.ndarray
+            Normalized predictions, shape (n_pixels, n_tau) or (n_samples, n_tau)
+        param : str
+            Parameter name ('T', 'Vz', or 'Bz')
             
-        Returns:
-            denormalized: dict with keys 'T', 'Vz', 'Bz' in physical units
+        Returns
+        -------
+        denormalized : np.ndarray
+            Denormalized values in physical units, same shape as input
         """
         if not self.finalized:
-            raise RuntimeError("Normalizer not finalized.")
+            raise RuntimeError("Normalizer not finalized. Call finalize() first.")
         
-        n_heights = predictions.shape[1] // len(param_order)
-        if n_heights != self.n_tau:
-            raise ValueError(f"Expected {self.n_tau} heights, got {n_heights}")
+        if param not in ['T', 'Vz', 'Bz']:
+            raise ValueError(f"Unknown parameter: {param}")
         
-        denormalized = {}
+        # Initialize output array
+        denormalized = np.zeros_like(normalized_data, dtype=np.float32)
         
-        for i, param in enumerate(param_order):
-            start_idx = i * n_heights
-            end_idx = (i + 1) * n_heights
-            pred_param = predictions[:, start_idx:end_idx]  # (n_samples, n_tau)
+        # Denormalize each τ level independently
+        for tau_idx in range(self.n_tau):
+            stats_tau = self.final_stats[param][tau_idx]
+            mean = stats_tau['mean']
+            std = stats_tau['std']
             
-            # Denormalize each τ level
-            denorm_param = np.zeros_like(pred_param)
+            # Get normalized data for this τ level
+            normalized_tau = normalized_data[:, tau_idx]
             
-            for tau_idx in range(self.n_tau):
-                stats_tau = self.final_stats[param][tau_idx]
-                pred_tau = pred_param[:, tau_idx]
-                
-                if stats_tau['type'] == 'standard':
-                    denorm_tau = pred_tau * stats_tau['std'] + stats_tau['mean']
-                elif stats_tau['type'] == 'centered':
-                    denorm_tau = pred_tau * stats_tau['std']
-                elif stats_tau['type'] == 'signum_log':
-                    pred_log = pred_tau * stats_tau['std'] + stats_tau['mean']
-                    sign = np.sign(pred_log)
-                    denorm_tau = sign * (10 ** np.abs(pred_log) - 1.0)
-                
-                denorm_param[:, tau_idx] = denorm_tau
+            # Denormalize: x = (x_norm * std) + mean
+            denormalized_tau = (normalized_tau * std) + mean
             
-            denormalized[param] = denorm_param
+            # For Bz, reverse the log transform
+            if param == 'Bz':
+                sign = np.sign(denormalized_tau)
+                denormalized_tau = sign * (10.0 ** np.abs(denormalized_tau) - 1.0)
+            
+            # Clip to reasonable ranges to avoid extreme outliers
+            if param == 'T':
+                denormalized_tau = np.clip(denormalized_tau, 3000, 15000)  # Temperature in K
+            elif param == 'Vz':
+                denormalized_tau = np.clip(denormalized_tau, -20, 20)  # Velocity in km/s
+            elif param == 'Bz':
+                denormalized_tau = np.clip(denormalized_tau, -3000, 3000)  # Magnetic field in G
+            
+            denormalized[:, tau_idx] = denormalized_tau
         
         return denormalized
     

@@ -166,32 +166,50 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
     print("="*70)
     for model_name, model in models.items():
         print(f"\nRunning inference for {model_configs[model_name]['label']}...")
-        mean_atm, std_atm = model.run_inference_with_uncertainty(
-            inputs=inputs_tensor,
-            mhd_normalizer=mhd_normalizer,
-            batch_size=512,
-            stochastic_steps=30,
-            H=H,
-            W=W,
-            n_heights=21,
-            verbose=True
-        )
+        
+        model.eval()
+        device = next(model.parameters()).device
+        n_pixels = inputs_tensor.shape[0]
+        all_predictions_batch = []
+        
+        with torch.no_grad():
+            for i in range(0, n_pixels, 512):
+                batch_end = min(i + 512, n_pixels)
+                batch_inputs = inputs_tensor[i:batch_end].to(device)
+                batch_predictions = model(batch_inputs)  # Direct forward pass
+                all_predictions_batch.append(batch_predictions.cpu().numpy())
+        
+        # Concatenate predictions
+        predictions = np.concatenate(all_predictions_batch, axis=0)  # (n_pixels, 63)
+        
+        # Reshape and denormalize
+        predictions_reshaped = predictions.reshape(n_pixels, 21, 3)  # (n_pixels, 21, T/Vz/Bz)
+        
+        prediction_atm = {}
+        param_names = ['T', 'Vz', 'Bz']
+        
+        for param_idx, param_name in enumerate(param_names):
+            param_normalized = predictions_reshaped[:, :, param_idx]  # (n_pixels, 21)
+            param_denorm = mhd_normalizer.denormalize(param_normalized, param_name)
+            prediction_atm[param_name] = param_denorm.reshape(H, W, 21)
+        
         all_predictions[model_name] = {
-            'mean': mean_atm,
-            'std': std_atm,
+            'prediction': prediction_atm,
             'label': model_configs[model_name]['label'],
             'color': model_configs[model_name]['color']
         }
-        print(f"  T range: {mean_atm['T'].min():.1f} - {mean_atm['T'].max():.1f} K")
-        print(f"  Vz range: {mean_atm['Vz'].min():.2f} - {mean_atm['Vz'].max():.2f} km/s")
-        print(f"  Bz range: {mean_atm['Bz'].min():.2f} - {mean_atm['Bz'].max():.2f} G")
+        
+        print(f"  T range: {prediction_atm['T'].min():.1f} - {prediction_atm['T'].max():.1f} K")
+        print(f"  Vz range: {prediction_atm['Vz'].min():.2f} - {prediction_atm['Vz'].max():.2f} km/s")
+        print(f"  Bz range: {prediction_atm['Bz'].min():.2f} - {prediction_atm['Bz'].max():.2f} G")
+    
     print("\n" + "="*70)
     print("✓ All model inferences complete\n")
     
     return all_predictions, logtau
 
 
-def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_ods=None):
+def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_ods=None, skip_existing_plots: bool = True):
     """Run all analysis and plotting.
     
     Parameters
@@ -212,14 +230,13 @@ def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_
                 try:
                     filename = f"{pred_data['label'].lower().replace(' ', '_')}_comparison_{param}_logtau_{od_to_plot}.png"
                     analysis.plot_prediction_comparison(
-                        mean_atm=pred_data['mean'],
-                        std_atm=pred_data['std'],
+                        mean_atm=pred_data['prediction'],
                         ground_truth=modest.spinor_atm,
                         mag_to_plot=param,
                         od_to_plot=od_to_plot,
                         logtau=logtau,
                         model_label=pred_data['label'],
-                        figsize=(14, 20),
+                        figsize=(14, 12),
                         save_dir=images_save_path,
                         filename=filename
                     )
@@ -300,20 +317,20 @@ def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_
                 print(f"Error: {e}")
             
             # Uncertainty analysis
-            filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
-            try:
-                analysis.plot_uncertainty_vs_error(
-                    all_predictions=all_predictions,
-                    ground_truth=modest.spinor_atm,
-                    mag_to_plot=param,
-                    od_val=od_to_plot,
-                    logtau=logtau,
-                    save_dir=images_save_path,
-                    filename=filename
-                )
-                print(f"✓ Uncertainty vs error {param}")
-            except Exception as e:
-                print(f"Error: {e}")
+            # filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
+            # try:
+            #     analysis.plot_uncertainty_vs_error(
+            #         all_predictions=all_predictions,
+            #         ground_truth=modest.spinor_atm,
+            #         mag_to_plot=param,
+            #         od_val=od_to_plot,
+            #         logtau=logtau,
+            #         save_dir=images_save_path,
+            #         filename=filename
+            #     )
+            #     print(f"✓ Uncertainty vs error {param}")
+            # except Exception as e:
+            #     print(f"Error: {e}")
     
     # Vertical profile analysis
     for model_name, pred_data in all_predictions.items():
@@ -322,8 +339,7 @@ def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_
         print(f"Model: {pred_data['label']}")
         print(f"{'='*80}")
         analysis.plot_mean_vs_optical_depth(
-            mean_atm=pred_data['mean'],
-            std_atm=pred_data['std'],
+            mean_atm=pred_data['prediction'],
             logtau=logtau,
             figsize=(18, 6),
             log_scale={'T': False, 'Vz': False, 'Bz': False},
@@ -369,7 +385,6 @@ def main(od_values=None):
     inputs_tensor, shape = prepare_input_data(normalized_stokes, device)
     all_predictions, logtau = run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer)
     
-    # Run analysis
     run_analysis(all_predictions, modest, model_configs, images_save_path, od_values)
     
     print("\n✓ All analysis complete")
@@ -379,13 +394,8 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="MODEST Full Region Analysis Pipeline")
-    parser.add_argument(
-        "--od-values",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Optical depth values to analyze (default: all available)"
-    )
+    parser.add_argument("--od-values", type=float, nargs="+", default=None,
+                       help="Optical depth values to analyze (default: all available)")
     
     args = parser.parse_args()
     main(od_values=args.od_values)

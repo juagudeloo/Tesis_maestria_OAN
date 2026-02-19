@@ -214,33 +214,49 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
     all_predictions_region = {}
     logtau = np.arange(-2, 0.1, 0.1)
     H_region, W_region, Nstokes, Nlambda = shape
-    
+
     print("="*70)
     for model_name, model in models.items():
         print(f"\nRunning inference for {model_configs[model_name]['label']} on region...")
-        mean_atm, std_atm = model.run_inference_with_uncertainty(
-            inputs=inputs_tensor,
-            mhd_normalizer=mhd_normalizer,
-            batch_size=512,
-            stochastic_steps=30,
-            H=H_region,
-            W=W_region,
-            n_heights=21,
-            verbose=True
-        )
+
+        model.eval()
+        device = next(model.parameters()).device
+        n_pixels = inputs_tensor.shape[0]
+        all_predictions = []
+
+        with torch.no_grad():
+            for i in range(0, n_pixels, 512):
+                batch_end = min(i + 512, n_pixels)
+                batch_inputs = inputs_tensor[i:batch_end].to(device)
+                batch_predictions = model(batch_inputs)
+                all_predictions.append(batch_predictions.cpu().numpy())
+
+        predictions = np.concatenate(all_predictions, axis=0)
+        predictions_reshaped = predictions.reshape(n_pixels, 21, 3)
+
+        prediction_atm = {}
+        for param_idx, param_name in enumerate(['T', 'Vz', 'Bz']):
+            param_normalized = predictions_reshaped[:, :, param_idx]
+            param_denorm = mhd_normalizer.denormalize(param_normalized, param_name)
+            prediction_atm[param_name] = param_denorm.reshape(H_region, W_region, 21)
+
         all_predictions_region[model_name] = {
-            'mean': mean_atm,
-            'std': std_atm,
+            'prediction': prediction_atm,
             'label': model_configs[model_name]['label'],
             'color': model_configs[model_name]['color']
         }
+        
+        print(f"  T range: {prediction_atm['T'].min():.1f} - {prediction_atm['T'].max():.1f} K")
+        print(f"  Vz range: {prediction_atm['Vz'].min():.2f} - {prediction_atm['Vz'].max():.2f} km/s")
+        print(f"  Bz range: {prediction_atm['Bz'].min():.2f} - {prediction_atm['Bz'].max():.2f} G")
+    
     print("\n" + "="*70)
     print("✓ All model inferences complete for the region\n")
     
     return all_predictions_region, logtau
 
 
-def run_analysis(all_predictions_region, region_data, modest, model_configs, region_bounds, images_save_path):
+def run_analysis(all_predictions_region, region_data, modest, images_save_path):
     """Run all analysis and plotting."""
     analysis = ModestAnalysis()
     modest_logtau = list(modest.spinor_atm["T"].keys())
@@ -252,14 +268,13 @@ def run_analysis(all_predictions_region, region_data, modest, model_configs, reg
             for model_name, pred_data in all_predictions_region.items():
                 filename = f"{pred_data['label'].lower().replace(' ', '_')}_comparison_{param}_logtau_{od_to_plot}.png"
                 analysis.plot_prediction_comparison(
-                    mean_atm=pred_data['mean'],
-                    std_atm=pred_data['std'],
+                    mean_atm=pred_data['prediction'],
                     ground_truth=region_data['spinor_atm'],
                     mag_to_plot=param,
                     od_to_plot=od_to_plot,
                     logtau=logtau,
                     model_label=f"{pred_data['label']} (Region)",
-                    figsize=(14, 20),
+                    figsize=(14, 12),
                     save_dir=images_save_path,
                     filename=filename
                 )
@@ -340,8 +355,7 @@ def run_analysis(all_predictions_region, region_data, modest, model_configs, reg
         print(f"{'='*80}")
         filename = f"{pred_data['label'].lower().replace(' ', '_')}_mean_vs_optical_depth.png"
         analysis.plot_mean_vs_optical_depth(
-            mean_atm=pred_data['mean'],
-            std_atm=pred_data['std'],
+            mean_atm=pred_data['prediction'],
             logtau=logtau,
             figsize=(18, 6),
             log_scale={'T': False, 'Vz': False, 'Bz': False},
@@ -376,7 +390,7 @@ def print_region_statistics(all_predictions_region, region_data, region_bounds, 
                 print(f"\n  log(τ) = {od_val:.1f}:")
                 print(f"    Ground Truth:  mean={np.mean(gt):.2f}, std={np.std(gt):.2f}")
                 for model_name, pred_data in all_predictions_region.items():
-                    pred_mean = pred_data['mean'][param][:, :, od_idx]
+                    pred_mean = pred_data['prediction'][param][:, :, od_idx]
                     pred_std_map = pred_data['std'][param][:, :, od_idx]
                     diff = pred_mean - gt
                     rmse = np.sqrt(np.mean(diff**2))
@@ -400,13 +414,14 @@ def save_results(all_predictions_region, region_bounds):
         model_output_dir = output_dir / model_name / region_name
         model_output_dir.mkdir(parents=True, exist_ok=True)
         for param in ['T', 'Vz', 'Bz']:
-            np.save(model_output_dir / f"{param}_mean.npy", pred_data['mean'][param])
+            np.save(model_output_dir / f"{param}_mean.npy", pred_data['prediction'][param])
             np.save(model_output_dir / f"{param}_std.npy", pred_data['std'][param])
         print(f"✓ Saved predictions for {pred_data['label']} to {model_output_dir}")
     print(f"\n✓ All region predictions saved to {output_dir}")
 
 
-def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage", visualization_only=False):
+def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
+         visualization_only=False):
     """Main analysis pipeline.
     
     Parameters
@@ -461,8 +476,7 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage", visu
     inputs_tensor, shape = prepare_input_data(normalized_stokes, device)
     all_predictions_region, logtau = run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer)
     
-    # Run analysis
-    run_analysis(all_predictions_region, region_data, modest, model_configs, region_bounds, images_save_path)
+    run_analysis(all_predictions_region, region_data, modest, images_save_path)
     
     # Print statistics and save results
     print_region_statistics(all_predictions_region, region_data, region_bounds, logtau)
@@ -491,5 +505,5 @@ if __name__ == "__main__":
         x_start=args.x_start,
         x_end=args.x_end,
         region_name=args.region_name,
-        visualization_only=args.visualization_only
+        visualization_only=args.visualization_only,
     )

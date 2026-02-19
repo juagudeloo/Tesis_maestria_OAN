@@ -15,8 +15,8 @@ import sys
 import json
 import time
 from pathlib import Path
-from typing import Dict, List
 import warnings
+import contextlib
 from scipy.optimize import OptimizeWarning
 
 import numpy as np
@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.grad_norm import GradNormScheduler
+from utils.cache_manage import DataCache
 from scripts.base_training import (
     TrainingConfig,
     load_and_prepare_step, validate, train_epoch, MetricsLogger
@@ -46,7 +47,7 @@ class ExperimentTracker:
         self.output_dir = output_dir
         self.results = {}
         
-    def add_experiment(self, name: str, metrics: Dict):
+    def add_experiment(self, name: str, metrics: dict):
         """Add results from one experimental condition."""
         self.results[name] = metrics
         
@@ -385,12 +386,13 @@ class ExperimentTracker:
 
 def compute_tau_averaged_metrics(
     model: PhysicsInformedMSCNN,
-    test_steps: List[int],
+    test_steps: list[int],
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
     logtau_values: np.ndarray,
-) -> Dict[str, float]:
+    cache: DataCache | None = None,
+) -> dict[str, float]:
     """Evaluate model on test steps using tau-averaged physics metrics."""
     from scipy.stats import pearsonr
     
@@ -406,11 +408,13 @@ def compute_tau_averaged_metrics(
     
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
+            # Use load_and_prepare_step which supports caching
             dataset, approx_data = load_and_prepare_step(
                 step=step,
                 config=config,
                 mhd_normalizer=mhd_normalizer,
                 stokes_normalizer=stokes_normalizer,
+                cache=cache,
             )
             
             dataloader = DataLoader(
@@ -425,6 +429,15 @@ def compute_tau_averaged_metrics(
             step_pred_vlos = []
             step_pred_temp = []
             
+            # Set physics context for this test step
+            model.set_physics_context(
+                mhd_normalizer=mhd_normalizer,
+                logtau_values=logtau_values,
+                blos_approx=approx_data.get('blos'),
+                vlos_approx=approx_data.get('vlos'),
+                temp_approx=approx_data.get('temp'),
+            )
+            
             for stokes_batch, _, spatial_idx_batch in dataloader:
                 stokes_batch = stokes_batch.to(device)
                 predictions = model(stokes_batch)
@@ -432,10 +445,20 @@ def compute_tau_averaged_metrics(
                 # Convert predictions to numpy for denormalization
                 predictions_np = predictions.cpu().numpy()
                 
-                # Denormalize using inverse_transform (returns dict with 'T', 'Vz', 'Bz')
-                pred_denorm = mhd_normalizer.inverse_transform(
-                    predictions_np, param_order=['T', 'Vz', 'Bz']
-                )
+                # Reshape predictions from (batch_size, 63) to (batch_size, 21, 3)
+                batch_size = predictions_np.shape[0]
+                predictions_np = predictions_np.reshape(batch_size, 21, 3)
+                
+                # Denormalize parameter by parameter
+                # predictions_np shape: (batch_size, n_tau=21, 3) where last dim is [T, Vz, Bz]
+                T_norm = predictions_np[:, :, 0]  # (batch_size, n_tau)
+                Vz_norm = predictions_np[:, :, 1]
+                Bz_norm = predictions_np[:, :, 2]
+                
+                # Denormalize each parameter individually
+                T_denorm = mhd_normalizer.denormalize(T_norm, param='T')
+                Vz_denorm = mhd_normalizer.denormalize(Vz_norm, param='Vz')
+                Bz_denorm = mhd_normalizer.denormalize(Bz_norm, param='Bz')
                 
                 # Compute tau-averaged B_LOS
                 tau_linear = 10 ** logtau_values
@@ -443,19 +466,19 @@ def compute_tau_averaged_metrics(
                 integral_dtau = tau_linear[-1] - tau_linear[0]
                 
                 # Bz shape: (batch_size, n_tau=21)
-                Bz_avg = (pred_denorm["Bz"][:, :-1] + pred_denorm["Bz"][:, 1:]) / 2
+                Bz_avg = (Bz_denorm[:, :-1] + Bz_denorm[:, 1:]) / 2
                 integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
                 pred_blos_batch = integral_Bz / integral_dtau
                 
                 # Compute tau-averaged V_LOS
                 # Vz shape: (batch_size, n_tau=21)
-                Vz_avg = (pred_denorm["Vz"][:, :-1] + pred_denorm["Vz"][:, 1:]) / 2
+                Vz_avg = (Vz_denorm[:, :-1] + Vz_denorm[:, 1:]) / 2
                 integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
                 pred_vlos_batch = integral_Vz / integral_dtau
                 
                 # Compute tau-averaged Temperature
                 # T shape: (batch_size, n_tau=21)
-                T_avg = (pred_denorm["T"][:, :-1] + pred_denorm["T"][:, 1:]) / 2
+                T_avg = (T_denorm[:, :-1] + T_denorm[:, 1:]) / 2
                 integral_T = np.sum(T_avg * dtau[np.newaxis, :], axis=1)
                 pred_temp_batch = integral_T / integral_dtau
                 
@@ -502,17 +525,28 @@ def compute_tau_averaged_metrics(
         'temp_rmse': float(rmse_temp),
     }
 
+@contextlib.contextmanager
+def timer():
+    start = time.time()
+    
+    try:
+        yield None
+    finally:
+        end = time.time()
+        print("Elapsed time: {:.2f} minutes".format((end - start) / 60))
+
 def run_single_experiment(
     experiment_name: str,
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-    test_steps: List[int],
+    test_steps: list[int],
     n_steps_per_epoch: int = 20,
     min_step: int = 60,
     max_step: int = 200,
     step_size: int = 1,
-) -> Dict:
+    cache: DataCache | None = None,
+) -> dict:
     """Run a single training experiment."""
     print("\n" + "=" * 100)
     print(f"EXPERIMENT: {experiment_name}".center(100))
@@ -581,7 +615,6 @@ def run_single_experiment(
             'kernel_size': 5,
             'pool_size': 2,
             'n_linear_layers': 4,
-            'dropout_rate': 0.2,
         },
         'device': config.device,
         'data_path': str(config.data_path),
@@ -604,7 +637,6 @@ def run_single_experiment(
         kernel_size=5,
         pool_size=2,
         n_linear_layers=4,
-        dropout_rate=0.2,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
@@ -668,70 +700,73 @@ def run_single_experiment(
     temperature_loss_history = []
     
     for epoch in range(config.n_epochs):
-        print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
-        
-        # Use the shared train_epoch function with GradNorm
-        epoch_metrics = train_epoch(
-            model=model,
-            train_steps=train_steps,
-            config=config,
-            mhd_normalizer=mhd_normalizer,
-            stokes_normalizer=stokes_normalizer,
-            optimizer=optimizer,
-            epoch=epoch,
-            logger=logger,
-            n_steps_per_epoch=n_steps_per_epoch,
-            gradnorm_scheduler=gradnorm_scheduler,
-        )
-        
-        # Extract metrics
-        avg_train_loss = epoch_metrics['total_loss']
-        avg_mse_loss = epoch_metrics['mse_loss']
-        avg_physics_loss = epoch_metrics['physics_loss']
-        avg_wfa_loss = epoch_metrics['wfa_loss']
-        avg_doppler_loss = epoch_metrics['doppler_loss']
-        avg_temperature_loss = epoch_metrics['temperature_loss']
-        
-        # Store histories
-        train_loss_history.append(avg_train_loss)
-        mse_loss_history.append(avg_mse_loss)
-        physics_loss_history.append(avg_physics_loss)
-        wfa_loss_history.append(avg_wfa_loss)
-        doppler_loss_history.append(avg_doppler_loss)
-        temperature_loss_history.append(avg_temperature_loss)
-        
-        # Validation
-        avg_val_loss = validate(
-            model=model,
-            val_steps=val_steps[:5],
-            config=config,
-            mhd_normalizer=mhd_normalizer,
-            stokes_normalizer=stokes_normalizer,
-        )
-        
-        val_loss_history.append(avg_val_loss)
-        scheduler.step(avg_val_loss)
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        print("=" * 100)
-        print(f"Epoch {epoch + 1} Summary:")
-        print(f"  Total Loss:      {avg_train_loss:.6f}")
-        print(f"  MSE Loss:        {avg_mse_loss:.6f}")
-        print(f"  Physics Loss:    {avg_physics_loss:.6f}")
-        print(f"    ├─ WFA Loss:         {avg_wfa_loss:.6f}")
-        print(f"    ├─ Doppler Loss:     {avg_doppler_loss:.6f}")
-        print(f"    └─ Temperature Loss: {avg_temperature_loss:.6f}")
-        print(f"  Validation Loss: {avg_val_loss:.6f}")
-        print(f"  Learning Rate:   {current_lr:.2e}")
-        
-        # Print GradNorm weights if enabled
-        if gradnorm_scheduler is not None:
-            weights = gradnorm_scheduler.task_weights.detach().cpu().numpy()
-            print(f"  GradNorm Weights:")
-            print(f"    MSE: {weights[0]:.4f}, WFA: {weights[1]:.4f}, "
-                  f"Doppler: {weights[2]:.4f}, Temp: {weights[3]:.4f}")
-        
-        print("=" * 100)
+        with timer():
+            print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
+            
+            # Use the shared train_epoch function with cache
+            epoch_metrics = train_epoch(
+                model=model,
+                train_steps=train_steps,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                optimizer=optimizer,
+                epoch=epoch,
+                logger=logger,
+                n_steps_per_epoch=n_steps_per_epoch,
+                gradnorm_scheduler=gradnorm_scheduler,
+                cache=cache,
+            )
+            
+            # Extract metrics
+            avg_train_loss = epoch_metrics['total_loss']
+            avg_mse_loss = epoch_metrics['mse_loss']
+            avg_physics_loss = epoch_metrics['physics_loss']
+            avg_wfa_loss = epoch_metrics['wfa_loss']
+            avg_doppler_loss = epoch_metrics['doppler_loss']
+            avg_temperature_loss = epoch_metrics['temperature_loss']
+            
+            # Store histories
+            train_loss_history.append(avg_train_loss)
+            mse_loss_history.append(avg_mse_loss)
+            physics_loss_history.append(avg_physics_loss)
+            wfa_loss_history.append(avg_wfa_loss)
+            doppler_loss_history.append(avg_doppler_loss)
+            temperature_loss_history.append(avg_temperature_loss)
+            
+            # Validation
+            avg_val_loss = validate(
+                model=model,
+                val_steps=val_steps[:5],
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                cache=cache,
+            )
+            
+            val_loss_history.append(avg_val_loss)
+            scheduler.step(avg_val_loss)
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            print("=" * 100)
+            print(f"Epoch {epoch + 1} Summary:")
+            print(f"  Total Loss:      {avg_train_loss:.6f}")
+            print(f"  MSE Loss:        {avg_mse_loss:.6f}")
+            print(f"  Physics Loss:    {avg_physics_loss:.6f}")
+            print(f"    ├─ WFA Loss:         {avg_wfa_loss:.6f}")
+            print(f"    ├─ Doppler Loss:     {avg_doppler_loss:.6f}")
+            print(f"    └─ Temperature Loss: {avg_temperature_loss:.6f}")
+            print(f"  Validation Loss: {avg_val_loss:.6f}")
+            print(f"  Learning Rate:   {current_lr:.2e}")
+            
+            # Print GradNorm weights if enabled
+            if gradnorm_scheduler is not None:
+                weights = gradnorm_scheduler.task_weights.detach().cpu().numpy()
+                print(f"  GradNorm Weights:")
+                print(f"    MSE: {weights[0]:.4f}, WFA: {weights[1]:.4f}, "
+                    f"Doppler: {weights[2]:.4f}, Temp: {weights[3]:.4f}")
+            
+            print("=" * 100)
     
     training_time = (time.time() - start_time) / 60
     
@@ -743,6 +778,7 @@ def run_single_experiment(
         mhd_normalizer=mhd_normalizer,
         stokes_normalizer=stokes_normalizer,
         logtau_values=np.arange(-2.0, 0.1, 0.1),
+        cache=cache,  # Pass cache to test evaluation
     )
     
     # Save model
@@ -848,6 +884,13 @@ def main():
                        choices=['all_physics_terms', 'wfa_only', 'doppler_only', 'black_body_only', 'no_physics', 'all'],
                        default=['all'],
                        help='Which experiments to run (default: all)')
+    
+    # Cache-related arguments
+    parser.add_argument('--no-cache', action='store_true',
+                       help='Disable data caching')
+    parser.add_argument('--cache-dir', type=str, 
+                       default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache',
+                       help='Directory for cached MURaM data')
     
     args = parser.parse_args()
     
@@ -993,13 +1036,24 @@ def main():
         print(f"  {i}. {exp_name}")
     print("=" * 80 + "\n")
     
-    # Run selected experiments
+    # Initialize shared cache for all experiments
+    cache = None
+    if not args.no_cache:
+        cache = DataCache(cache_dir=args.cache_dir, compression='gzip')
+        print(f"Shared MURaM data cache: {args.cache_dir}")
+        print("\nInitial Cache Status:")
+        cache.print_cache_info()
+    
+    # Run selected experiments with shared cache
     for name in experiments_to_run:
         if name not in all_experiment_configs:
             print(f"⚠ Warning: Unknown experiment '{name}', skipping...")
             continue
         
         config = all_experiment_configs[name]
+        config.use_cache = not args.no_cache
+        config.cache_dir = args.cache_dir
+        
         results = run_single_experiment(
             experiment_name=name,
             config=config,
@@ -1010,6 +1064,7 @@ def main():
             min_step=args.min_step,
             max_step=args.max_step,
             step_size=args.step_size,
+            cache=cache,  # Share cache across experiments
         )
         
         tracker.add_experiment(name, results)

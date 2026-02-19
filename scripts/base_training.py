@@ -16,7 +16,6 @@ import argparse
 import random
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, asdict
 import warnings
 
@@ -35,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 from utils.muram_data import MhdData, StokesData, MuramStepDataset
 from utils.normalizer import MhdNormalizer, StokesNormalizer
+from utils.cache_manage import DataCache
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.physics_utils import ApproxInversions
 
@@ -67,19 +67,18 @@ class TrainingConfig:
     gradient_clip: float = 1.0
     
     # Model architecture
-    scales: List[int] = None  # [1, 2, 3]
+    scales: list[int] | None = None  # [1, 2, 3]
     in_channels: int = 2
     c1_filters: int = 16
     c2_filters: int = 32
     kernel_size: int = 5
     pool_size: int = 2
     n_linear_layers: int = 4
-    dropout_rate: float = 0.2
     
     # Physics parameters
     central_wavelength: float = 6301.5  # Angstroms
     lande_factor: float = 1.67
-    wl_range: Tuple[int, int] = (15, 60)
+    wl_range: tuple[int, int] = (15, 60)
     lambda_wfa: float = 0.01      # WFA term weight (if not using GradNorm)
     lambda_doppler: float = 0.01  # Doppler term weight (if not using GradNorm)
     lambda_temp: float = 0.01     # Temperature term weight (if not using GradNorm)
@@ -87,19 +86,19 @@ class TrainingConfig:
     gradnorm_alpha: float = 1.5  # GradNorm alpha parameter
     gradnorm_update_freq: int = 100  # Update GradNorm weights every N batches
     blos_physics_mode: str = "tau_averaged"  # 'tau_averaged' or 'single_height'
-    blos_target_logtau: Optional[float] = None  # Target log(tau) for B_LOS single_height mode
+    blos_target_logtau: float | None = None  # Target log(tau) for B_LOS single_height mode
     vlos_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
-    vlos_target_logtau: Optional[float] = -1.0  # Target log(tau) for V_LOS single_height mode
+    vlos_target_logtau: float | None = -1.0  # Target log(tau) for V_LOS single_height mode
     temp_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
-    temp_target_logtau: Optional[float] = 0.0  # Target log(tau) for temperature single_height mode
+    temp_target_logtau: float | None = 0.0  # Target log(tau) for temperature single_height mode
     temp_reference_temperature: float = 6000.0  # Reference temperature for blackbody (Kelvin)
-    temp_continuum_indices: List[int] = None  # Continuum indices for temperature estimation
+    temp_continuum_indices: list[int] | None = None  # Continuum indices for temperature estimation
     temp_continuum_wavelength: float = 6300.5  # Angstroms
     
     # Checkpointing
     checkpoint_dir: str = "checkpoints"
     save_every: int = 10  # Save checkpoint every N epochs
-    resume_from: Optional[str] = None
+    resume_from: str | None = None
     
     # Logging
     log_dir: str = "logs"
@@ -114,6 +113,10 @@ class TrainingConfig:
     scheduler_type: str = "plateau"  # 'plateau' or 'cosine'
     scheduler_patience: int = 5
     scheduler_factor: float = 0.5
+    
+    # New: Caching parameters
+    use_cache: bool = True
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
     
     def __post_init__(self):
         if self.scales is None:
@@ -166,7 +169,7 @@ class MetricsLogger:
         self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
         self.gradnorm_log.write("epoch,step,batch,grad_norm_loss,mse_grad,wfa_grad,doppler_grad,temp_grad,mse_weight,wfa_weight,doppler_weight,temp_weight\n")
     
-    def log_batch(self, epoch: int, step: int, batch: int, loss_dict: Dict[str, float]):
+    def log_batch(self, epoch: int, step: int, batch: int, loss_dict: dict[str, float]):
         """Log batch-level metrics."""
         self.batch_log.write(
             f"{epoch},{step},{batch},"
@@ -179,7 +182,7 @@ class MetricsLogger:
         )
         self.batch_log.flush()
     
-    def log_gradnorm(self, epoch: int, step: int, batch: int, gradnorm_dict: Dict[str, float]):
+    def log_gradnorm(self, epoch: int, step: int, batch: int, gradnorm_dict: dict[str, float]):
         """Log GradNorm metrics."""
         self.gradnorm_log.write(
             f"{epoch},{step},{batch},"
@@ -212,14 +215,42 @@ class MetricsLogger:
     def __del__(self):
         self.close()
 
+def build_cache_config_signature(config: TrainingConfig) -> dict:
+    """Shared cache-signature contract across training/ablation/analysis."""
+    return {
+        'nx': config.nx,
+        'ny': config.ny,
+        'nz': config.nz,
+        'z_max': config.z_max,
+        'dz_km': config.dz_km,
+        'central_wavelength': config.central_wavelength,
+        'wl_range': config.wl_range,
+    }
+
 def load_and_prepare_step(
     step: int,
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-) -> Tuple[MuramStepDataset, Dict[str, np.ndarray]]:
+    cache: DataCache | None = None,
+) -> tuple[MuramStepDataset, dict[str, np.ndarray]]:
     """
     Load and prepare a single simulation step for training.
+    
+    Uses cache if available to significantly speed up repeated runs.
+    
+    Parameters
+    ----------
+    step : int
+        Simulation step number
+    config : TrainingConfig
+        Training configuration
+    mhd_normalizer : MhdNormalizer
+        MHD data normalizer
+    stokes_normalizer : StokesNormalizer
+        Stokes data normalizer
+    cache : DataCache, optional
+        Cache manager for loading/saving processed data
     
     Returns
     -------
@@ -228,6 +259,23 @@ def load_and_prepare_step(
     approx_data : dict
         Physics approximations {'blos': (nx, ny), 'vlos': (nx, ny), 'temp': (nx, ny)}
     """
+    # Compute configuration hash for cache validation
+    config_for_hash = build_cache_config_signature(config)
+    config_hash = DataCache.make_config_hash(config_for_hash) if cache else None
+    
+    # Try to load from cache
+    if cache is not None and cache.exists(step, config_hash):
+        try:
+            return cache.load(
+                step=step,
+                stokes_normalizer=stokes_normalizer,
+                mhd_normalizer=mhd_normalizer,
+                verbose=True,
+            )
+        except Exception as e:
+            print(f"  ⚠ Cache load failed for step {step}: {e}")
+            print(f"  Reprocessing step {step}...")
+    
     # Load MHD data
     mhd = MhdData(
         data_path=config.data_path / "muram-simulation",
@@ -286,20 +334,34 @@ def load_and_prepare_step(
         'temp': temp_approx,
     }
     
+    # Save to cache if enabled
+    if cache is not None:
+        try:
+            cache.save(
+                step=step,
+                stokes_data=stokes.data,
+                mhd_data=mhd.od_data,
+                approx_data=approx_data,
+                config_hash=config_hash,
+                verbose=True,
+            )
+        except Exception as e:
+            print(f"  ⚠ Failed to save cache for step {step}: {e}")
+    
     return dataset, approx_data
 
 def train_one_step(
     model: PhysicsInformedMSCNN,
     dataloader: DataLoader,
-    approx_data: Dict[str, np.ndarray],
+    approx_data: dict[str, np.ndarray],
     mhd_normalizer: MhdNormalizer,
     optimizer: torch.optim.Optimizer,
     config: TrainingConfig,
     epoch: int,
     step_num: int,
     logger: MetricsLogger,
-    gradnorm_scheduler: Optional[GradNormScheduler] = None,
-) -> Dict[str, float]:
+    gradnorm_scheduler: GradNormScheduler | None = None,
+) -> dict[str, float]:
     """
     Train on one simulation step (one epoch through that step's data).
     
@@ -467,13 +529,29 @@ def train_one_step(
 
 def validate(
     model: PhysicsInformedMSCNN,
-    val_steps: List[int],
+    val_steps: list[int],
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
+    cache: DataCache | None = None,
 ) -> float:
     """
     Validate on a subset of steps.
+    
+    Parameters
+    ----------
+    model : PhysicsInformedMSCNN
+        Model to validate
+    val_steps : List[int]
+        Validation step numbers
+    config : TrainingConfig
+        Training configuration
+    mhd_normalizer : MhdNormalizer
+        MHD normalizer
+    stokes_normalizer : StokesNormalizer
+        Stokes normalizer
+    cache : DataCache, optional
+        Cache manager for data loading
     
     Returns
     -------
@@ -492,6 +570,7 @@ def validate(
                     config=config,
                     mhd_normalizer=mhd_normalizer,
                     stokes_normalizer=stokes_normalizer,
+                    cache=cache,
                 )
                 
                 dataloader = DataLoader(
@@ -537,7 +616,7 @@ def validate(
 def save_checkpoint(
     model: PhysicsInformedMSCNN,
     optimizer: torch.optim.Optimizer,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
     epoch: int,
     train_loss: float,
     val_loss: float,
@@ -571,9 +650,9 @@ def save_checkpoint(
 def load_checkpoint(
     checkpoint_path: Path,
     model: PhysicsInformedMSCNN,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
-) -> Tuple[int, float, float]:
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
+) -> tuple[int, float, float]:
     """
     Load training checkpoint.
     
@@ -605,16 +684,17 @@ def load_checkpoint(
 
 def train_epoch(
     model: PhysicsInformedMSCNN,
-    train_steps: List[int],
+    train_steps: list[int],
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    logger: Optional[MetricsLogger] = None,
+    logger: MetricsLogger | None = None,
     n_steps_per_epoch: int = -1,
-    gradnorm_scheduler: Optional[GradNormScheduler] = None,
-) -> Dict[str, float]:
+    gradnorm_scheduler: GradNormScheduler | None = None,
+    cache: DataCache | None = None,
+) -> dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
     
@@ -640,7 +720,9 @@ def train_epoch(
         Maximum number of steps to use per epoch (-1 for all steps)
     gradnorm_scheduler : Optional[GradNormScheduler]
         GradNorm scheduler
-        
+    cache : DataCache, optional
+        Cache manager for data loading
+    
     Returns
     -------
     epoch_metrics : Dict[str, float]
@@ -670,12 +752,13 @@ def train_epoch(
     
     for step in step_pbar:
         try:
-            # Load and prepare step
+            # Load and prepare step (uses cache if available)
             dataset, approx_data = load_and_prepare_step(
                 step=step,
                 config=config,
                 mhd_normalizer=mhd_normalizer,
                 stokes_normalizer=stokes_normalizer,
+                cache=cache,
             )
             
             # Create dataloader
@@ -741,6 +824,9 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Steps: {config.min_step} to {config.max_step} (step size: {config.step_size})")
     print(f"Epochs: {config.n_epochs}")
     print(f"Batch size: {config.batch_size}")
+    print(f"Use cache: {config.use_cache}")
+    if config.use_cache:
+        print(f"Cache dir: {config.cache_dir}")
     print(f"Learning rate: {config.learning_rate}")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
@@ -779,7 +865,6 @@ def train_pinn_model(config: TrainingConfig):
         kernel_size=config.kernel_size,
         pool_size=config.pool_size,
         n_linear_layers=config.n_linear_layers,
-        dropout_rate=config.dropout_rate,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
@@ -867,6 +952,13 @@ def train_pinn_model(config: TrainingConfig):
     print("Starting Training".center(70))
     print("=" * 70)
     
+    # Initialize cache if enabled
+    cache = None
+    if config.use_cache:
+        cache = DataCache(cache_dir=config.cache_dir, compression='gzip')
+        print("\nCache Information:")
+        cache.print_cache_info()
+
     for epoch in range(start_epoch, config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         print("-" * 70)
@@ -883,6 +975,7 @@ def train_pinn_model(config: TrainingConfig):
             logger=logger,
             n_steps_per_epoch=-1,  # Use all training steps
             gradnorm_scheduler=gradnorm_scheduler,
+            cache=cache,
         )
         
         avg_train_loss = epoch_metrics['total_loss']
@@ -895,6 +988,7 @@ def train_pinn_model(config: TrainingConfig):
             config=config,
             mhd_normalizer=mhd_normalizer,
             stokes_normalizer=stokes_normalizer,
+            cache=cache,
         )
         
         # Update scheduler
@@ -964,6 +1058,15 @@ def main():
     parser.add_argument('--batch-size', type=int, help='Batch size (overrides config)')
     parser.add_argument('--lr', type=float, help='Learning rate (overrides config)')
     
+    # Add cache-related arguments
+    parser.add_argument('--no-cache', action='store_true',
+                       help='Disable data caching')
+    parser.add_argument('--cache-dir', type=str, 
+                       default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache',
+                       help='Directory for cached data')
+    parser.add_argument('--clear-cache', action='store_true',
+                       help='Clear cache before training')
+    
     args = parser.parse_args()
     
     # Load or create configuration
@@ -981,6 +1084,16 @@ def main():
         config.batch_size = args.batch_size
     if args.lr:
         config.learning_rate = args.lr
+    
+    # Cache arguments
+    config.use_cache = not args.no_cache
+    config.cache_dir = args.cache_dir
+    
+    # Handle cache clearing
+    if args.clear_cache and config.use_cache:
+        cache = DataCache(cache_dir=config.cache_dir)
+        cache.clear(step=None, confirm=False)
+        print("✓ Cache cleared\n")
     
     # Run training
     train_pinn_model(config)

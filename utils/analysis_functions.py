@@ -76,13 +76,12 @@ class ModestAnalysis:
     def plot_prediction_comparison(
         self,
         mean_atm: dict,
-        std_atm: dict,
         ground_truth: dict,
         mag_to_plot: str = "T",
         od_to_plot: float = 0.0,
         logtau: np.ndarray = None,
         model_label: str = "Model",
-        figsize: tuple = (14, 18),
+        figsize: tuple = (14, 12),
         save_dir: Optional[Union[str, Path]] = None,
         filename: Optional[str] = None
     ):
@@ -93,13 +92,11 @@ class ModestAnalysis:
         title_map = {"T": "Temperature", "Vz": "Line-of-sight Velocity", "Bz": "Line-of-sight Magnetic Field"}
         units_map = {"T": "K", "Vz": "km/s", "Bz": "G"}
         color_mapping = {"T": "inferno", "Vz": "bwr_r", "Bz": "PiYG"}
-        uncertainty_cmap = {"T": "YlOrRd", "Vz": "viridis", "Bz": "viridis"}
         
-        pred_mean = mean_atm[mag_to_plot][:, :, logtau_idx]
-        pred_std = std_atm[mag_to_plot][:, :, logtau_idx]
+        pred = mean_atm[mag_to_plot][:, :, logtau_idx]
         gt = self._get_ground_truth_slice(ground_truth, mag_to_plot, od_to_plot, logtau)
         
-        difference = pred_mean - gt
+        difference = pred - gt
         
         q0, q99 = np.percentile(gt, [1, 99])
         if mag_to_plot in ["Vz", "Bz"]:
@@ -112,24 +109,25 @@ class ModestAnalysis:
         diff_vmin, diff_vmax = -diff_max, diff_max
         
         rmse = np.sqrt(np.mean(difference**2))
+        rrmse = rmse / np.mean(np.abs(gt)) if np.mean(np.abs(gt)) > 1e-10 else np.nan
         bias = np.mean(difference)
-        corr, p_value = pearsonr(pred_mean.flatten(), gt.flatten())
+        corr, p_value = pearsonr(pred.flatten(), gt.flatten())
         
         fig = plt.figure(figsize=figsize)
-        gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
-        ax = [fig.add_subplot(gs[i, j]) for i in range(3) for j in range(2)]
+        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
+        ax = [fig.add_subplot(gs[i, j]) for i in range(2) for j in range(2)]
         
         fig.suptitle(f"{model_label}: {title_map[mag_to_plot]} at log(τ)={logtau[logtau_idx]:.1f}",
                      fontsize=18, fontweight='bold')
         
-        # 1. Predicted Mean
-        im0 = ax[0].imshow(pred_mean, cmap=color_mapping[mag_to_plot], vmax=vmax, vmin=vmin)
+        # 1. Predicted
+        im0 = ax[0].imshow(pred, cmap=color_mapping[mag_to_plot], vmax=vmax, vmin=vmin)
         divider = make_axes_locatable(ax[0])
         cax = divider.append_axes("right", size="5%", pad=0.1)
         fig.colorbar(im0, cax=cax, label=units_map[mag_to_plot])
         ax[0].set_xticks([])
         ax[0].set_yticks([])
-        ax[0].set_title("Predicted Mean", fontsize=14, fontweight='bold')
+        ax[0].set_title("Predicted", fontsize=14, fontweight='bold')
         
         # 2. Ground Truth
         im1 = ax[1].imshow(gt, cmap=color_mapping[mag_to_plot], vmax=vmax, vmin=vmin)
@@ -147,53 +145,21 @@ class ModestAnalysis:
         fig.colorbar(im2, cax=cax, label=f"Δ {units_map[mag_to_plot]}")
         ax[2].set_xticks([])
         ax[2].set_yticks([])
-        ax[2].set_title(f"Difference (Pred - GT)\nRMSE: {rmse:.2f} | Bias: {bias:.2f} {units_map[mag_to_plot]}",
+        rrmse_str = f"{rrmse*100:.2f}%" if not np.isnan(rrmse) else "N/A"
+        ax[2].set_title(f"Difference (Pred - GT)\nRRMSE: {rrmse_str} | Bias: {bias:.2f} {units_map[mag_to_plot]}",
                      fontsize=14, fontweight='bold')
         
-        # 4. Predicted Std Dev
-        im3 = ax[3].imshow(pred_std, cmap=uncertainty_cmap[mag_to_plot])
-        divider = make_axes_locatable(ax[3])
-        cax2 = divider.append_axes("right", size="5%", pad=0.1)
-        fig.colorbar(im3, cax=cax2, label=f"σ {units_map[mag_to_plot]}")
-        ax[3].set_xticks([])
-        ax[3].set_yticks([])
-        ax[3].set_title(f"Predicted Std Dev\nMean σ: {np.mean(pred_std):.2f} | Median σ: {np.median(pred_std):.2f}",
-                     fontsize=14, fontweight='bold')
-        
-        # 5. Distribution Comparison
-        ax[4].hist(pred_mean.flatten(), bins=100, color='red', edgecolor='darkred',
-                     alpha=0.6, label="Predicted Mean", density=True)
-        ax[4].hist(gt.flatten(), bins=100, color='blue', edgecolor='darkblue',
+        # 4. Distribution Comparison
+        ax[3].hist(pred.flatten(), bins=100, color='red', edgecolor='darkred',
+                     alpha=0.6, label="Prediction", density=True)
+        ax[3].hist(gt.flatten(), bins=100, color='blue', edgecolor='darkblue',
                      alpha=0.5, label="Ground Truth", density=True)
-        ax[4].set_xlim(vmin, vmax)
-        ax[4].set_xlabel(units_map[mag_to_plot], fontsize=12)
-        ax[4].set_ylabel("Density", fontsize=12)
-        ax[4].legend(fontsize=11)
-        ax[4].set_title("Distribution Comparison", fontsize=14, fontweight='bold')
-        ax[4].grid(alpha=0.3)
-        
-        # 6. Scatter Plot
-        n_samples = min(10000, pred_mean.size)
-        indices = np.random.choice(pred_mean.size, n_samples, replace=False)
-        gt_flat = gt.flatten()[indices]
-        pred_flat = pred_mean.flatten()[indices]
-        
-        ax[5].scatter(gt_flat, pred_flat, alpha=0.3, s=2, c='black', edgecolors='none')
-        lims = [np.min([ax[5].get_xlim(), ax[5].get_ylim()]),
-                np.max([ax[5].get_xlim(), ax[5].get_ylim()])]
-        ax[5].plot(lims, lims, 'r--', alpha=0.75, linewidth=2, zorder=0, label='1:1 line')
-        ax[5].set_xlim(lims)
-        ax[5].set_ylim(lims)
-        ax[5].set_xlabel(f"Ground Truth ({units_map[mag_to_plot]})", fontsize=12)
-        ax[5].set_ylabel(f"Predicted ({units_map[mag_to_plot]})", fontsize=12)
-        ax[5].set_title(f"Scatter Plot\nPearson R = {corr:.4f} (p < {p_value:.1e})",
-                     fontsize=14, fontweight='bold')
-        ax[5].legend(fontsize=11, loc='lower right')
-        ax[5].grid(alpha=0.3)
-        ax[5].set_aspect('equal', adjustable='box')
-        ax[5].text(0.05, 0.95, f"R = {corr:.4f}\nN = {n_samples:,}",
-                   transform=ax[5].transAxes, fontsize=11, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        ax[3].set_xlim(vmin, vmax)
+        ax[3].set_xlabel(units_map[mag_to_plot], fontsize=12)
+        ax[3].set_ylabel("Density", fontsize=12)
+        ax[3].legend(fontsize=11)
+        ax[3].set_title("Distribution Comparison", fontsize=14, fontweight='bold')
+        ax[3].grid(alpha=0.3)
         
         plt.tight_layout()
         
@@ -205,11 +171,10 @@ class ModestAnalysis:
             "optical_depth": float(logtau[logtau_idx]),
             "pearson_r": float(corr),
             "p_value": float(p_value),
+            "rrmse": float(rrmse) if not np.isnan(rrmse) else None,
             "rmse": float(rmse),
             "bias": float(bias),
-            "mean_uncertainty": float(np.mean(pred_std)),
-            "median_uncertainty": float(np.median(pred_std)),
-            "n_pixels": int(pred_mean.size)
+            "n_pixels": int(pred.size)
         }
         
         if save_dir is not None and model_label is not None:
@@ -227,12 +192,11 @@ class ModestAnalysis:
         print(f"Summary for {model_label}: {title_map[mag_to_plot]} at log(τ)={logtau[logtau_idx]:.1f}")
         print(f"{'='*60}")
         print(f"Pearson R:   {corr:.4f} (p-value: {p_value:.2e})")
+        rrmse_str = f"{rrmse*100:.2f}%" if not np.isnan(rrmse) else "N/A"
+        print(f"RRMSE:       {rrmse_str}")
         print(f"RMSE:        {rmse:.3f} {units_map[mag_to_plot]}")
         print(f"Bias:        {bias:.3f} {units_map[mag_to_plot]}")
-        print(f"Mean σ:      {np.mean(pred_std):.3f} {units_map[mag_to_plot]}")
-        print(f"Median σ:    {np.median(pred_std):.3f} {units_map[mag_to_plot]}")
         print(f"{'='*60}\n")
-
 
     def compare_models_at_optical_depth(
         self,
@@ -246,7 +210,6 @@ class ModestAnalysis:
         filename: Optional[str] = None
     ):
         logtau = self._resolve_logtau(logtau)
-        
         logtau_idx = np.argmin(np.abs(logtau - od_to_plot))
         
         title_map = {"T": "Temperature", "Vz": "Line-of-sight Velocity", "Bz": "Line-of-sight Magnetic Field"}
@@ -291,23 +254,26 @@ class ModestAnalysis:
         
         # Models
         for i, (model_name, pred_data) in enumerate(all_predictions.items(), start=1):
-            mean_atm = pred_data['mean']
-            pred_mean = mean_atm[mag_to_plot][:, :, logtau_idx]
-            difference = pred_mean - gt
+            prediction_atm = pred_data['prediction']
+            pred = prediction_atm[mag_to_plot][:, :, logtau_idx]
+            difference = pred - gt
             rmse = np.sqrt(np.mean(difference**2))
-            corr, p_value = pearsonr(pred_mean.flatten(), gt.flatten())
+            rrmse = rmse / np.mean(np.abs(gt)) if np.mean(np.abs(gt)) > 1e-10 else np.nan
+            corr, p_value = pearsonr(pred.flatten(), gt.flatten())
             bias = np.mean(difference)
             
             metrics["models"][model_name] = {
                 "label": pred_data['label'],
+                "rrmse": float(rrmse) if not np.isnan(rrmse) else None,
                 "rmse": float(rmse),
                 "pearson_r": float(corr),
                 "p_value": float(p_value),
                 "bias": float(bias)
             }
             
-            im = axes[0, i].imshow(pred_mean, cmap=color_mapping[mag_to_plot], vmin=vmin, vmax=vmax)
-            axes[0, i].set_title(f"{pred_data['label']}\nRMSE={rmse:.2f}, R={corr:.3f}",
+            rrmse_str = f"{rrmse*100:.2f}%" if not np.isnan(rrmse) else "N/A"
+            im = axes[0, i].imshow(pred, cmap=color_mapping[mag_to_plot], vmin=vmin, vmax=vmax)
+            axes[0, i].set_title(f"{pred_data['label']}\nRRMSE={rrmse_str}, R={corr:.3f}",
                                 fontsize=12, fontweight='bold')
             axes[0, i].set_xticks([])
             axes[0, i].set_yticks([])
@@ -315,7 +281,7 @@ class ModestAnalysis:
             cax = divider.append_axes("right", size="5%", pad=0.05)
             fig.colorbar(im, cax=cax, label=units_map[mag_to_plot])
             
-            axes[1, i].hist(pred_mean.flatten(), bins=50, color=pred_data['color'],
+            axes[1, i].hist(pred.flatten(), bins=50, color=pred_data['color'],
                            alpha=0.7, label=pred_data['label'], density=True)
             axes[1, i].hist(gt.flatten(), bins=50, color='gray', alpha=0.3,
                            label='GT', density=True)
@@ -339,11 +305,9 @@ class ModestAnalysis:
         else:
             plt.show()
 
-
     def plot_mean_vs_optical_depth(
         self,
         mean_atm,
-        std_atm,
         logtau=None,
         figsize=(18, 6),
         log_scale=None,
@@ -380,27 +344,16 @@ class ModestAnalysis:
         
         for idx, param in enumerate(params):
             mean_spatial = np.mean(mean_atm[param], axis=(0, 1))
-            std_spatial = np.mean(std_atm[param], axis=(0, 1))
             
             metrics["parameters"][param] = {
                 "name": titles[param],
                 "units": units[param],
                 "model_mean_profile": mean_spatial.tolist(),
-                "model_std_profile": std_spatial.tolist(),
                 "ground_truth_comparisons": {}
             }
             
             axes[idx].plot(logtau, mean_spatial, color=colors[param], 
                           linewidth=2, label='Model Mean', zorder=3)
-            axes[idx].fill_between(
-                logtau,
-                mean_spatial - std_spatial,
-                mean_spatial + std_spatial,
-                color=colors[param],
-                alpha=0.3,
-                label='±1σ uncertainty',
-                zorder=2
-            )
             
             if ground_truth is not None:
                 gt_means = []
@@ -419,10 +372,6 @@ class ModestAnalysis:
                         
                         od_idx_closest = np.argmin(np.abs(logtau - od_val))
                         pred_mean_at_od = mean_spatial[od_idx_closest]
-                        pred_std_at_od = std_spatial[od_idx_closest]
-                        
-                        within_uncertainty = (gt_mean >= pred_mean_at_od - pred_std_at_od and 
-                                            gt_mean <= pred_mean_at_od + pred_std_at_od)
                         
                         diff = pred_mean_at_od - gt_mean
                         relative_diff = (diff / gt_mean) * 100 if gt_mean != 0 else 0
@@ -432,10 +381,8 @@ class ModestAnalysis:
                             "gt_mean": float(gt_mean),
                             "gt_std": float(gt_std),
                             "pred_mean": float(pred_mean_at_od),
-                            "pred_std": float(pred_std_at_od),
                             "difference": float(diff),
-                            "relative_difference_percent": float(relative_diff),
-                            "within_1sigma": bool(within_uncertainty)
+                            "relative_difference_percent": float(relative_diff)
                         }
                 
                 if gt_means:
@@ -447,12 +394,10 @@ class ModestAnalysis:
                     for od_val, gt_mean in zip(gt_od_values, gt_means):
                         od_idx_closest = np.argmin(np.abs(logtau - od_val))
                         pred_mean_at_od = mean_spatial[od_idx_closest]
-                        pred_std_at_od = std_spatial[od_idx_closest]
                         
-                        within_uncertainty = (gt_mean >= pred_mean_at_od - pred_std_at_od and 
-                                            gt_mean <= pred_mean_at_od + pred_std_at_od)
+                        within_uncertainty = False  # No longer checking uncertainty
                         
-                        marker = '✓' if within_uncertainty else '✗'
+                        marker = '●' if within_uncertainty else '○'
                         color_marker = 'green' if within_uncertainty else 'red'
                         axes[idx].annotate(marker, 
                                      xy=(od_val, gt_mean),
@@ -502,6 +447,7 @@ class ModestAnalysis:
                 print("-" * 70)
                 
                 modest_key = self.modest_key_mapping[param]
+                mean_spatial = np.mean(mean_atm[param], axis=(0, 1))
                 
                 for od_val in gt_optical_depths:
                     if od_val in ground_truth[modest_key]:
@@ -510,24 +456,15 @@ class ModestAnalysis:
                         gt_std = np.std(gt_data)
                         
                         od_idx_closest = np.argmin(np.abs(logtau - od_val))
-                        pred_data = mean_atm[param][:, :, od_idx_closest]
-                        pred_mean_spatial = np.mean(pred_data)
-                        pred_std_spatial = np.mean(std_atm[param][:, :, od_idx_closest])
+                        pred_mean_at_od = mean_spatial[od_idx_closest]
                         
-                        diff = pred_mean_spatial - gt_mean
+                        diff = pred_mean_at_od - gt_mean
                         relative_diff = (diff / gt_mean) * 100 if gt_mean != 0 else 0
                         
-                        within_uncertainty = abs(diff) <= pred_std_spatial
-                        status = "✓ WITHIN" if within_uncertainty else "✗ OUTSIDE"
-                        
-                        print(f"  log(τ) = {od_val:5.1f}:")
-                        print(f"    Ground Truth:  {gt_mean:10.2f} ± {gt_std:8.2f} {units[param]}")
-                        print(f"    Model Pred:    {pred_mean_spatial:10.2f} ± {pred_std_spatial:8.2f} {units[param]}")
-                        print(f"    Difference:    {diff:10.2f} ({relative_diff:+.1f}%)")
-                        print(f"    Status:        {status} ±1σ uncertainty")
+                        print(f"  log(τ)={od_val:.1f}: GT={gt_mean:.2f}±{gt_std:.2f}, "
+                              f"Pred={pred_mean_at_od:.2f}, Diff={diff:.2f} ({relative_diff:.1f}%)")
             
             print("\n" + "="*70)
-
 
     def analyze_error_by_magnitude(
         self,
@@ -567,7 +504,7 @@ class ModestAnalysis:
         }
         
         for i, (model_name, pred_data) in enumerate(all_predictions.items()):
-            pred_mag = pred_data['mean'][mag_to_analyze][:, :, od_idx]
+            pred_mag = pred_data['prediction'][mag_to_analyze][:, :, od_idx]
             error = np.abs(pred_mag - gt_data)
             
             gt_flat = gt_data.flatten()
@@ -742,90 +679,6 @@ class ModestAnalysis:
         
         print("\n" + "="*70)
 
-
-    def plot_uncertainty_vs_error(
-        self,
-        all_predictions: Dict,
-        ground_truth: dict,
-        mag_to_plot: str = "Bz",
-        od_val: float = 0.0,
-        logtau: np.ndarray = None,
-        figsize: tuple = (18, 6),
-        save_dir: Optional[Union[str, Path]] = None,
-        filename: Optional[str] = None
-    ):
-        logtau = self._resolve_logtau(logtau)
-        
-        fig, axes = plt.subplots(1, 3, figsize=figsize)
-        
-        modest_key_mapping = {"T": "T", "Vz": "Vlos", "Bz": "Blos"}
-        title_map = {"T": "Temperature", "Vz": "Line-of-sight Velocity", "Bz": "Line-of-sight Magnetic Field"}
-        units_map = {"T": "K", "Vz": "km/s", "Bz": "G"}
-        
-        if logtau is None:
-            logtau = np.arange(-2, 0.1, 0.1)
-        
-        od_idx = np.argmin(np.abs(logtau - od_val))
-        gt = self._get_ground_truth_slice(ground_truth, mag_to_plot, od_val, logtau)
-        
-        metrics = {
-            "parameter": mag_to_plot,
-            "parameter_name": title_map[mag_to_plot],
-            "units": units_map[mag_to_plot],
-            "optical_depth": float(od_val),
-            "models": {}
-        }
-        
-        for i, (model_name, pred_data) in enumerate(all_predictions.items()):
-            pred_mean = pred_data['mean'][mag_to_plot][:, :, od_idx]
-            pred_std = pred_data['std'][mag_to_plot][:, :, od_idx]
-            
-            error = np.abs(pred_mean - gt)
-            
-            std_flat = pred_std.flatten()
-            error_flat = error.flatten()
-            valid = ~np.isnan(std_flat) & ~np.isnan(error_flat)
-            
-            corr_calib, p_value = pearsonr(std_flat[valid], error_flat[valid])
-            
-            metrics["models"][model_name] = {
-                "label": pred_data['label'],
-                "calibration_correlation": float(corr_calib),
-                "calibration_p_value": float(p_value),
-                "mean_predicted_std": float(np.mean(std_flat[valid])),
-                "mean_actual_error": float(np.mean(error_flat[valid])),
-                "n_valid_samples": int(np.sum(valid))
-            }
-            
-            axes[i].scatter(std_flat[valid], error_flat[valid],
-                           alpha=0.3, s=1, c=pred_data['color'])
-            axes[i].set_xlabel("Predicted Std Dev", fontsize=11)
-            axes[i].set_ylabel("Absolute Error", fontsize=11)
-            axes[i].set_title(f"{pred_data['label']}", fontsize=12, fontweight='bold')
-            axes[i].grid(alpha=0.3)
-            
-            max_val = max(axes[i].get_xlim()[1], axes[i].get_ylim()[1])
-            axes[i].plot([0, max_val], [0, max_val], 'r--', linewidth=2, label='Perfect calibration')
-            
-            axes[i].text(0.05, 0.95, f"R = {corr_calib:.3f}",
-                        transform=axes[i].transAxes, fontsize=10,
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-            axes[i].legend()
-        
-        plt.suptitle(f"Uncertainty Calibration for {mag_to_plot}", fontsize=14, fontweight='bold')
-        plt.tight_layout()
-        
-        if save_dir is not None and filename is not None:
-            save_dir = Path(save_dir) / "uncertainty_vs_error"
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_path = save_dir / filename
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            self._save_metrics_json(metrics, save_dir, filename)
-        else:
-            plt.show()
-
-
     def plot_jointplot_comparison(
         self,
         all_predictions: Dict,
@@ -843,16 +696,15 @@ class ModestAnalysis:
         # Configuration
         title_map = {"T": "Temperature", "Vz": "Line-of-sight Velocity", "Bz": "Line-of-sight Magnetic Field"}
         units_map = {"T": "K", "Vz": "km/s", "Bz": "G"}
-        gt_key_mapping = {"T": "T", "Vz": "Vlos", "Bz": "Blos"}
         
         od_idx = np.argmin(np.abs(logtau - od_val))
         gt_data = self._get_ground_truth_slice(ground_truth, mag_to_plot, od_val, logtau)
         
         for idx, (model_name, pred_data) in enumerate(all_predictions.items()):
-            pred_mean = pred_data['mean'][mag_to_plot][:, :, od_idx]
+            pred = pred_data['prediction'][mag_to_plot][:, :, od_idx]
             
             gt_flat = gt_data.flatten()
-            pred_flat = pred_mean.flatten()
+            pred_flat = pred.flatten()
             
             valid = ~np.isnan(gt_flat) & ~np.isnan(pred_flat)
             gt_valid = gt_flat[valid]
@@ -870,6 +722,8 @@ class ModestAnalysis:
             
             corr, p_value = pearsonr(gt_valid, pred_valid)
             rmse = np.sqrt(np.mean((pred_valid - gt_valid)**2))
+            gt_mean_val = np.mean(np.abs(gt_valid))
+            rrmse = rmse / gt_mean_val if gt_mean_val > 1e-10 else np.nan
             bias = np.mean(pred_valid - gt_valid)
             
             metrics = {
@@ -881,6 +735,7 @@ class ModestAnalysis:
                 "optical_depth": float(od_val),
                 "pearson_r": float(corr),
                 "p_value": float(p_value),
+                "rrmse": float(rrmse) if not np.isnan(rrmse) else None,
                 "rmse": float(rmse),
                 "bias": float(bias),
                 "n_samples": int(len(gt_valid))
@@ -914,14 +769,15 @@ class ModestAnalysis:
                            f'Prediction ({units_map[mag_to_plot]})',
                            fontsize=12)
             
+            rrmse_str = f"{rrmse*100:.2f}%" if not np.isnan(rrmse) else "N/A"
             g.fig.suptitle(f"{pred_data['label']}\n"
-                          f"R = {corr:.4f} | RMSE = {rmse:.2f} | Bias = {bias:.2f} {units_map[mag_to_plot]}",
+                          f"R = {corr:.4f} | RRMSE = {rrmse_str} | Bias = {bias:.2f} {units_map[mag_to_plot]}",
                           fontsize=12, fontweight='bold', y=1.02)
             
             stats_text = (f"N = {len(gt_valid):,}\n"
                          f"R = {corr:.4f}\n"
                          f"p < {p_value:.1e}\n"
-                         f"RMSE = {rmse:.2f}\n"
+                         f"RRMSE = {rrmse_str}\n"
                          f"Bias = {bias:.2f}")
             
             g.ax_joint.text(0.05, 0.95, stats_text,
@@ -947,15 +803,13 @@ class ModestAnalysis:
                 g.savefig(out_path, dpi=300, bbox_inches='tight')
                 plt.close(g.fig)
                 self._save_metrics_json(metrics, Path(out_dir), out_path)
-            else:
-                pass
             
             print(f"\n{pred_data['label']} - {title_map[mag_to_plot]} at log(τ)={od_val:.1f}")
             print(f"  Pearson R:   {corr:.4f} (p={p_value:.2e})")
+            print(f"  RRMSE:       {rrmse_str}")
             print(f"  RMSE:        {rmse:.2f} {units_map[mag_to_plot]}")
             print(f"  Bias:        {bias:.2f} {units_map[mag_to_plot]}")
             print(f"  Samples:     {len(gt_valid):,}")
-
 
     def plot_combined_jointplot(
         self,
@@ -973,7 +827,6 @@ class ModestAnalysis:
         # Configuration
         title_map = {"T": "Temperature", "Vz": "Line-of-sight Velocity", "Bz": "Line-of-sight Magnetic Field"}
         units_map = {"T": "K", "Vz": "km/s", "Bz": "G"}
-        gt_key_mapping = {"T": "T", "Vz": "Vlos", "Bz": "Blos"}
         
         od_idx = np.argmin(np.abs(logtau - od_val))
         gt_data = self._get_ground_truth_slice(ground_truth, mag_to_plot, od_val, logtau)
@@ -988,32 +841,36 @@ class ModestAnalysis:
         }
         
         for model_name, pred_data in all_predictions.items():
-            pred_mean = pred_data['mean'][mag_to_plot][:, :, od_idx]
+            pred = pred_data['prediction'][mag_to_plot][:, :, od_idx]
             
             gt_flat = gt_data.flatten()
-            pred_flat = pred_mean.flatten()
+            pred_flat = pred.flatten()
             
             valid = ~np.isnan(gt_flat) & ~np.isnan(pred_flat)
             gt_valid = gt_flat[valid]
             pred_valid = pred_flat[valid]
             
-            if len(gt_valid) > n_samples:
-                indices = np.random.choice(len(gt_valid), n_samples, replace=False)
-                gt_valid = gt_valid[indices]
-                pred_valid = pred_valid[indices]
-            
+            # Compute per-model metrics before subsampling
             corr, p_value = pearsonr(gt_valid, pred_valid)
             rmse = np.sqrt(np.mean((pred_valid - gt_valid)**2))
+            gt_mean_val = np.mean(np.abs(gt_valid))
+            rrmse = rmse / gt_mean_val if gt_mean_val > 1e-10 else np.nan
             bias = np.mean(pred_valid - gt_valid)
             
             metrics["models"][model_name] = {
                 "label": pred_data['label'],
                 "pearson_r": float(corr),
                 "p_value": float(p_value),
+                "rrmse": float(rrmse) if not np.isnan(rrmse) else None,
                 "rmse": float(rmse),
                 "bias": float(bias),
                 "n_samples": int(len(gt_valid))
             }
+            
+            if len(gt_valid) > n_samples:
+                indices = np.random.choice(len(gt_valid), n_samples, replace=False)
+                gt_valid = gt_valid[indices]
+                pred_valid = pred_valid[indices]
             
             df_model = pd.DataFrame({
                 'Ground Truth': gt_valid,
@@ -1070,8 +927,6 @@ class ModestAnalysis:
             g.savefig(out_path, dpi=300, bbox_inches='tight')
             plt.close(g.fig)
             self._save_metrics_json(metrics, Path(out_dir), filename)
-        else:
-            pass
         
         print("\n" + "="*70)
         print(f"Combined Analysis: {title_map[mag_to_plot]} at log(τ)={od_val:.1f}")
@@ -1081,6 +936,8 @@ class ModestAnalysis:
             model_metrics = metrics["models"][model_name]
             print(f"\n{pred_data['label']}:")
             print(f"  Pearson R:   {model_metrics['pearson_r']:.4f} (p={model_metrics['p_value']:.2e})")
+            rrmse_str = f"{model_metrics['rrmse']*100:.2f}%" if model_metrics['rrmse'] is not None else "N/A"
+            print(f"  RRMSE:       {rrmse_str}")
             print(f"  RMSE:        {model_metrics['rmse']:.2f} {units_map[mag_to_plot]}")
             print(f"  Bias:        {model_metrics['bias']:.2f} {units_map[mag_to_plot]}")
             print(f"  Samples:     {model_metrics['n_samples']:,}")
