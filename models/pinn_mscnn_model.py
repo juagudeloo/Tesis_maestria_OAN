@@ -49,10 +49,9 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         vlos_target_logtau: Optional[float] = None,
         temp_physics_mode: Literal['tau_averaged', 'single_height'] = 'single_height',
         temp_target_logtau: Optional[float] = 0.0,
-        dropout_rate: float = 0.2,
         **kwargs: Any,
     ) -> None:
-        super().__init__(dropout_rate=dropout_rate, **kwargs)
+        super().__init__(**kwargs)
         
         # Validate physics_mode for each quantity
         valid_physics_modes = ['tau_averaged', 'single_height']

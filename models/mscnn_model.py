@@ -137,7 +137,6 @@ class MSCNNInversionModel(nn.Module):
         n_linear_layers: int = 4,
         output_features: int = 3 * 21,
         input_length: int = 112,
-        dropout_rate: float = 0.0,  # Set dropout to 0
     ) -> None:
         super().__init__()
 
