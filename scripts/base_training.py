@@ -110,6 +110,7 @@ class TrainingConfig:
     pin_memory: bool = True
     
     # Scheduler
+    use_scheduler: bool = True
     scheduler_type: str = "plateau"  # 'plateau' or 'cosine'
     scheduler_patience: int = 5
     scheduler_factor: float = 0.5
@@ -900,24 +901,27 @@ def train_pinn_model(config: TrainingConfig):
         print(f"  ✓ GradNorm initialized with alpha={config.gradnorm_alpha}")
     
     # Scheduler
-    if config.scheduler_type == 'plateau':
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=config.scheduler_factor,
-            patience=config.scheduler_patience,
-            verbose=True
-        )
-    elif config.scheduler_type == 'cosine':
-        scheduler = CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=10,
-            T_mult=2,
-            eta_min=1e-6
-        )
-    else:
-        scheduler = None
-    
+    scheduler = None
+    if config.use_scheduler:
+        if config.scheduler_type == 'plateau':
+            scheduler = ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=config.scheduler_factor,
+                patience=config.scheduler_patience,
+                verbose=True
+            )
+        elif config.scheduler_type == 'cosine':
+            scheduler = CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=10,
+                T_mult=2,
+                eta_min=1e-6
+            )
+        else:
+            raise ValueError(
+                f"Invalid scheduler_type='{config.scheduler_type}'. Use 'plateau' or 'cosine'."
+            )
     # Logger
     logger = MetricsLogger(config.log_dir)
     
@@ -1057,6 +1061,12 @@ def main():
     parser.add_argument('--epochs', type=int, help='Number of epochs (overrides config)')
     parser.add_argument('--batch-size', type=int, help='Batch size (overrides config)')
     parser.add_argument('--lr', type=float, help='Learning rate (overrides config)')
+
+    # Scheduler arguments (missing before)
+    parser.add_argument('--no-scheduler', action='store_true',
+                       help='Disable learning rate scheduler (fixed LR)')
+    parser.add_argument('--scheduler-type', type=str, choices=['plateau', 'cosine', 'none'],
+                       help="Scheduler type ('none' disables scheduler)")
     
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
@@ -1084,11 +1094,17 @@ def main():
         config.batch_size = args.batch_size
     if args.lr:
         config.learning_rate = args.lr
-    
-    # Cache arguments
-    config.use_cache = not args.no_cache
-    config.cache_dir = args.cache_dir
-    
+
+    # Apply scheduler CLI overrides
+    if args.scheduler_type:
+        if args.scheduler_type == 'none':
+            config.use_scheduler = False
+        else:
+            config.use_scheduler = True
+            config.scheduler_type = args.scheduler_type
+    if args.no_scheduler:
+        config.use_scheduler = False
+
     # Handle cache clearing
     if args.clear_cache and config.use_cache:
         cache = DataCache(cache_dir=config.cache_dir)

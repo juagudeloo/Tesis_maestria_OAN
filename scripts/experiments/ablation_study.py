@@ -584,6 +584,8 @@ def run_single_experiment(
             'learning_rate': config.learning_rate,
             'weight_decay': config.weight_decay,
             'gradient_clip': config.gradient_clip,
+            'use_scheduler': config.use_scheduler,
+            'scheduler_type': config.scheduler_type,
             'scheduler_factor': config.scheduler_factor,
             'scheduler_patience': config.scheduler_patience,
         },
@@ -654,14 +656,28 @@ def run_single_experiment(
         weight_decay=config.weight_decay
     )
     
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=config.scheduler_factor,
-        patience=config.scheduler_patience,
-        verbose=True
-    )
-    
+    scheduler = None
+    if config.use_scheduler:
+        if config.scheduler_type == 'plateau':
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode='min',
+                factor=config.scheduler_factor,
+                patience=config.scheduler_patience,
+                verbose=True
+            )
+        elif config.scheduler_type == 'cosine':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer,
+                T_0=10,
+                T_mult=2,
+                eta_min=1e-6
+            )
+        else:
+            raise ValueError(
+                f"Invalid scheduler_type='{config.scheduler_type}'. Use 'plateau' or 'cosine'."
+            )
+
     # Initialize GradNorm scheduler if enabled
     gradnorm_scheduler = None
     if config.use_gradnorm and any([config.lambda_wfa > 0, config.lambda_doppler > 0, config.lambda_temp > 0]):
@@ -745,7 +761,11 @@ def run_single_experiment(
             )
             
             val_loss_history.append(avg_val_loss)
-            scheduler.step(avg_val_loss)
+            if scheduler is not None:
+                if config.scheduler_type == 'plateau':
+                    scheduler.step(avg_val_loss)
+                else:
+                    scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             
             print("=" * 100)
@@ -848,6 +868,13 @@ def main():
     parser.add_argument('--learning_rate', '--lr', type=float, default=1e-3,
                        help='Learning rate (default: 1e-3)')
     
+    # Scheduler arguments (missing before)
+    parser.add_argument('--no_scheduler', action='store_true',
+                       help='Disable learning rate scheduler')
+    parser.add_argument('--scheduler_type', type=str, default='plateau',
+                       choices=['plateau', 'cosine', 'none'],
+                       help="Scheduler type: 'plateau', 'cosine', or 'none'")
+    
     # Lambda values for physics terms
     parser.add_argument('--lambda_wfa', type=float, default=0.01,
                        help='Weight for WFA B_LOS loss (default: 0.01, use 0.0 to disable)')
@@ -915,6 +942,9 @@ def main():
     print("EXPERIMENT CONFIGURATION".center(80))
     print("=" * 80)
     print(f"Learning rate:      {args.learning_rate:.2e}")
+    print(f"Use scheduler:      {not args.no_scheduler and args.scheduler_type != 'none'}")
+    if not args.no_scheduler and args.scheduler_type != 'none':
+        print(f"Scheduler type:     {args.scheduler_type}")
     print(f"Lambda WFA:         {args.lambda_wfa}")
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
@@ -923,7 +953,9 @@ def main():
         print(f"GradNorm alpha:     {args.gradnorm_alpha}")
     print("=" * 80 + "\n")
     
-    # Define experiments using TrainingConfig with command-line arguments
+    resolved_use_scheduler = (not args.no_scheduler) and (args.scheduler_type != 'none')
+    resolved_scheduler_type = 'plateau' if args.scheduler_type == 'none' else args.scheduler_type
+
     all_experiment_configs = {
         'all_physics_terms': TrainingConfig(
             data_path=str(data_path),
@@ -944,6 +976,8 @@ def main():
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
             step_size=args.step_size,
+            use_scheduler=resolved_use_scheduler,
+            scheduler_type=resolved_scheduler_type,
         ),
         'wfa_only': TrainingConfig(
             data_path=str(data_path),
@@ -963,6 +997,8 @@ def main():
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
             step_size=args.step_size,
+            use_scheduler=resolved_use_scheduler,
+            scheduler_type=resolved_scheduler_type,
         ),
         'doppler_only': TrainingConfig(
             data_path=str(data_path),
@@ -982,6 +1018,8 @@ def main():
             checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
             log_dir=output_dir / "doppler_only" / "logs",
             step_size=args.step_size,
+            use_scheduler=resolved_use_scheduler,
+            scheduler_type=resolved_scheduler_type,
         ),
         'black_body_only': TrainingConfig(
             data_path=str(data_path),
@@ -1001,6 +1039,8 @@ def main():
             checkpoint_dir=output_dir / "black_body_only" / "checkpoints",
             log_dir=output_dir / "black_body_only" / "logs",
             step_size=args.step_size,
+            use_scheduler=resolved_use_scheduler,
+            scheduler_type=resolved_scheduler_type,
         ),
         'no_physics': TrainingConfig(
             data_path=str(data_path),
@@ -1020,6 +1060,8 @@ def main():
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
             step_size=args.step_size,
+            use_scheduler=resolved_use_scheduler,
+            scheduler_type=resolved_scheduler_type,
         ),
     }
     
