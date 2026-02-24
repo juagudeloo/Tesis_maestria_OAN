@@ -608,6 +608,7 @@ def run_single_experiment(
             'max_step': max_step,
             'test_steps': test_steps,
             'n_steps_per_epoch': n_steps_per_epoch,
+            'logtau_values': [float(x) for x in config.get_logtau_values().tolist()],
         },
         'model_config': {
             'scales': [1, 2, 3],
@@ -797,7 +798,7 @@ def run_single_experiment(
         config=config,
         mhd_normalizer=mhd_normalizer,
         stokes_normalizer=stokes_normalizer,
-        logtau_values=np.arange(-2.0, 0.1, 0.1),
+        logtau_values=config.get_logtau_values(),
         cache=cache,  # Pass cache to test evaluation
     )
     
@@ -844,6 +845,7 @@ def run_single_experiment(
             'temp_target_logtau': config.temp_target_logtau,
             'device': config.device,
             'data_path': str(config.data_path),
+            'logtau_values': [float(x) for x in config.get_logtau_values().tolist()],
         }
     }
 
@@ -919,6 +921,21 @@ def main():
                        default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache',
                        help='Directory for cached MURaM data')
     
+    # Optical depth remapping grid
+    parser.add_argument(
+        '--logtau_values',
+        type=float,
+        nargs='+',
+        default=None,
+        help='Explicit log(tau) grid values (overrides min/max/step), e.g. --logtau_values -2.0 -1.9 ... 0.0'
+    )
+    parser.add_argument('--logtau_min', type=float, default=-2.0,
+                       help='Minimum log(tau) for range mode (default: -2.0)')
+    parser.add_argument('--logtau_max', type=float, default=0.0,
+                       help='Maximum log(tau) for range mode (default: 0.0)')
+    parser.add_argument('--logtau_step', type=float, default=0.1,
+                       help='Step in log(tau) for range mode (default: 0.1)')
+    
     args = parser.parse_args()
     
     # Base configuration
@@ -951,6 +968,10 @@ def main():
     print(f"Use GradNorm:       {args.use_gradnorm}")
     if args.use_gradnorm:
         print(f"GradNorm alpha:     {args.gradnorm_alpha}")
+    if args.logtau_values is not None:
+        print(f"log(tau) values:    {args.logtau_values}")
+    else:
+        print(f"log(tau) range:     [{args.logtau_min}, {args.logtau_max}] step={args.logtau_step}")
     print("=" * 80 + "\n")
     
     resolved_use_scheduler = (not args.no_scheduler) and (args.scheduler_type != 'none')
@@ -976,6 +997,10 @@ def main():
             checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
             log_dir=output_dir / "all_physics_terms" / "logs",
             step_size=args.step_size,
+            logtau_values=args.logtau_values,
+            logtau_min=args.logtau_min,
+            logtau_max=args.logtau_max,
+            logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
         ),
@@ -997,6 +1022,10 @@ def main():
             checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
             log_dir=output_dir / "wfa_only" / "logs",
             step_size=args.step_size,
+            logtau_values=args.logtau_values,
+            logtau_min=args.logtau_min,
+            logtau_max=args.logtau_max,
+            logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
         ),
@@ -1018,6 +1047,10 @@ def main():
             checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
             log_dir=output_dir / "doppler_only" / "logs",
             step_size=args.step_size,
+            logtau_values=args.logtau_values,
+            logtau_min=args.logtau_min,
+            logtau_max=args.logtau_max,
+            logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
         ),
@@ -1039,6 +1072,10 @@ def main():
             checkpoint_dir=output_dir / "black_body_only" / "checkpoints",
             log_dir=output_dir / "black_body_only" / "logs",
             step_size=args.step_size,
+            logtau_values=args.logtau_values,
+            logtau_min=args.logtau_min,
+            logtau_max=args.logtau_max,
+            logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
         ),
@@ -1060,6 +1097,10 @@ def main():
             checkpoint_dir=output_dir / "no_physics" / "checkpoints",
             log_dir=output_dir / "no_physics" / "logs",
             step_size=args.step_size,
+            logtau_values=args.logtau_values,
+            logtau_min=args.logtau_min,
+            logtau_max=args.logtau_max,
+            logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
         ),

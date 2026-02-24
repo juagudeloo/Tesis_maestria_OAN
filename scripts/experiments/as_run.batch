@@ -42,6 +42,9 @@ LAMBDA_WFA=1e-2
 LAMBDA_DOPPLER=5e-1
 LAMBDA_TEMP=2
 
+# Logtau values to map
+LOGTAU_VALUES=(-1.0 -0.8 0.0)
+
 # Physics modes
 BLOS_MODE='single_height'        # 'tau_averaged' or 'single_height'
 BLOS_TARGET_LOGTAU=-0.9         # Only used if BLOS_MODE='single_height'
@@ -54,7 +57,7 @@ TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = 
 
 # Experiments to run
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
-EXPERIMENTS="no_physics wfa_only all_physics_terms"
+EXPERIMENTS="no_physics wfa_only"
 
 # ==============================================================================
 # RUN EXPERIMENT
@@ -78,5 +81,6 @@ python3 ablation_study.py \
     --vlos_target_logtau "${VLOS_TARGET_LOGTAU}" \
     --temp_physics_mode "${TEMP_MODE}" \
     --temp_target_logtau "${TEMP_TARGET_LOGTAU}" \
+    --logtau_values "${LOGTAU_VALUES[@]}" \
     --experiments ${EXPERIMENTS}
 

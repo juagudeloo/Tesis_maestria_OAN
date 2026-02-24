@@ -58,6 +58,13 @@ class TrainingConfig:
     max_step: int = 200
     dz_km: float = 10.0
     step_size: int = 1  # Step size between simulation steps
+
+    # Optical depth remapping grid (used by MURaM -> tau mapping)
+    # If logtau_values is provided, it overrides min/max/step
+    logtau_values: list[float] | None = None
+    logtau_min: float = -2.0
+    logtau_max: float = 0.0
+    logtau_step: float = 0.1
     
     # Training parameters
     n_epochs: int = 20
@@ -124,6 +131,8 @@ class TrainingConfig:
             self.scales = [1, 2, 3]
         if self.temp_continuum_indices is None:
             self.temp_continuum_indices = [0, 1, 2, 3]
+        if self.logtau_values is not None and len(self.logtau_values) == 0:
+            self.logtau_values = None
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
         self.checkpoint_dir = Path(self.checkpoint_dir)
@@ -148,6 +157,28 @@ class TrainingConfig:
         with open(path, 'r') as f:
             config_dict = json.load(f)
         return cls(**config_dict)
+
+    def get_logtau_values(self) -> np.ndarray:
+        """Resolve optical-depth grid for MURaM remapping/physics context."""
+        if self.logtau_values is not None:
+            logtau = np.asarray(self.logtau_values, dtype=np.float32)
+        else:
+            if self.logtau_step <= 0:
+                raise ValueError(f"logtau_step must be > 0, got {self.logtau_step}")
+            # include endpoint robustly
+            logtau = np.arange(
+                self.logtau_min,
+                self.logtau_max + 0.5 * self.logtau_step,
+                self.logtau_step,
+                dtype=np.float32,
+            )
+
+        if logtau.ndim != 1 or logtau.size < 2:
+            raise ValueError("logtau grid must be 1D with at least 2 points")
+        if not np.all(np.diff(logtau) > 0):
+            raise ValueError("logtau grid must be strictly increasing")
+
+        return np.round(logtau, 6)
 
 class MetricsLogger:
     """Tracks and logs training metrics."""
@@ -226,6 +257,7 @@ def build_cache_config_signature(config: TrainingConfig) -> dict:
         'dz_km': config.dz_km,
         'central_wavelength': config.central_wavelength,
         'wl_range': config.wl_range,
+        'logtau_values': tuple(float(x) for x in config.get_logtau_values().tolist()),
     }
 
 def load_and_prepare_step(
@@ -286,8 +318,13 @@ def load_and_prepare_step(
     mhd.load_opacity_table(kappa_path=config.data_path / config.kappa_path)
     mhd.compute_optical_depth(dz=config.dz_km * u.km)
     
-    # Remap to optical depth
-    new_logtau = np.arange(-2.0, 0.1, 0.1)
+    # Remap to optical depth (from config)
+    new_logtau = config.get_logtau_values()
+    if hasattr(mhd_normalizer, "n_tau") and len(new_logtau) != mhd_normalizer.n_tau:
+        raise ValueError(
+            f"logtau grid has {len(new_logtau)} levels, but mhd_normalizer expects "
+            f"{mhd_normalizer.n_tau}. Recompute normalizer stats or adjust logtau grid."
+        )
     mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
     
     # Load Stokes data
@@ -344,6 +381,7 @@ def load_and_prepare_step(
                 mhd_data=mhd.od_data,
                 approx_data=approx_data,
                 config_hash=config_hash,
+                logtau_values=new_logtau,
                 verbose=True,
             )
         except Exception as e:
@@ -399,7 +437,7 @@ def train_one_step(
     # Set physics context once for this step (including temperature)
     model.set_physics_context(
         mhd_normalizer=mhd_normalizer,
-        logtau_values=np.arange(-2.0, 0.1, 0.1),
+        logtau_values=config.get_logtau_values(),
         blos_approx=approx_data.get('blos'),
         vlos_approx=approx_data.get('vlos'),
         temp_approx=approx_data.get('temp'),
@@ -585,7 +623,7 @@ def validate(
                 # Set physics context for validation (including temperature)
                 model.set_physics_context(
                     mhd_normalizer=mhd_normalizer,
-                    logtau_values=np.arange(-2.0, 0.1, 0.1),
+                    logtau_values=config.get_logtau_values(),
                     blos_approx=approx_data.get('blos'),
                     vlos_approx=approx_data.get('vlos'),
                     temp_approx=approx_data.get('temp'),

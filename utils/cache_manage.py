@@ -145,6 +145,7 @@ class DataCache:
         mhd_data: dict[str, np.ndarray],
         approx_data: dict[str, np.ndarray] | None = None,
         config_hash: str | None = None,
+        logtau_values: np.ndarray | list[float] | None = None,
         verbose: bool = True,
     ) -> Path:
         """
@@ -162,6 +163,8 @@ class DataCache:
             Physics approximations {'blos': (nx, ny), 'vlos': ..., 'temp': ...}
         config_hash : str, optional
             Configuration hash for validation
+        logtau_values : np.ndarray or list[float], optional
+            Optical-depth grid used during MURaM -> tau remapping.
         verbose : bool
             Print progress messages
             
@@ -200,6 +203,14 @@ class DataCache:
                 f.attrs['step'] = step
                 if config_hash is not None:
                     f.attrs['config_hash'] = config_hash
+                if logtau_values is not None:
+                    f.attrs['logtau_values'] = np.asarray(logtau_values, dtype=np.float32)
+
+            # Normalize/serialize logtau for json metadata
+            logtau_list = None
+            if logtau_values is not None:
+                logtau_arr = np.asarray(logtau_values, dtype=np.float32)
+                logtau_list = [float(x) for x in np.round(logtau_arr, 6).tolist()]
             
             # Update metadata
             self.metadata[str(step)] = {
@@ -208,6 +219,7 @@ class DataCache:
                 'ny': stokes_data['I'].shape[1],
                 'nwl': stokes_data['I'].shape[2],
                 'ntau': mhd_data['T'].shape[2],
+                'logtau_values': logtau_list,
                 'file_size_mb': cache_path.stat().st_size / (1024**2),
             }
             self._save_metadata()
