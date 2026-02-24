@@ -135,8 +135,9 @@ class MSCNNInversionModel(nn.Module):
         padding: int = 0,
         pool_size: int = 2,
         n_linear_layers: int = 4,
-        output_features: int = 3 * 21,
+        output_features: int | None = None,
         input_length: int = 112,
+        n_tau_levels: int = 21,
     ) -> None:
         super().__init__()
 
@@ -162,10 +163,13 @@ class MSCNNInversionModel(nn.Module):
             total_features += length
         flatten_size = total_features * c2_filters
 
+        if output_features is None:
+            output_features = 3 * int(n_tau_levels)
+
         self.flatten = nn.Flatten()
         self.linear_block = LinearBlock(
             in_features=flatten_size,
-            out_features=output_features,
+            out_features=int(output_features),
             n_layers=n_linear_layers,
         )
 

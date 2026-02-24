@@ -43,7 +43,7 @@ from utils.physics_utils import ApproxInversions
 class TrainingConfig:
     """Training configuration parameters."""
     # Data paths
-    data_path: str = "/scratchsan/observatorio/juagudeloo/data/"
+    data_path: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/"
     mhd_normalizer_path: str = "normalization_stats/mhd_normalization.json"
     stokes_normalizer_path: str = "normalization_stats/stokes_normalization.json"
     kappa_path: str = "csv/kappa.0.dat"
@@ -179,6 +179,10 @@ class TrainingConfig:
             raise ValueError("logtau grid must be strictly increasing")
 
         return np.round(logtau, 6)
+
+    def get_n_logtau(self) -> int:
+        """Number of optical-depth levels used by mapping/model output."""
+        return int(self.get_logtau_values().shape[0])
 
 class MetricsLogger:
     """Tracks and logs training metrics."""
@@ -896,6 +900,7 @@ def train_pinn_model(config: TrainingConfig):
     
     # Initialize model (including temperature parameters)
     print("\nInitializing model...")
+    n_logtau = config.get_n_logtau()
     model = PhysicsInformedMSCNN(
         scales=config.scales,
         in_channels=config.in_channels,
@@ -904,6 +909,7 @@ def train_pinn_model(config: TrainingConfig):
         kernel_size=config.kernel_size,
         pool_size=config.pool_size,
         n_linear_layers=config.n_linear_layers,
+        output_features=3 * n_logtau,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,

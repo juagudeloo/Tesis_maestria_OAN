@@ -406,6 +406,8 @@ def compute_tau_averaged_metrics(
     all_pred_temp = []
     all_true_temp = []
     
+    n_tau = int(len(logtau_values))
+
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
             # Use load_and_prepare_step which supports caching
@@ -441,20 +443,19 @@ def compute_tau_averaged_metrics(
             for stokes_batch, _, spatial_idx_batch in dataloader:
                 stokes_batch = stokes_batch.to(device)
                 predictions = model(stokes_batch)
-                
+
                 # Convert predictions to numpy for denormalization
                 predictions_np = predictions.cpu().numpy()
-                
-                # Reshape predictions from (batch_size, 63) to (batch_size, 21, 3)
+
+                # Reshape predictions from (batch_size, 3*n_tau) to (batch_size, n_tau, 3)
                 batch_size = predictions_np.shape[0]
-                predictions_np = predictions_np.reshape(batch_size, 21, 3)
-                
+                predictions_np = predictions_np.reshape(batch_size, n_tau, 3)
+
                 # Denormalize parameter by parameter
-                # predictions_np shape: (batch_size, n_tau=21, 3) where last dim is [T, Vz, Bz]
-                T_norm = predictions_np[:, :, 0]  # (batch_size, n_tau)
+                T_norm = predictions_np[:, :, 0]
                 Vz_norm = predictions_np[:, :, 1]
                 Bz_norm = predictions_np[:, :, 2]
-                
+
                 # Denormalize each parameter individually
                 T_denorm = mhd_normalizer.denormalize(T_norm, param='T')
                 Vz_denorm = mhd_normalizer.denormalize(Vz_norm, param='Vz')
@@ -632,6 +633,7 @@ def run_single_experiment(
     print(f"Configuration saved to: {config_path}")
     
     # Initialize model
+    n_logtau = config.get_n_logtau()
     model = PhysicsInformedMSCNN(
         scales=[1, 2, 3],
         in_channels=2,
@@ -640,6 +642,7 @@ def run_single_experiment(
         kernel_size=5,
         pool_size=2,
         n_linear_layers=4,
+        output_features=3 * n_logtau,
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
@@ -939,7 +942,7 @@ def main():
     args = parser.parse_args()
     
     # Base configuration
-    data_path = Path("/scratchsan/observatorio/juagudeloo/data/")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
     output_dir = Path(args.output_dir) / args.experiment_name
     output_dir.mkdir(parents=True, exist_ok=True)
     test_steps = list(range(198, 201))
