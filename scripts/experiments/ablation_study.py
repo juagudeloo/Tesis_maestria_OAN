@@ -12,6 +12,7 @@ Usage:
 """
 
 import sys
+import os
 import json
 import time
 from pathlib import Path
@@ -614,7 +615,7 @@ def run_single_experiment(
         'model_config': {
             'scales': [1, 2, 3],
             'in_channels': 2,
-            'c1_filters': 16,
+            'c1_filters': config.c1_filters,
             'c2_filters': 32,
             'kernel_size': 5,
             'pool_size': 2,
@@ -637,7 +638,7 @@ def run_single_experiment(
     model = PhysicsInformedMSCNN(
         scales=[1, 2, 3],
         in_channels=2,
-        c1_filters=16,
+        c1_filters=config.c1_filters,
         c2_filters=32,
         kernel_size=5,
         pool_size=2,
@@ -873,6 +874,10 @@ def main():
     parser.add_argument('--learning_rate', '--lr', type=float, default=1e-3,
                        help='Learning rate (default: 1e-3)')
     
+    # Model architecture
+    parser.add_argument('--c1-filters', '--c1_filter', dest='c1_filters', type=int, default=16,
+                       help='Number of filters in first conv layer (default: 16)')
+    
     # Scheduler arguments (missing before)
     parser.add_argument('--no_scheduler', action='store_true',
                        help='Disable learning rate scheduler')
@@ -918,11 +923,14 @@ def main():
                        help='Which experiments to run (default: all)')
     
     # Cache-related arguments
+    default_cache_dir = os.environ.get(
+        'MURAM_CACHE_DIR',
+        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache'
+    )
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
-    parser.add_argument('--cache-dir', type=str, 
-                       default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache',
-                       help='Directory for cached MURaM data')
+    parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=default_cache_dir,
+                       help='Directory for cached MURaM data (or set MURAM_CACHE_DIR)')
     
     # Optical depth remapping grid
     parser.add_argument(
@@ -940,6 +948,7 @@ def main():
                        help='Step in log(tau) for range mode (default: 0.1)')
     
     args = parser.parse_args()
+    args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
     
     # Base configuration
     data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
@@ -1006,6 +1015,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            c1_filters=args.c1_filters,
         ),
         'wfa_only': TrainingConfig(
             data_path=str(data_path),
@@ -1031,6 +1041,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            c1_filters=args.c1_filters,
         ),
         'doppler_only': TrainingConfig(
             data_path=str(data_path),
@@ -1056,6 +1067,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            c1_filters=args.c1_filters,
         ),
         'black_body_only': TrainingConfig(
             data_path=str(data_path),
@@ -1081,6 +1093,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            c1_filters=args.c1_filters,
         ),
         'no_physics': TrainingConfig(
             data_path=str(data_path),
@@ -1106,6 +1119,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            c1_filters=args.c1_filters,
         ),
     }
     

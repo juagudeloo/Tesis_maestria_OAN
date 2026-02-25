@@ -64,6 +64,8 @@ class DataCache:
         self.compression = compression
         self.metadata_file = self.cache_dir / "metadata.json"
         self.metadata = self._load_metadata()
+        self._reserved_keys = {"__cache_info__"}
+
     
     def _load_metadata(self) -> dict[str, dict]:
         """Load metadata file tracking cached steps."""
@@ -104,7 +106,7 @@ class DataCache:
         """Get cache file path for a step."""
         return self.cache_dir / f"step_{step:06d}.h5"
     
-    def exists(self, step: int, config_hash: str | None = None) -> bool:
+    def exists(self, step: int, config_hash: str | None = None, logtau_values: np.ndarray | list[float] | None = None) -> bool:
         """
         Check if processed data exists in cache.
         
@@ -115,12 +117,16 @@ class DataCache:
         config_hash : str, optional
             Configuration hash to validate. If provided, checks that
             cached config matches.
+        logtau_values : np.ndarray or list[float], optional
+            Optical-depth grid used during MURaM -> tau remapping.
             
         Returns
         -------
         bool
             True if cache exists and is valid
         """
+        self._ensure_logtau_compatible(logtau_values)
+
         cache_path = self._get_cache_path(step)
         if not cache_path.exists():
             return False
@@ -137,7 +143,49 @@ class DataCache:
                 return False
         
         return True
-    
+
+    def _ensure_logtau_compatible(self, logtau_values: np.ndarray | list[float] | None) -> None:
+        expected = self._normalize_logtau_values(logtau_values)
+        if expected is None:
+            return
+
+        cache_info = self.metadata.get("__cache_info__", {})
+        cached_global = cache_info.get("logtau_values")
+        if cached_global is not None and cached_global != expected:
+            raise ValueError(
+                "Cache logtau grid mismatch.\n"
+                f"Expected: {expected}\n"
+                f"Found (cache metadata): {cached_global}\n"
+                f"Delete cache at '{self.cache_dir}' and rerun."
+            )
+
+        # Also validate per-step metadata if present
+        for step_key in self._step_keys():
+            cached_step = self.metadata.get(step_key, {}).get("logtau_values")
+            if cached_step is not None and cached_step != expected:
+                raise ValueError(
+                    "Cache logtau grid mismatch at step "
+                    f"{step_key}.\nExpected: {expected}\nFound: {cached_step}\n"
+                    f"Delete cache at '{self.cache_dir}' and rerun."
+                )
+
+        # If missing global metadata, initialize it
+        if cached_global is None:
+            self.metadata["__cache_info__"] = {"logtau_values": expected}
+            self._save_metadata()
+
+    @staticmethod
+    def _normalize_logtau_values(logtau_values: np.ndarray | list[float] | None) -> list[float] | None:
+        if logtau_values is None:
+            return None
+        arr = np.asarray(logtau_values, dtype=np.float32)
+        if arr.ndim != 1 or arr.size < 2:
+            raise ValueError("logtau_values must be a 1D array with at least 2 values.")
+        return [float(x) for x in np.round(arr, 6).tolist()]
+
+    def _step_keys(self) -> list[str]:
+        return [k for k in self.metadata.keys() if k.isdigit()]
+
     def save(
         self,
         step: int,
@@ -207,11 +255,8 @@ class DataCache:
                     f.attrs['logtau_values'] = np.asarray(logtau_values, dtype=np.float32)
 
             # Normalize/serialize logtau for json metadata
-            logtau_list = None
-            if logtau_values is not None:
-                logtau_arr = np.asarray(logtau_values, dtype=np.float32)
-                logtau_list = [float(x) for x in np.round(logtau_arr, 6).tolist()]
-            
+            logtau_list = self._normalize_logtau_values(logtau_values)
+
             # Update metadata
             self.metadata[str(step)] = {
                 'config_hash': config_hash or 'unknown',
@@ -381,11 +426,13 @@ class DataCache:
         cache_files = list(self.cache_dir.glob("step_*.h5"))
         total_size_mb = sum(f.stat().st_size for f in cache_files) / (1024**2)
         
+        step_keys = self._step_keys()
         return {
             'total_steps_cached': len(cache_files),
             'total_size_mb': total_size_mb,
             'cache_dir': str(self.cache_dir),
-            'steps': list(self.metadata.keys()) if self.metadata else [],
+            'steps': step_keys if step_keys else [],
+            'cache_logtau_values': self.metadata.get("__cache_info__", {}).get("logtau_values"),
         }
     
     def print_cache_info(self):
@@ -398,6 +445,8 @@ class DataCache:
         print(f"Cache directory:      {stats['cache_dir']}")
         print(f"Steps cached:         {stats['total_steps_cached']}")
         print(f"Total size:           {stats['total_size_mb']:.1f} MB")
+        if stats.get('cache_logtau_values') is not None:
+            print(f"Cache logtau nodes:   {stats['cache_logtau_values']}")
         
         if stats['steps']:
             steps_sorted = sorted([int(s) for s in stats['steps']])

@@ -12,6 +12,7 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 import random
 import json
@@ -133,6 +134,12 @@ class TrainingConfig:
             self.temp_continuum_indices = [0, 1, 2, 3]
         if self.logtau_values is not None and len(self.logtau_values) == 0:
             self.logtau_values = None
+        # Normalize cache dir (allow shared override via env)
+        default_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+        if (not self.cache_dir or self.cache_dir == default_cache) and os.environ.get("MURAM_CACHE_DIR"):
+            self.cache_dir = os.environ["MURAM_CACHE_DIR"]
+        self.cache_dir = str(Path(self.cache_dir).expanduser().resolve())
+
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
         self.checkpoint_dir = Path(self.checkpoint_dir)
@@ -299,19 +306,31 @@ def load_and_prepare_step(
     # Compute configuration hash for cache validation
     config_for_hash = build_cache_config_signature(config)
     config_hash = DataCache.make_config_hash(config_for_hash) if cache else None
-    
-    # Try to load from cache
-    if cache is not None and cache.exists(step, config_hash):
-        try:
-            return cache.load(
-                step=step,
-                stokes_normalizer=stokes_normalizer,
-                mhd_normalizer=mhd_normalizer,
-                verbose=True,
-            )
-        except Exception as e:
-            print(f"  ⚠ Cache load failed for step {step}: {e}")
-            print(f"  Reprocessing step {step}...")
+    new_logtau = config.get_logtau_values()
+
+    # Try to load from cache (strict first, then relaxed hash fallback)
+    if cache is not None:
+        exact_hit = cache.exists(step, config_hash, logtau_values=new_logtau)
+        relaxed_hit = False
+        if not exact_hit:
+            try:
+                relaxed_hit = cache.exists(step, None, logtau_values=new_logtau)
+            except Exception:
+                relaxed_hit = False
+
+        if exact_hit or relaxed_hit:
+            if relaxed_hit and not exact_hit:
+                print(f"  ℹ Cache fallback hit for step {step} (ignoring config hash mismatch)")
+            try:
+                return cache.load(
+                    step=step,
+                    stokes_normalizer=stokes_normalizer,
+                    mhd_normalizer=mhd_normalizer,
+                    verbose=True,
+                )
+            except Exception as e:
+                print(f"  ⚠ Cache load failed for step {step}: {e}")
+                print(f"  Reprocessing step {step}...")
     
     # Load MHD data
     mhd = MhdData(
@@ -323,7 +342,6 @@ def load_and_prepare_step(
     mhd.compute_optical_depth(dz=config.dz_km * u.km)
     
     # Remap to optical depth (from config)
-    new_logtau = config.get_logtau_values()
     if hasattr(mhd_normalizer, "n_tau") and len(new_logtau) != mhd_normalizer.n_tau:
         raise ValueError(
             f"logtau grid has {len(new_logtau)} levels, but mhd_normalizer expects "
@@ -1105,6 +1123,8 @@ def main():
     parser.add_argument('--epochs', type=int, help='Number of epochs (overrides config)')
     parser.add_argument('--batch-size', type=int, help='Batch size (overrides config)')
     parser.add_argument('--lr', type=float, help='Learning rate (overrides config)')
+    parser.add_argument('--c1-filters', type=int, default=None,
+                       help='Number of filters in first conv layer (overrides config)')
 
     # Scheduler arguments (missing before)
     parser.add_argument('--no-scheduler', action='store_true',
@@ -1115,9 +1135,12 @@ def main():
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
-    parser.add_argument('--cache-dir', type=str, 
-                       default='/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache',
-                       help='Directory for cached data')
+    parser.add_argument('--cache-dir', '--cache_dir', type=str,
+                       default=os.environ.get(
+                           "MURAM_CACHE_DIR",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+                       ),
+                       help='Directory for cached data (or set MURAM_CACHE_DIR)')
     parser.add_argument('--clear-cache', action='store_true',
                        help='Clear cache before training')
     
@@ -1138,6 +1161,8 @@ def main():
         config.batch_size = args.batch_size
     if args.lr:
         config.learning_rate = args.lr
+    if args.c1_filters is not None:
+        config.c1_filters = args.c1_filters
 
     # Apply scheduler CLI overrides
     if args.scheduler_type:

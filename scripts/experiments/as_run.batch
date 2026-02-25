@@ -35,7 +35,8 @@ STEP_SIZE=1
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=20
+N_EPOCHS=30
+C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
 LAMBDA_WFA=1e-2
@@ -47,13 +48,17 @@ LOGTAU_VALUES=(-1.0 -0.8 0.0)
 
 # Physics modes
 BLOS_MODE='single_height'        # 'tau_averaged' or 'single_height'
-BLOS_TARGET_LOGTAU=-0.9         # Only used if BLOS_MODE='single_height'
+BLOS_TARGET_LOGTAU=-0.8          # Must match one of LOGTAU_VALUES for exact single-height supervision
 
 VLOS_MODE='single_height'       # 'tau_averaged' or 'single_height'
 VLOS_TARGET_LOGTAU=-1.0         # Only used if VLOS_MODE='single_height'
 
 TEMP_MODE='single_height'       # 'tau_averaged' or 'single_height'
 TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = photosphere)
+
+# Shared cache (same path used by normalization script)
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+export MURAM_CACHE_DIR="${CACHE_DIR}"
 
 # Experiments to run
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
@@ -73,10 +78,13 @@ python3 ablation_study.py \
     --experiment_name "physics_regularization_ablation_${MIN_STEP}_to_${MAX_STEP}-fixed_lambdas" \
     --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
     --learning_rate "${LEARNING_RATE}" \
+    --c1-filters "${C1_FILTERS}" \
+    --cache-dir "${CACHE_DIR}" \
     --lambda_wfa "${LAMBDA_WFA}" \
     --lambda_doppler "${LAMBDA_DOPPLER}" \
     --lambda_temp "${LAMBDA_TEMP}" \
     --blos_physics_mode "${BLOS_MODE}" \
+    --blos_target_logtau "${BLOS_TARGET_LOGTAU}" \
     --vlos_physics_mode "${VLOS_MODE}" \
     --vlos_target_logtau "${VLOS_TARGET_LOGTAU}" \
     --temp_physics_mode "${TEMP_MODE}" \

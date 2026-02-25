@@ -42,21 +42,23 @@ class ConvBlock(nn.Module):
 			nn.ReLU(),
 			nn.MaxPool1d(kernel_size=pool_size),
 		)
-		self.c2 = nn.Sequential(
-			nn.Conv1d(
-				in_channels=c1_filters,
-				out_channels=c2_filters,
-				kernel_size=kernel_size,
-				stride=stride,
-				padding=padding,
-			),
-			nn.ReLU(),
-			nn.MaxPool1d(kernel_size=pool_size),
-		)
+
+		# Second conv block disabled for ablation (use only first conv layer)
+		# self.c2 = nn.Sequential(
+		# 	nn.Conv1d(
+		# 		in_channels=c1_filters,
+		# 		out_channels=c2_filters,
+		# 		kernel_size=kernel_size,
+		# 		stride=stride,
+		# 		padding=padding,
+		# 	),
+		# 	nn.ReLU(),
+		# 	nn.MaxPool1d(kernel_size=pool_size),
+		# )
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		x = self.c1(x)
-		x = self.c2(x)
+		# x = self.c2(x)
 		return x
 
 
@@ -75,7 +77,7 @@ class MultiScaleFeatureMapping(nn.Module):
 	) -> None:
 		super().__init__()
 		self.scales = scales
-		self.c2_filters = c2_filters
+		self.out_filters = c1_filters  # c2 disabled; output channels come from c1
 		self.coarse_grains = nn.ModuleDict({f"scale_{s}": CoarseGrain(scale=s) for s in scales})
 		self.conv_block = ConvBlock(
 			in_channels=in_channels,
@@ -88,7 +90,7 @@ class MultiScaleFeatureMapping(nn.Module):
 		)
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
-		feature_maps = torch.empty((x.size(0), self.c2_filters, 0), dtype=torch.float32, device=x.device)
+		feature_maps = torch.empty((x.size(0), self.out_filters, 0), dtype=torch.float32, device=x.device)
 		for s in self.scales:
 			stokes_cg = self.coarse_grains[f"scale_{s}"](x)
 			conv_block_output = self.conv_block(stokes_cg)
@@ -153,15 +155,14 @@ class MSCNNInversionModel(nn.Module):
         )
 
         # Compute flatten size from expected input length.
+        # Second conv block disabled: only one conv+pool stage.
         total_features = 0
         for s in scales:
             length = input_length // s
             length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
             length = length // pool_size
-            length = _conv1d_output_length(length, kernel_size, stride=stride, padding=padding)
-            length = length // pool_size
             total_features += length
-        flatten_size = total_features * c2_filters
+        flatten_size = total_features * c1_filters
 
         if output_features is None:
             output_features = 3 * int(n_tau_levels)

@@ -1,3 +1,4 @@
+import os
 import sys
 sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
 
@@ -8,12 +9,19 @@ from tqdm import tqdm
 
 from utils.muram_data import MhdData, StokesData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
+from utils.cache_manage import DataCache
 
 def compute_normalization_stats(
     min_step: int = 60,
     max_step: int = 223,
     save_interval: int = 20,
-    resume_from: str = None
+    resume_from: str = None,
+    logtau_values: list[float] | None = None,
+    logtau_min: float = -2.0,
+    logtau_max: float = 0.0,
+    logtau_step: float = 0.1,
+    use_cache: bool = True,
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
 ):
     """
     Compute normalization statistics for both MHD and Stokes data.
@@ -23,9 +31,15 @@ def compute_normalization_stats(
         max_step: last simulation step to process (inclusive)
         save_interval: save intermediate state every N steps
         resume_from: path to resume from saved state (optional)
+        logtau_values: explicit log(tau) nodes (overrides min/max/step)
+        logtau_min: minimum log(tau) for range mode
+        logtau_max: maximum log(tau) for range mode
+        logtau_step: step in log(tau) for range mode
+        use_cache: enable/disable cache usage
+        cache_dir: cache directory
     """
     # Configuration - using same paths as other scripts
-    data_path = Path("/scratchsan/observatorio/juagudeloo/data/")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
     mhd_data_dir = data_path / "muram-simulation"
     stokes_data_dir = data_path / "muram-simulation"
     kappa_path = data_path / "csv/kappa.0.dat"
@@ -37,7 +51,26 @@ def compute_normalization_stats(
     nx, ny, nz = 480, 480, 256
     z_max = 250
     dz_km = 10.0
-    new_logtau = np.arange(-2.0, 0.1, 0.1)  # 21 optical depth levels
+
+    # Use user-provided logtau nodes if passed; otherwise build from min/max/step
+    if logtau_values is None or len(logtau_values) == 0:
+        if logtau_step <= 0:
+            raise ValueError(f"logtau_step must be > 0, got {logtau_step}")
+        new_logtau = np.arange(
+            logtau_min,
+            logtau_max + 0.5 * logtau_step,  # robust endpoint inclusion
+            logtau_step,
+            dtype=np.float32
+        )
+    else:
+        new_logtau = np.asarray(logtau_values, dtype=np.float32)
+
+    if new_logtau.ndim != 1 or new_logtau.size < 2:
+        raise ValueError("logtau_values must be 1D with at least 2 nodes.")
+    if not np.all(np.diff(new_logtau) > 0):
+        raise ValueError("logtau_values must be strictly increasing.")
+
+    new_logtau = np.round(new_logtau, 6)
     n_tau = len(new_logtau)
     
     # Initialize normalizers
@@ -50,6 +83,22 @@ def compute_normalization_stats(
         stokes_normalizer = StokesNormalizer().load_state(
             resume_path / "stokes_state.json"
         )
+
+        # Validate logtau compatibility when metadata is available
+        if mhd_normalizer.logtau_values is not None:
+            saved_logtau = np.asarray(mhd_normalizer.logtau_values, dtype=np.float32)
+            if saved_logtau.shape != new_logtau.shape or not np.allclose(saved_logtau, new_logtau, atol=1e-6):
+                raise ValueError(
+                    "Resume state was computed with different logtau nodes. "
+                    f"Saved: {saved_logtau.tolist()} | Requested: {new_logtau.tolist()}. "
+                    "Use the same --logtau_values as the original run."
+                )
+        else:
+            print("Warning: resume state has no logtau metadata; cannot verify compatibility.")
+
+        # Keep metadata in-memory for future state saves
+        mhd_normalizer.logtau_values = [float(x) for x in new_logtau.tolist()]
+
         # Extract starting step from directory name
         if "step_" in resume_path.name:
             start_step = int(resume_path.name.split("_")[1]) + 1
@@ -58,6 +107,7 @@ def compute_normalization_stats(
         print(f"Resuming from step {start_step}")
     else:
         mhd_normalizer = MhdNormalizer(n_tau=n_tau)
+        mhd_normalizer.logtau_values = [float(x) for x in new_logtau.tolist()]
         stokes_normalizer = StokesNormalizer()
         start_step = min_step
     
@@ -69,10 +119,34 @@ def compute_normalization_stats(
     print(f"Stokes data directory: {stokes_data_dir}")
     print(f"Output directory: {output_dir}")
     print(f"Optical depth levels: {n_tau}")
+    print(f"logtau nodes: {new_logtau.tolist()}")
+    if logtau_values is None or len(logtau_values) == 0:
+        print(f"logtau range: [{logtau_min}, {logtau_max}] step={logtau_step}")
+    print(f"Use cache: {use_cache}")
+    if use_cache:
+        print(f"Cache dir: {cache_dir}")
     print(f"Grid dimensions: ({nx}, {ny}, {nz})")
     print(f"Trimming z to: {z_max}")
     print(f"Save interval: every {save_interval} steps\n")
     
+    # Initialize cache (optional)
+    cache = None
+    cache_hash = None
+    if use_cache:
+        cache = DataCache(cache_dir=cache_dir, compression='gzip')
+        cache_config = {
+            "purpose": "normalization_stats",
+            "nx": nx,
+            "ny": ny,
+            "nz": nz,
+            "z_max": z_max,
+            "dz_km": dz_km,
+            "logtau_values": tuple(float(x) for x in new_logtau.tolist()),
+        }
+        cache_hash = DataCache.make_config_hash(cache_config)
+        # strict logtau compatibility check up-front
+        cache.exists(step=min_step, config_hash=None, logtau_values=new_logtau)  # only for validation side-effect
+
     # Track progress
     successful_steps = 0
     failed_steps = []
@@ -80,56 +154,86 @@ def compute_normalization_stats(
     # Process each simulation step
     for step in tqdm(available_steps, desc="Processing steps"):
         try:
-            # ============ Load MHD data ============
-            print(f"\n[Step {step}] Loading MHD data...")
-            mhd = MhdData(data_path=mhd_data_dir, nx=nx, ny=ny, nz=nz)
-            mhd.load_step(step=step, z_max=z_max)
+            stokes_data = None
+            mhd_data = None
+            mhd = None       # ensure defined for both cache-hit and cache-miss paths
+            stokes = None    # ensure defined for both cache-hit and cache-miss paths
+
+            # Try cache first
+            if cache is not None and cache.exists(step=step, config_hash=cache_hash, logtau_values=new_logtau):
+                stokes_data_cached, mhd_data_cached, _ = cache.load_raw(step=step, verbose=False)
+                stokes_data = {'I': stokes_data_cached['I'], 'V': stokes_data_cached['V']}
+                mhd_data = {'T': mhd_data_cached['T'], 'Vz': mhd_data_cached['Vz'], 'Bz': mhd_data_cached['Bz']}
+                print(f"\n[Step {step}] Loaded from cache")
+
+            if stokes_data is None or mhd_data is None:
+                # ============ Load MHD data ============
+                print(f"\n[Step {step}] Loading MHD data...")
+                mhd = MhdData(data_path=mhd_data_dir, nx=nx, ny=ny, nz=nz)
+                mhd.load_step(step=step, z_max=z_max)
             
-            # Compute optical depth
-            print(f"[Step {step}] Computing optical depth...")
-            mhd.load_opacity_table(kappa_path)
-            mhd.compute_optical_depth(dz=dz_km * u.km)
+                # Compute optical depth
+                print(f"[Step {step}] Computing optical depth...")
+                mhd.load_opacity_table(kappa_path)
+                mhd.compute_optical_depth(dz=dz_km * u.km)
             
-            # Remap to optical depth coordinates
-            print(f"[Step {step}] Remapping to optical depth...")
-            mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
+                # Remap to optical depth coordinates
+                print(f"[Step {step}] Remapping to optical depth...")
+                mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
             
-            # Extract MHD data for normalization
-            mhd_data = {
-                'T': mhd.od_data['T'],
-                'Vz': mhd.od_data['Vz'],
-                'Bz': mhd.od_data['Bz']
-            }
-            
-            # ============ Load Stokes data ============
-            print(f"[Step {step}] Loading Stokes data...")
-            stokes = StokesData(
-                data_dir=stokes_data_dir,
-                step=step,
-                wavelength_range=(6300.5, 6303.5),
-                wavelength_step=0.01
-            )
-            stokes.load_stokes()
-            stokes.continuum_normalization(cont_indices=[0, 1, 2, 3])
-            stokes.load_hinode_lsf(lsf_path)
-            stokes.apply_spectral_convolution()
-            stokes.resample_to_hinode()
-            
-            # Extract Stokes data for normalization
-            stokes_data = {
-                'I': stokes.data['I'],
-                'V': stokes.data['V']
-            }
-            
+                mhd_data = {
+                    'T': mhd.od_data['T'].value if hasattr(mhd.od_data['T'], 'value') else mhd.od_data['T'],
+                    'Vz': mhd.od_data['Vz'].value if hasattr(mhd.od_data['Vz'], 'value') else mhd.od_data['Vz'],
+                    'Bz': mhd.od_data['Bz'].value if hasattr(mhd.od_data['Bz'], 'value') else mhd.od_data['Bz'],
+                }
+
+                # ============ Load Stokes data ============
+                print(f"[Step {step}] Loading Stokes data...")
+                stokes = StokesData(
+                    data_dir=stokes_data_dir,
+                    step=step,
+                    wavelength_range=(6300.5, 6303.5),
+                    wavelength_step=0.01
+                )
+                stokes.load_stokes()
+                stokes.continuum_normalization(cont_indices=[0, 1, 2, 3])
+                stokes.load_hinode_lsf(lsf_path)
+                stokes.apply_spectral_convolution()
+                stokes.resample_to_hinode()
+
+                stokes_data = {
+                    'I': stokes.data['I'],
+                    'V': stokes.data['V']
+                }
+
+                # Save newly processed data to cache
+                if cache is not None:
+                    cache.save(
+                        step=step,
+                        stokes_data=stokes_data,
+                        mhd_data=mhd_data,
+                        approx_data=None,
+                        config_hash=cache_hash,
+                        logtau_values=new_logtau,
+                        verbose=False,
+                    )
+
+                # NOTE: Do not delete here; cleanup is centralized below.
+                # mhd = None
+                # stokes = None
+
             # ============ Update normalizers ============
             print(f"[Step {step}] Updating normalizers...")
             mhd_normalizer.update(mhd_data)
             stokes_normalizer.update(stokes_data)
             
             successful_steps += 1
-            
-            # Free memory
-            del mhd, stokes
+
+            # Free memory safely (works for both cache-hit and cache-miss paths)
+            if mhd is not None:
+                del mhd
+            if stokes is not None:
+                del stokes
             
             # Save intermediate state periodically
             if successful_steps % save_interval == 0:
@@ -167,8 +271,8 @@ def compute_normalization_stats(
     mhd_stats = mhd_normalizer.finalize()
     stokes_stats = stokes_normalizer.finalize()
     
-    # Save final statistics
-    mhd_normalizer.save(output_dir / "mhd_normalization.json")
+    # Save final statistics (include logtau metadata in MHD stats)
+    mhd_normalizer.save(output_dir / "mhd_normalization.json", logtau_values=new_logtau.tolist())
     stokes_normalizer.save(output_dir / "stokes_normalization.json")
     
     print("\n" + "="*60)
@@ -183,7 +287,7 @@ def compute_normalization_stats(
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(
         description="Compute normalization statistics for MHD and Stokes data"
     )
@@ -211,12 +315,58 @@ if __name__ == "__main__":
         default=None,
         help="Path to directory with saved state to resume from"
     )
-    
+    parser.add_argument(
+        "--logtau_values",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Explicit log(tau) nodes (overrides min/max/step), e.g. --logtau_values -2.0 -1.9 ... 0.0"
+    )
+    parser.add_argument(
+        "--logtau_min",
+        type=float,
+        default=-2.0,
+        help="Minimum log(tau) for range mode (default: -2.0)"
+    )
+    parser.add_argument(
+        "--logtau_max",
+        type=float,
+        default=0.0,
+        help="Maximum log(tau) for range mode (default: 0.0)"
+    )
+    parser.add_argument(
+        "--logtau_step",
+        type=float,
+        default=0.1,
+        help="Step in log(tau) for range mode (default: 0.1)"
+    )
+    parser.add_argument(
+        "--no_cache",
+        action="store_true",
+        help="Disable cache usage"
+    )
+    parser.add_argument(
+        "--cache-dir", "--cache_dir",
+        dest="cache_dir",
+        type=str,
+        default=os.environ.get(
+            "MURAM_CACHE_DIR",
+            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+        ),
+        help="Cache directory (or set MURAM_CACHE_DIR)"
+    )
+
     args = parser.parse_args()
-    
+
     compute_normalization_stats(
         min_step=args.min_step,
         max_step=args.max_step,
         save_interval=args.save_interval,
-        resume_from=args.resume_from
+        resume_from=args.resume_from,
+        logtau_values=args.logtau_values,
+        logtau_min=args.logtau_min,
+        logtau_max=args.logtau_max,
+        logtau_step=args.logtau_step,
+        use_cache=not args.no_cache,
+        cache_dir=args.cache_dir,
     )

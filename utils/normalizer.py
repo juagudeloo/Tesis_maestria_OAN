@@ -19,6 +19,7 @@ class MhdNormalizer:
         self.epsilon = epsilon
         self.finalized = False
         self.final_stats = None
+        self.logtau_values = None
         
         # Initialize statistics for each parameter at each τ level
         self.stats = {}
@@ -201,12 +202,12 @@ class MhdNormalizer:
         
         return denormalized
     
-    def save(self, filepath: str):
+    def save(self, filepath: str, logtau_values: Optional[List[float]] = None):
         """Save finalized normalization statistics."""
         if not self.finalized:
             print("Warning: Normalizer not finalized. Finalizing...")
             self.finalize()
-        
+
         save_dict = {
             'final_stats': self.final_stats,
             'n_tau': self.n_tau,
@@ -214,7 +215,10 @@ class MhdNormalizer:
             'finalized': self.finalized,
             'version': '2.0_per_tau'
         }
-        
+        if logtau_values is not None:
+            arr = np.asarray(logtau_values, dtype=np.float32)
+            save_dict['logtau_values'] = [float(x) for x in np.round(arr, 6).tolist()]
+
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
@@ -222,10 +226,16 @@ class MhdNormalizer:
             json.dump(save_dict, f, indent=2)
         
         print(f"Per-τ normalization statistics saved to {filepath}")
-        print(f"\nStatistics summary (first 3 τ levels):")
+        print(f"\nStatistics summary (first/middle/last τ levels):")
         for param in ['T', 'Vz', 'Bz']:
             print(f"\n{param}:")
-            for tau_idx in [0, 10, 20]:  # Show beginning, middle, end
+            n_levels = len(self.final_stats[param])
+            if n_levels == 0:
+                print("  (no τ levels available)")
+                continue
+
+            summary_indices = sorted({0, n_levels // 2, n_levels - 1})
+            for tau_idx in summary_indices:
                 stats = self.final_stats[param][tau_idx]
                 print(f"  τ={tau_idx:2d}: mean={stats['mean']:8.4f}, std={stats['std']:7.4f}, n={stats['n_samples']:,}")
     
@@ -250,6 +260,7 @@ class MhdNormalizer:
         self.n_tau = save_dict['n_tau']
         self.epsilon = save_dict.get('epsilon', 1e-8)
         self.finalized = save_dict.get('finalized', True)
+        self.logtau_values = save_dict.get('logtau_values', None)
         
         print(f"Per-τ normalization statistics loaded from {filepath}")
         print(f"Optical depth levels: {self.n_tau}")
@@ -268,6 +279,9 @@ class MhdNormalizer:
             'finalized': self.finalized,
             'version': '2.0_per_tau'
         }
+        if self.logtau_values is not None:
+            arr = np.asarray(self.logtau_values, dtype=np.float32)
+            save_dict['logtau_values'] = [float(x) for x in np.round(arr, 6).tolist()]
         
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -291,6 +305,7 @@ class MhdNormalizer:
         self.n_tau = save_dict['n_tau']
         self.epsilon = save_dict.get('epsilon', 1e-8)
         self.finalized = save_dict.get('finalized', False)
+        self.logtau_values = save_dict.get('logtau_values', None)
         
         print(f"Normalizer state loaded from {filepath}")
         print(f"Progress: τ=0 processed {self.stats['T'][0]['n']:,} samples")
