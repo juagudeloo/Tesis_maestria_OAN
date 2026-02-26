@@ -28,6 +28,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmResta
 import astropy.units as u
 from tqdm import tqdm
 from utils.grad_norm import GradNormScheduler, log_gradient_norms_by_task
+from utils.analysis_functions import MuramAnalysis
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Ensure utils and models are importable
 ROOT = Path(__file__).resolve().parent.parent
@@ -127,6 +130,15 @@ class TrainingConfig:
     use_cache: bool = True
     cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
     
+    # Epoch diagnostics (image + scatter evolution)
+    enable_epoch_plots: bool = True
+    epoch_plot_step: int | None = None  # If None, use first validation step
+    epoch_plot_ods: list[float] | None = None
+    epoch_plot_params: list[str] | None = None
+    epoch_plot_scatter_samples: int = 5000
+    enable_epoch_videos: bool = True
+    epoch_plot_video_fps: int = 4
+
     def __post_init__(self):
         if self.scales is None:
             self.scales = [1, 2, 3]
@@ -319,15 +331,24 @@ def load_and_prepare_step(
                 relaxed_hit = False
 
         if exact_hit or relaxed_hit:
-            if relaxed_hit and not exact_hit:
-                print(f"  ℹ Cache fallback hit for step {step} (ignoring config hash mismatch)")
             try:
-                return cache.load(
+                dataset_cached, approx_cached = cache.load(
                     step=step,
                     stokes_normalizer=stokes_normalizer,
                     mhd_normalizer=mhd_normalizer,
                     verbose=True,
                 )
+                required_keys = {"blos", "vlos", "temp"}
+                if not isinstance(approx_cached, dict) or not required_keys.issubset(approx_cached.keys()):
+                    raise KeyError(f"Cache step {step} missing keys {required_keys}")
+
+                # Enforce valid ApproxInversions-like payload
+                for k in required_keys:
+                    v = approx_cached[k]
+                    if not isinstance(v, np.ndarray) or v.ndim != 2:
+                        raise KeyError(f"Cache step {step} key '{k}' invalid (expected 2D np.ndarray)")
+
+                return dataset_cached, approx_cached
             except Exception as e:
                 print(f"  ⚠ Cache load failed for step {step}: {e}")
                 print(f"  Reprocessing step {step}...")
@@ -874,6 +895,273 @@ def train_epoch(
     
     return epoch_metrics
 
+def generate_epoch_diagnostic_plots(
+    model: PhysicsInformedMSCNN,
+    epoch: int,
+    step: int,
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    cache: DataCache | None = None,
+) -> None:
+    """
+    Save per-epoch image + jointplot diagnostics for one monitoring step.
+    """
+    logtau = config.get_logtau_values()
+    ods = config.epoch_plot_ods if config.epoch_plot_ods is not None else [-1.0, -0.8, 0.0]
+    params = config.epoch_plot_params if config.epoch_plot_params is not None else ["T", "Vz", "Bz"]
+    n_sample = int(config.epoch_plot_scatter_samples)
+
+    # Colormaps aligned with utils/analysis_functions.py
+    param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
+    error_cmap = "RdBu_r"
+
+    base_out_dir = config.log_dir / "epoch_diagnostics" / f"step_{step}"
+    out_dir = base_out_dir / f"epoch_{epoch+1:03d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    was_training = model.training
+    model.eval()
+
+    dataset, _ = load_and_prepare_step(
+        step=step,
+        config=config,
+        mhd_normalizer=mhd_normalizer,
+        stokes_normalizer=stokes_normalizer,
+        cache=cache,
+    )
+
+    n_pixels = dataset.stokes_input.shape[0]
+    all_pred = []
+    with torch.no_grad():
+        for i in range(0, n_pixels, config.batch_size):
+            x = torch.from_numpy(dataset.stokes_input[i:i + config.batch_size]).float().to(config.device)
+            y = model(x).detach().cpu().numpy()
+            all_pred.append(y)
+
+    pred_norm = np.concatenate(all_pred, axis=0)
+    gt_norm = dataset.mhd_targets
+
+    # Loop-based denormalization pipeline (same style as other scripts)
+    n_tau = int(len(logtau))
+    param_names = ["T", "Vz", "Bz"]
+
+    if pred_norm.ndim == 2:
+        pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau, 3)
+    else:
+        pred_reshaped = pred_norm
+
+    if gt_norm.ndim == 2:
+        gt_reshaped = gt_norm.reshape(gt_norm.shape[0], n_tau, 3)
+    else:
+        gt_reshaped = gt_norm
+
+    pred_den = {}
+    gt_den = {}
+    nx, ny = dataset.nx, dataset.ny
+
+    for param_idx, param_name in enumerate(param_names):
+        pred_param_norm = pred_reshaped[:, :, param_idx]
+        gt_param_norm = gt_reshaped[:, :, param_idx]
+
+        pred_param_den = mhd_normalizer.denormalize(pred_param_norm, param=param_name)
+        gt_param_den = mhd_normalizer.denormalize(gt_param_norm, param=param_name)
+
+        pred_den[param_name] = pred_param_den.reshape(nx, ny, n_tau)
+        gt_den[param_name] = gt_param_den.reshape(nx, ny, n_tau)
+
+    for od in ods:
+        tau_idx = int(np.argmin(np.abs(logtau - od)))
+        od_eff = float(logtau[tau_idx])
+
+        for p in params:
+            true_map = gt_den[p][:, :, tau_idx]
+            pred_map = pred_den[p][:, :, tau_idx]
+            err_map = pred_map - true_map
+
+            both = np.concatenate([true_map.ravel(), pred_map.ravel()])
+            if p in ("Vz", "Bz"):
+                vmax = np.nanquantile(np.abs(both), 0.99)
+                vmin = -vmax
+            else:
+                vmin, vmax = np.nanquantile(both, [0.01, 0.99])
+
+            emax = np.nanquantile(np.abs(err_map.ravel()), 0.99)
+
+            param_cmap = param_cmaps.get(p, "viridis")
+
+            # Image panel
+            fig, ax = plt.subplots(1, 3, figsize=(14, 4))
+            im0 = ax[0].imshow(true_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+            ax[0].set_title(f"GT {p}")
+            ax[0].axis("off")
+            plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+
+            im1 = ax[1].imshow(pred_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+            ax[1].set_title(f"Pred {p}")
+            ax[1].axis("off")
+            plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+
+            im2 = ax[2].imshow(err_map.T, origin="lower", cmap=error_cmap, vmin=-emax, vmax=emax)
+            ax[2].set_title(f"Error {p}")
+            ax[2].axis("off")
+            plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
+
+            fig.suptitle(f"Epoch {epoch+1} | Step {step} | {p} @ log(tau)={od_eff:.2f}")
+            fig.tight_layout()
+            fig.savefig(
+                out_dir / f"{p}_logtau_{od_eff:.2f}_images.png",
+                dpi=170,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+            # Jointplot (seaborn): scatter + marginal histograms
+            x = true_map.ravel()
+            y = pred_map.ravel()
+            m = np.isfinite(x) & np.isfinite(y)
+            x, y = x[m], y[m]
+            if x.size == 0:
+                continue
+
+            if x.size > n_sample > 0:
+                rng = np.random.default_rng(seed=epoch + tau_idx + 7)
+                idx = rng.choice(x.size, size=n_sample, replace=False)
+                x, y = x[idx], y[idx]
+
+            rmse = np.sqrt(np.mean((y - x) ** 2))
+            rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
+            corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
+
+            lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
+            g = sns.jointplot(
+                x=x,
+                y=y,
+                kind="scatter",
+                height=6,
+                s=8,
+                alpha=0.25,
+                marginal_kws={"bins": 50, "fill": True},
+            )
+            g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
+            g.ax_joint.set_xlim(lo, hi)
+            g.ax_joint.set_ylim(lo, hi)
+            g.ax_joint.set_xlabel("Ground truth")
+            g.ax_joint.set_ylabel("Prediction")
+            g.fig.suptitle(
+                f"Epoch {epoch+1} | Step {step} | {p} @ log(tau)={od_eff:.2f}\n"
+                f"Corr={corr:.3f}, RRMSE={rrmse:.3f}",
+                y=1.02
+            )
+            g.fig.tight_layout()
+            g.fig.savefig(
+                out_dir / f"{p}_logtau_{od_eff:.2f}_jointplot.png",
+                dpi=170,
+                bbox_inches="tight",
+            )
+            plt.close(g.fig)
+
+    if was_training:
+        model.train()
+
+def generate_epoch_diagnostic_videos(
+    config: TrainingConfig,
+    step: int | None = None,
+) -> None:
+    """
+    Build MP4 videos from per-epoch diagnostic PNGs.
+    Creates one video per plot type (param + logtau + style) for each monitored step.
+    """
+    try:
+        import imageio.v2 as imageio
+    except Exception as e:
+        warnings.warn(f"Skipping epoch diagnostic videos (imageio unavailable): {e}")
+        return
+
+    base_dir = config.log_dir / "epoch_diagnostics"
+    if not base_dir.exists():
+        return
+
+    step_dirs = [base_dir / f"step_{step}"] if step is not None else sorted(base_dir.glob("step_*"))
+    for step_dir in step_dirs:
+        if not step_dir.exists():
+            continue
+
+        epoch_dirs = sorted([d for d in step_dir.glob("epoch_*") if d.is_dir()], key=lambda p: p.name)
+        if len(epoch_dirs) < 2:
+            continue
+
+        grouped: dict[str, list[Path]] = {}
+        for e_dir in epoch_dirs:
+            for img_path in e_dir.glob("*.png"):
+                grouped.setdefault(img_path.name, []).append(img_path)
+
+        if not grouped:
+            continue
+
+        video_dir = step_dir / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+        for img_name, img_paths in grouped.items():
+            ordered_paths = sorted(img_paths, key=lambda p: p.parent.name)
+            if len(ordered_paths) < 2:
+                continue
+
+            frames = []
+            max_h, max_w = 0, 0
+            for pth in ordered_paths:
+                frame = imageio.imread(pth)
+
+                # Ensure RGB uint8 frames
+                if frame.ndim == 2:
+                    frame = np.stack([frame] * 3, axis=-1)
+                elif frame.ndim == 3 and frame.shape[-1] == 4:
+                    frame = frame[..., :3]
+                if frame.dtype != np.uint8:
+                    frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+                frames.append(frame)
+                max_h = max(max_h, frame.shape[0])
+                max_w = max(max_w, frame.shape[1])
+
+            padded_frames = []
+            for fr in frames:
+                h, w = fr.shape[:2]
+                if h == max_h and w == max_w:
+                    padded_frames.append(fr)
+                    continue
+                canvas = np.zeros((max_h, max_w, 3), dtype=np.uint8)
+                y0 = (max_h - h) // 2
+                x0 = (max_w - w) // 2
+                canvas[y0:y0+h, x0:x0+w] = fr
+                padded_frames.append(canvas)
+
+            stem = Path(img_name).stem
+            out_mp4 = video_dir / f"{stem}.mp4"
+
+            try:
+                with imageio.get_writer(
+                    out_mp4,
+                    format="FFMPEG",   # force ffmpeg backend (avoid tifffile)
+                    mode="I",
+                    fps=max(1, int(config.epoch_plot_video_fps)),
+                    codec="libx264",
+                    macro_block_size=16,
+                ) as writer:
+                    for fr in padded_frames:
+                        writer.append_data(fr)
+                print(f"  ✓ Video saved: {out_mp4}")
+            except Exception as e:
+                out_gif = video_dir / f"{stem}.gif"
+                warnings.warn(
+                    f"MP4 generation failed for {out_mp4.name} ({e}). "
+                    f"Falling back to GIF: {out_gif.name}"
+                )
+                imageio.mimsave(out_gif, padded_frames, fps=max(1, int(config.epoch_plot_video_fps)))
+                print(f"  ✓ GIF saved: {out_gif}")
+
+    return
+
 def train_pinn_model(config: TrainingConfig):
     """Main training loop with interleaved epoch training."""
     
@@ -906,6 +1194,12 @@ def train_pinn_model(config: TrainingConfig):
     if config.temp_physics_mode == "single_height":
         print(f"Temperature target log(tau): {config.temp_target_logtau}")
     print(f"Temperature reference: {config.temp_reference_temperature} K")
+    print(f"Epoch plots: {config.enable_epoch_plots}")
+    if config.enable_epoch_plots:
+        print(f"Epoch plot step: {config.epoch_plot_step if config.epoch_plot_step is not None else 'first val step'}")
+        print(f"Epoch plot ODs: {config.epoch_plot_ods}")
+        print(f"Epoch plot params: {config.epoch_plot_params}")
+        print(f"Epoch videos: {config.enable_epoch_videos} (fps={config.epoch_plot_video_fps})")
     print("=" * 70)
     
     # Load normalizers
@@ -1113,6 +1407,11 @@ def train_pinn_model(config: TrainingConfig):
     print("=" * 70)
     print(f"Best validation loss: {best_val_loss:.6f}")
     
+    # Build epoch-diagnostic videos at end of training
+    if config.enable_epoch_plots and config.enable_epoch_videos:
+        print("\nBuilding epoch diagnostic videos...")
+        generate_epoch_diagnostic_videos(config=config, step=config.epoch_plot_step)
+
     logger.close()
 
 
@@ -1144,6 +1443,47 @@ def main():
     parser.add_argument('--clear-cache', action='store_true',
                        help='Clear cache before training')
     
+    # Epoch diagnostics CLI
+    parser.add_argument('--no-epoch-plots', '--no_epoch_plots', dest='no_epoch_plots', action='store_true',
+                       help='Disable per-epoch diagnostic plots')
+    parser.add_argument('--epoch-plot-step', '--epoch_plot_step', dest='epoch_plot_step', type=int, default=None,
+                       help='Monitoring step for epoch diagnostics')
+    parser.add_argument('--epoch-plot-ods', '--epoch_plot_ods', dest='epoch_plot_ods', type=float, nargs='+', default=None,
+                       help='Optical-depth values for epoch diagnostics')
+    parser.add_argument('--epoch-plot-params', '--epoch_plot_params', dest='epoch_plot_params', type=str, nargs='+',
+                       choices=['T', 'Vz', 'Bz'], default=None,
+                       help='Parameters for epoch diagnostics')
+    parser.add_argument('--epoch-plot-scatter-samples', '--epoch_plot_scatter_samples',
+                       dest='epoch_plot_scatter_samples', type=int, default=None,
+                       help='Max sampled points per scatter plot')
+    
+    # Optical depth remapping grid (RESTORED)
+    parser.add_argument(
+        '--logtau_values', '--logtau-values',
+        type=float,
+        nargs='+',
+        default=None,
+        help='Explicit log(tau) grid values (overrides min/max/step), e.g. --logtau_values -2.0 -1.9 ... 0.0'
+    )
+    parser.add_argument(
+        '--logtau_min', '--logtau-min',
+        type=float,
+        default=None,
+        help='Minimum log(tau) for range mode (if --logtau_values is not provided)'
+    )
+    parser.add_argument(
+        '--logtau_max', '--logtau-max',
+        type=float,
+        default=None,
+        help='Maximum log(tau) for range mode (if --logtau_values is not provided)'
+    )
+    parser.add_argument(
+        '--logtau_step', '--logtau-step',
+        type=float,
+        default=None,
+        help='Step in log(tau) for range mode (if --logtau_values is not provided)'
+    )
+
     args = parser.parse_args()
     
     # Load or create configuration
@@ -1180,6 +1520,16 @@ def main():
         cache.clear(step=None, confirm=False)
         print("✓ Cache cleared\n")
     
+    # Apply optical-depth CLI overrides (RESTORED)
+    if args.logtau_values is not None:
+        config.logtau_values = args.logtau_values
+    if args.logtau_min is not None:
+        config.logtau_min = args.logtau_min
+    if args.logtau_max is not None:
+        config.logtau_max = args.logtau_max
+    if args.logtau_step is not None:
+        config.logtau_step = args.logtau_step
+
     # Run training
     train_pinn_model(config)
 

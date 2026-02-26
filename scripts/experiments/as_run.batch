@@ -75,7 +75,7 @@ python3 ablation_study.py \
     --step_size "${STEP_SIZE}" \
     --n_steps -1 \
     --device cuda \
-    --experiment_name "physics_regularization_ablation_${MIN_STEP}_to_${MAX_STEP}-fixed_lambdas" \
+    --experiment_name "experiment_${MIN_STEP}_to_${MAX_STEP}" \
     --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
     --learning_rate "${LEARNING_RATE}" \
     --c1-filters "${C1_FILTERS}" \
@@ -90,5 +90,6 @@ python3 ablation_study.py \
     --temp_physics_mode "${TEMP_MODE}" \
     --temp_target_logtau "${TEMP_TARGET_LOGTAU}" \
     --logtau_values "${LOGTAU_VALUES[@]}" \
-    --experiments ${EXPERIMENTS}
+    --experiments ${EXPERIMENTS} \
+    --no_scheduler
 

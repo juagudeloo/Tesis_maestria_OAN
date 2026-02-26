@@ -37,7 +37,8 @@ from utils.grad_norm import GradNormScheduler
 from utils.cache_manage import DataCache
 from scripts.base_training import (
     TrainingConfig,
-    load_and_prepare_step, validate, train_epoch, MetricsLogger
+    load_and_prepare_step, validate, train_epoch, MetricsLogger,
+    generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos
 )
 
 
@@ -396,7 +397,7 @@ def compute_tau_averaged_metrics(
 ) -> dict[str, float]:
     """Evaluate model on test steps using tau-averaged physics metrics."""
     from scipy.stats import pearsonr
-    
+
     model.eval()
     device = config.device
     
@@ -411,7 +412,6 @@ def compute_tau_averaged_metrics(
 
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
-            # Use load_and_prepare_step which supports caching
             dataset, approx_data = load_and_prepare_step(
                 step=step,
                 config=config,
@@ -419,28 +419,34 @@ def compute_tau_averaged_metrics(
                 stokes_normalizer=stokes_normalizer,
                 cache=cache,
             )
-            
-            dataloader = DataLoader(
-                dataset, batch_size=512, shuffle=False, num_workers=0
-            )
-            
-            true_blos = approx_data['blos'].flatten()
-            true_vlos = approx_data['vlos'].flatten()
-            true_temp = approx_data['temp'].flatten()
+
+            # Strictly require ApproxInversions outputs
+            required_keys = {"blos", "vlos", "temp"}
+            if not isinstance(approx_data, dict) or not required_keys.issubset(approx_data.keys()):
+                raise KeyError(
+                    f"Step {step} missing required approximation keys {required_keys}. "
+                    "These must come from ApproxInversions. "
+                    "Clear stale cache and reprocess."
+                )
+
+            dataloader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=0)
+
+            true_blos = approx_data["blos"].flatten()
+            true_vlos = approx_data["vlos"].flatten()
+            true_temp = approx_data["temp"].flatten()
             
             step_pred_blos = []
             step_pred_vlos = []
             step_pred_temp = []
             
-            # Set physics context for this test step
             model.set_physics_context(
                 mhd_normalizer=mhd_normalizer,
                 logtau_values=logtau_values,
-                blos_approx=approx_data.get('blos'),
-                vlos_approx=approx_data.get('vlos'),
-                temp_approx=approx_data.get('temp'),
+                blos_approx=approx_data['blos'],
+                vlos_approx=approx_data['vlos'],
+                temp_approx=approx_data['temp'],
             )
-            
+
             for stokes_batch, _, spatial_idx_batch in dataloader:
                 stokes_batch = stokes_batch.to(device)
                 predictions = model(stokes_batch)
@@ -764,7 +770,21 @@ def run_single_experiment(
                 stokes_normalizer=stokes_normalizer,
                 cache=cache,
             )
-            
+
+            if config.enable_epoch_plots:
+                monitor_step_for_epoch_plots = (
+                    config.epoch_plot_step if config.epoch_plot_step is not None else val_steps[0]
+                )
+                generate_epoch_diagnostic_plots(
+                    model=model,
+                    epoch=epoch,
+                    step=monitor_step_for_epoch_plots,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    stokes_normalizer=stokes_normalizer,
+                    cache=cache,
+                )
+
             val_loss_history.append(avg_val_loss)
             if scheduler is not None:
                 if config.scheduler_type == 'plateau':
@@ -794,7 +814,14 @@ def run_single_experiment(
             print("=" * 100)
     
     training_time = (time.time() - start_time) / 60
-    
+
+    if config.enable_epoch_plots and config.enable_epoch_videos:
+        print("\nBuilding epoch diagnostic videos...")
+        generate_epoch_diagnostic_videos(
+            config=config,
+            step=monitor_step_for_epoch_plots,
+        )
+
     print("\nEvaluating on test set...")
     test_metrics = compute_tau_averaged_metrics(
         model=model,
@@ -803,7 +830,7 @@ def run_single_experiment(
         mhd_normalizer=mhd_normalizer,
         stokes_normalizer=stokes_normalizer,
         logtau_values=config.get_logtau_values(),
-        cache=cache,  # Pass cache to test evaluation
+        cache=cache,
     )
     
     # Save model
@@ -946,7 +973,25 @@ def main():
                        help='Maximum log(tau) for range mode (default: 0.0)')
     parser.add_argument('--logtau_step', type=float, default=0.1,
                        help='Step in log(tau) for range mode (default: 0.1)')
-    
+
+    # Epoch diagnostics arguments (missing before)
+    parser.add_argument('--no-epoch-plots', '--no_epoch_plots', dest='no_epoch_plots', action='store_true',
+                       help='Disable per-epoch diagnostic plots')
+    parser.add_argument('--no-epoch-videos', '--no_epoch_videos', dest='no_epoch_videos', action='store_true',
+                       help='Disable per-epoch diagnostic videos')
+    parser.add_argument('--epoch-plot-video-fps', '--epoch_plot_video_fps', dest='epoch_plot_video_fps', type=int, default=4,
+                       help='FPS for epoch diagnostic videos')
+    parser.add_argument('--epoch-plot-step', '--epoch_plot_step', dest='epoch_plot_step', type=int, default=None,
+                       help='Monitoring step for epoch diagnostics')
+    parser.add_argument('--epoch-plot-ods', '--epoch_plot_ods', dest='epoch_plot_ods', type=float, nargs='+', default=None,
+                       help='Optical-depth values for epoch diagnostics')
+    parser.add_argument('--epoch-plot-params', '--epoch_plot_params', dest='epoch_plot_params', type=str, nargs='+',
+                       choices=['T', 'Vz', 'Bz'], default=['T', 'Vz', 'Bz'],
+                       help='Parameters to include in epoch diagnostics')
+    parser.add_argument('--epoch-plot-scatter-samples', '--epoch_plot_scatter_samples',
+                       dest='epoch_plot_scatter_samples', type=int, default=5000,
+                       help='Max sampled points per scatter plot')
+
     args = parser.parse_args()
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
     
@@ -989,6 +1034,16 @@ def main():
     resolved_use_scheduler = (not args.no_scheduler) and (args.scheduler_type != 'none')
     resolved_scheduler_type = 'plateau' if args.scheduler_type == 'none' else args.scheduler_type
 
+    common_epoch_plot_kwargs = dict(
+        enable_epoch_plots=not args.no_epoch_plots,
+        epoch_plot_step=args.epoch_plot_step,
+        epoch_plot_ods=args.epoch_plot_ods,
+        epoch_plot_params=args.epoch_plot_params,
+        epoch_plot_scatter_samples=args.epoch_plot_scatter_samples,
+        enable_epoch_videos=not args.no_epoch_videos,
+        epoch_plot_video_fps=args.epoch_plot_video_fps,
+    )
+
     all_experiment_configs = {
         'all_physics_terms': TrainingConfig(
             data_path=str(data_path),
@@ -1016,6 +1071,7 @@ def main():
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
             c1_filters=args.c1_filters,
+            **common_epoch_plot_kwargs,
         ),
         'wfa_only': TrainingConfig(
             data_path=str(data_path),
@@ -1042,6 +1098,7 @@ def main():
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
             c1_filters=args.c1_filters,
+            **common_epoch_plot_kwargs,
         ),
         'doppler_only': TrainingConfig(
             data_path=str(data_path),
@@ -1068,6 +1125,7 @@ def main():
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
             c1_filters=args.c1_filters,
+            **common_epoch_plot_kwargs,
         ),
         'black_body_only': TrainingConfig(
             data_path=str(data_path),
@@ -1094,6 +1152,7 @@ def main():
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
             c1_filters=args.c1_filters,
+            **common_epoch_plot_kwargs,
         ),
         'no_physics': TrainingConfig(
             data_path=str(data_path),
@@ -1120,6 +1179,7 @@ def main():
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
             c1_filters=args.c1_filters,
+            **common_epoch_plot_kwargs,
         ),
     }
     

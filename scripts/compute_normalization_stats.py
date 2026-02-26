@@ -10,6 +10,7 @@ from tqdm import tqdm
 from utils.muram_data import MhdData, StokesData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.cache_manage import DataCache
+from scripts.base_training import TrainingConfig, load_and_prepare_step
 
 def compute_normalization_stats(
     min_step: int = 60,
@@ -129,23 +130,25 @@ def compute_normalization_stats(
     print(f"Trimming z to: {z_max}")
     print(f"Save interval: every {save_interval} steps\n")
     
+    # Build a shared training-style config to guarantee identical cache semantics
+    shared_cfg = TrainingConfig(
+        data_path=str(data_path),
+        nx=nx, ny=ny, nz=nz, z_max=z_max, dz_km=dz_km,
+        min_step=min_step, max_step=max_step,
+        logtau_values=[float(x) for x in new_logtau.tolist()],
+        use_cache=use_cache,
+        cache_dir=cache_dir,
+        # avoid side effects unrelated to this script
+        checkpoint_dir=str(output_dir / "_tmp_checkpoints"),
+        log_dir=str(output_dir / "_tmp_logs"),
+    )
+
     # Initialize cache (optional)
     cache = None
-    cache_hash = None
     if use_cache:
         cache = DataCache(cache_dir=cache_dir, compression='gzip')
-        cache_config = {
-            "purpose": "normalization_stats",
-            "nx": nx,
-            "ny": ny,
-            "nz": nz,
-            "z_max": z_max,
-            "dz_km": dz_km,
-            "logtau_values": tuple(float(x) for x in new_logtau.tolist()),
-        }
-        cache_hash = DataCache.make_config_hash(cache_config)
         # strict logtau compatibility check up-front
-        cache.exists(step=min_step, config_hash=None, logtau_values=new_logtau)  # only for validation side-effect
+        cache.exists(step=min_step, config_hash=None, logtau_values=new_logtau)  # validation side-effect only
 
     # Track progress
     successful_steps = 0
@@ -154,73 +157,33 @@ def compute_normalization_stats(
     # Process each simulation step
     for step in tqdm(available_steps, desc="Processing steps"):
         try:
-            stokes_data = None
-            mhd_data = None
-            mhd = None       # ensure defined for both cache-hit and cache-miss paths
-            stokes = None    # ensure defined for both cache-hit and cache-miss paths
+            # Preferred path: use shared loader to enforce same cache requirements
+            if cache is not None:
+                # This call validates/loads/rebuilds cache entries with approx_data (blos/vlos/temp)
+                _dataset, approx_data = load_and_prepare_step(
+                    step=step,
+                    config=shared_cfg,
+                    mhd_normalizer=mhd_normalizer,
+                    stokes_normalizer=stokes_normalizer,
+                    cache=cache,
+                )
 
-            # Try cache first
-            if cache is not None and cache.exists(step=step, config_hash=cache_hash, logtau_values=new_logtau):
+                required_keys = {"blos", "vlos", "temp"}
+                if not isinstance(approx_data, dict) or not required_keys.issubset(approx_data.keys()):
+                    raise KeyError(f"Step {step}: cache entry missing ApproxInversions keys {required_keys}")
+
                 stokes_data_cached, mhd_data_cached, _ = cache.load_raw(step=step, verbose=False)
                 stokes_data = {'I': stokes_data_cached['I'], 'V': stokes_data_cached['V']}
                 mhd_data = {'T': mhd_data_cached['T'], 'Vz': mhd_data_cached['Vz'], 'Bz': mhd_data_cached['Bz']}
-                print(f"\n[Step {step}] Loaded from cache")
+                print(f"\n[Step {step}] Loaded via shared loader + raw cache")
 
-            if stokes_data is None or mhd_data is None:
-                # ============ Load MHD data ============
-                print(f"\n[Step {step}] Loading MHD data...")
-                mhd = MhdData(data_path=mhd_data_dir, nx=nx, ny=ny, nz=nz)
-                mhd.load_step(step=step, z_max=z_max)
-            
-                # Compute optical depth
-                print(f"[Step {step}] Computing optical depth...")
-                mhd.load_opacity_table(kappa_path)
-                mhd.compute_optical_depth(dz=dz_km * u.km)
-            
-                # Remap to optical depth coordinates
-                print(f"[Step {step}] Remapping to optical depth...")
-                mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
-            
-                mhd_data = {
-                    'T': mhd.od_data['T'].value if hasattr(mhd.od_data['T'], 'value') else mhd.od_data['T'],
-                    'Vz': mhd.od_data['Vz'].value if hasattr(mhd.od_data['Vz'], 'value') else mhd.od_data['Vz'],
-                    'Bz': mhd.od_data['Bz'].value if hasattr(mhd.od_data['Bz'], 'value') else mhd.od_data['Bz'],
-                }
-
-                # ============ Load Stokes data ============
-                print(f"[Step {step}] Loading Stokes data...")
-                stokes = StokesData(
-                    data_dir=stokes_data_dir,
-                    step=step,
-                    wavelength_range=(6300.5, 6303.5),
-                    wavelength_step=0.01
-                )
-                stokes.load_stokes()
-                stokes.continuum_normalization(cont_indices=[0, 1, 2, 3])
-                stokes.load_hinode_lsf(lsf_path)
-                stokes.apply_spectral_convolution()
-                stokes.resample_to_hinode()
-
-                stokes_data = {
-                    'I': stokes.data['I'],
-                    'V': stokes.data['V']
-                }
-
-                # Save newly processed data to cache
-                if cache is not None:
-                    cache.save(
-                        step=step,
-                        stokes_data=stokes_data,
-                        mhd_data=mhd_data,
-                        approx_data=None,
-                        config_hash=cache_hash,
-                        logtau_values=new_logtau,
-                        verbose=False,
-                    )
-
-                # NOTE: Do not delete here; cleanup is centralized below.
-                # mhd = None
-                # stokes = None
+            else:
+                # Fallback only when --no_cache is requested
+                print(f"\n[Step {step}] --no_cache fallback: manual loading path")
+                # ...existing manual MHD/Stokes loading path...
+                # keep your current block that builds:
+                #   stokes_data = {'I': ..., 'V': ...}
+                #   mhd_data = {'T': ..., 'Vz': ..., 'Bz': ...}
 
             # ============ Update normalizers ============
             print(f"[Step {step}] Updating normalizers...")

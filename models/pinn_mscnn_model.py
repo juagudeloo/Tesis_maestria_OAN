@@ -207,32 +207,56 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Parameters
         ----------
         predictions : torch.Tensor
-            Normalized predictions (batch_size, 63)
-            
+            Normalized predictions with shape (batch_size, 3*n_tau) or (batch_size, n_tau, 3)
+
         Returns
         -------
         denorm_dict : Dict[str, torch.Tensor]
-            Dictionary with 'T', 'Vz', 'Bz' in physical units
+            Dictionary with 'T', 'Vz', 'Bz' in physical units, each of shape (batch_size, n_tau)
         """
         if self.mhd_normalizer is None:
             raise RuntimeError("MHD normalizer not set. Call set_physics_context() first.")
-        
+
         # Convert to numpy for denormalization
         predictions_np = predictions.detach().cpu().numpy()
-        
-        # Denormalize using the normalizer
-        denorm_dict = self.mhd_normalizer.inverse_transform(
-            predictions_np, param_order=['T', 'Vz', 'Bz']
-        )
-        
+
+        # Resolve n_tau and reshape to (batch, n_tau, 3)
+        if predictions_np.ndim == 2:
+            if predictions_np.shape[1] % 3 != 0:
+                raise ValueError(
+                    f"Expected predictions.shape[1] to be divisible by 3, got {predictions_np.shape[1]}"
+                )
+            n_tau = int(predictions_np.shape[1] // 3)
+            predictions_np = predictions_np.reshape(predictions_np.shape[0], n_tau, 3)
+        elif predictions_np.ndim == 3:
+            if predictions_np.shape[2] != 3:
+                raise ValueError(
+                    f"Expected predictions.shape[2] == 3 for (batch, n_tau, 3), got {predictions_np.shape[2]}"
+                )
+            n_tau = int(predictions_np.shape[1])
+        else:
+            raise ValueError(
+                f"Unsupported predictions ndim={predictions_np.ndim}; expected 2D or 3D tensor"
+            )
+
+        # Per-parameter denormalization (same pipeline as scripts)
+        param_names = ["T", "Vz", "Bz"]
+        denorm_np: Dict[str, np.ndarray] = {}
+        for param_idx, param_name in enumerate(param_names):
+            param_norm = predictions_np[:, :, param_idx]  # (batch, n_tau)
+            denorm_np[param_name] = np.asarray(
+                self.mhd_normalizer.denormalize(param_norm, param=param_name),
+                dtype=np.float32,
+            )
+
         # Convert back to torch tensors on correct device
         device = self._get_device()
         denorm_torch = {
-            'T': torch.tensor(denorm_dict['T'], dtype=torch.float32, device=device),
-            'Vz': torch.tensor(denorm_dict['Vz'], dtype=torch.float32, device=device),
-            'Bz': torch.tensor(denorm_dict['Bz'], dtype=torch.float32, device=device),
+            'T': torch.tensor(denorm_np['T'], dtype=torch.float32, device=device),
+            'Vz': torch.tensor(denorm_np['Vz'], dtype=torch.float32, device=device),
+            'Bz': torch.tensor(denorm_np['Bz'], dtype=torch.float32, device=device),
         }
-        
+
         return denorm_torch
 
     def _compute_tau_averaged_blos(self, bz: torch.Tensor) -> torch.Tensor:
