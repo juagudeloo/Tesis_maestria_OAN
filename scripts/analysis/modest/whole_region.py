@@ -56,55 +56,29 @@ def load_normalizers(data_path, modest):
 
 def get_model_configs():
     """Return model configurations."""
+    base_model_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/")
+    no_physics_weights = "no_physics/final_model.pth"
+    wfa_only_weights = "wfa_only/final_model.pth"
+    doppler_only_weights = "doppler_only/final_model.pth"
+    black_body_only_weights = "black_body_only/final_model.pth"
+    all_physics_terms_weights = "all_physics_terms/final_model.pth"
     return {
-        'no_physics_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/no_physics/final_model.pth',
+        'no_physics_80_to_113': {
+            'path': base_model_path / 'experiment_80_to_113' / no_physics_weights,
             'use_physics': None,
             'lambda_wfa': 0.0,
             'lambda_doppler': 0.0,
             'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'No Physics 60 to 100',
+            'label': 'No Physics 80 to 113',
             'color': 'blue'
         },
-        'wfa_only_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/wfa_only/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
+        'wfa_only_80_to_113': {
+            'path': base_model_path / 'experiment_80_to_113' / wfa_only_weights,
+            'use_physics': ['wfa'],
+            'lambda_wfa': 1.0,
             'lambda_doppler': 0.0,
             'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'WFA Only 60 to 100',
-            'color': 'orange'
-        },
-        'all_physics_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/all_physics_terms/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.02,
-            'label': 'All Physics 60 to 100',
-            'color': 'green'
-        },
-        "no_physics_100_to_200": {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_100_to_200/no_physics/final_model.pth',
-            'use_physics': None,
-            'lambda_wfa': 0.0,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'No Physics 100 to 200',
-            'color': 'blue'
-        },
-        'wfa_only_100_to_200': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_100_to_200/wfa_only/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'WFA Only 100 to 200',
+            'label': 'WFA Only 80 to 113',
             'color': 'orange'
         },
     }
@@ -371,7 +345,7 @@ def main(od_values=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}\n")
     
-    data_path = Path("/scratchsan/observatorio/juagudeloo/data")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data")
     
     # Load data
     modest = load_modest_data(apply_mask=False)

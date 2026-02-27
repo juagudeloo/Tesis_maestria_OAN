@@ -23,8 +23,8 @@ class ModestData:
 
 	def __init__(
 		self,
-		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/data/hinode-MODEST/INV_560_AR11967/",
-		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
+		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/INV_560_AR11967/",
+		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
 		circular_polarization_threshold: float = 1e-2,
 	) -> None:
 		self.modest_dir = Path(modest_dir)

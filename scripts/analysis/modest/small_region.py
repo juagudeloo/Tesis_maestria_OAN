@@ -9,6 +9,7 @@ import sys
 from scipy.stats import pearsonr
 import pandas as pd
 from typing import Dict, Tuple, Optional
+import json
 
 sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN")
 from utils.modest_data import ModestData
@@ -105,62 +106,100 @@ def load_normalizers(data_path, region_data):
 
 def get_model_configs():
     """Return model configurations."""
+    base_model_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/")
+    experiment_dir = base_model_path / "experiment_80_to_113"
+    results_path = experiment_dir / "experiment_results.json"
+    no_physics_weights = "no_physics/final_model.pth"
+    wfa_only_weights = "wfa_only/final_model.pth"
+    doppler_only_weights = "doppler_only/final_model.pth"
+    black_body_only_weights = "black_body_only/final_model.pth"
+    all_physics_terms_weights = "all_physics_terms/final_model.pth"
     return {
-        'no_physics_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/no_physics/final_model.pth',
+        'no_physics_80_to_113': {
+            'path': experiment_dir / no_physics_weights,
+            'results_path': results_path,
+            'experiment_key': 'no_physics',
             'use_physics': None,
             'lambda_wfa': 0.0,
             'lambda_doppler': 0.0,
             'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'No Physics 60 to 100',
+            'label': 'No Physics 80 to 113',
             'color': 'blue'
         },
-        'wfa_only_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/wfa_only/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
+        'wfa_only_80_to_113': {
+            'path': experiment_dir / wfa_only_weights,
+            'results_path': results_path,
+            'experiment_key': 'wfa_only',
+            'use_physics': ['wfa'],
+            'lambda_wfa': 1.0,
             'lambda_doppler': 0.0,
             'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'WFA Only 60 to 100',
-            'color': 'orange'
-        },
-        'all_physics_60_to_100': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_60_to_100/all_physics_terms/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.02,
-            'label': 'All Physics 60 to 100',
-            'color': 'green'
-        },
-        "no_physics_100_to_200": {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_100_to_200/no_physics/final_model.pth',
-            'use_physics': None,
-            'lambda_wfa': 0.0,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'No Physics 100 to 200',
-            'color': 'blue'
-        },
-        'wfa_only_100_to_200': {
-            'path': '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/physics_regularization_ablation_100_to_200/wfa_only/final_model.pth',
-            'use_physics': 'wfa',
-            'lambda_wfa': 0.01,
-            'lambda_doppler': 0.0,
-            'lambda_temp': 0.0,
-            'lambda_physics': 0.0,
-            'label': 'WFA Only 100 to 200',
+            'label': 'WFA Only 80 to 113',
             'color': 'orange'
         },
     }
 
 
-def load_model(config: Dict, device) -> PhysicsInformedMSCNN:
-    """Load a trained PINN-MSCNN model."""
+def _infer_output_features_from_checkpoint(checkpoint: Dict) -> int:
+    """Infer model output_features from checkpoint output layer bias length."""
+    state = checkpoint["model_state_dict"]
+    key = "linear_block.output_layer.bias"
+    if key not in state:
+        raise KeyError(f"Missing '{key}' in checkpoint state_dict")
+    return int(state[key].shape[0])
+
+
+def _resolve_logtau_from_experiment_results(model_configs: Dict) -> np.ndarray:
+    """Read logtau_values from experiment_results.json for each configured model."""
+    cache: Dict[Path, Dict] = {}
+    resolved: Dict[str, np.ndarray] = {}
+
+    for model_name, cfg in model_configs.items():
+        results_path = Path(cfg["results_path"])
+        exp_key = cfg["experiment_key"]
+
+        if results_path not in cache:
+            with open(results_path, "r") as f:
+                cache[results_path] = json.load(f)
+
+        results = cache[results_path]
+        if exp_key not in results:
+            raise KeyError(f"'{exp_key}' not found in {results_path}")
+
+        vals = results[exp_key].get("config", {}).get("logtau_values", None)
+        if vals is None:
+            raise KeyError(f"'config.logtau_values' not found for '{exp_key}' in {results_path}")
+
+        arr = np.asarray(vals, dtype=np.float32)
+        if arr.ndim != 1 or arr.size == 0:
+            raise ValueError(f"Invalid logtau_values for '{exp_key}' in {results_path}: {vals}")
+
+        resolved[model_name] = np.round(arr, 6)
+
+    ref_name = next(iter(resolved))
+    ref = resolved[ref_name]
+    for name, arr in resolved.items():
+        if arr.shape != ref.shape or not np.allclose(arr, ref, atol=1e-6, rtol=0.0):
+            raise ValueError(f"Inconsistent logtau_values between models: {ref_name} vs {name}")
+
+    return ref
+
+def _get_matching_spinor_ods(spinor_od_values, logtau, tol: float = 1e-6):
+    """Return SPINOR ODs that are present in model logtau grid."""
+    return [
+        float(od) for od in sorted(float(v) for v in spinor_od_values)
+        if np.any(np.isclose(logtau, float(od), atol=tol, rtol=0.0))
+    ]
+
+
+def load_model(config: Dict, device) -> Tuple[PhysicsInformedMSCNN, int]:
+    """Load a trained PINN-MSCNN model with checkpoint-matched output size."""
+    checkpoint = torch.load(config['path'], map_location=device)
+    output_features = _infer_output_features_from_checkpoint(checkpoint)
+    if output_features % 3 != 0:
+        raise ValueError(f"Invalid output_features={output_features}; expected multiple of 3")
+    n_tau = output_features // 3
+
     model = PhysicsInformedMSCNN(
         scales=[1, 2, 3],
         in_channels=2,
@@ -169,28 +208,35 @@ def load_model(config: Dict, device) -> PhysicsInformedMSCNN:
         kernel_size=5,
         pool_size=2,
         n_linear_layers=4,
-        output_features=3*21,
+        output_features=output_features,
         input_length=112,
-        dropout_rate=0.2,
         lambda_wfa=config['lambda_wfa'],
         lambda_doppler=config['lambda_doppler'],
         lambda_temp=config['lambda_temp'],
     ).to(device)
-    checkpoint = torch.load(config['path'], map_location=device)
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    return model
+    return model, n_tau
 
 
 def load_all_models(model_configs, device):
-    """Load all trained models."""
+    """Load all trained models and enforce consistent tau dimension."""
     models = {}
+    n_tau_ref = None
     for name, config in model_configs.items():
         print(f"Loading {config['label']}...")
-        models[name] = load_model(config, device)
-        print(f"  ✓ Model loaded successfully")
+        model, n_tau = load_model(config, device)
+        if n_tau_ref is None:
+            n_tau_ref = n_tau
+        elif n_tau != n_tau_ref:
+            raise ValueError(
+                f"Inconsistent n_tau across models: {name} has {n_tau}, expected {n_tau_ref}"
+            )
+        models[name] = model
+        print(f"  ✓ Model loaded successfully (n_tau={n_tau})")
     print(f"\n✓ All {len(models)} models loaded\n")
-    return models
+    return models, int(n_tau_ref)
 
 
 def prepare_input_data(normalized_stokes, device):
@@ -209,11 +255,11 @@ def prepare_input_data(normalized_stokes, device):
     return inputs_tensor, (H_region, W_region, Nstokes, Nlambda)
 
 
-def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
+def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer, logtau):
     """Run inference for all models on region."""
     all_predictions_region = {}
-    logtau = np.arange(-2, 0.1, 0.1)
     H_region, W_region, Nstokes, Nlambda = shape
+    n_tau = int(len(logtau))
 
     print("="*70)
     for model_name, model in models.items():
@@ -232,37 +278,52 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
                 all_predictions.append(batch_predictions.cpu().numpy())
 
         predictions = np.concatenate(all_predictions, axis=0)
-        predictions_reshaped = predictions.reshape(n_pixels, 21, 3)
+        if predictions.shape[1] != 3 * n_tau:
+            raise ValueError(
+                f"Prediction size mismatch: got {predictions.shape[1]}, expected {3*n_tau}"
+            )
+        predictions_reshaped = predictions.reshape(n_pixels, n_tau, 3)
 
         prediction_atm = {}
+        std_atm = {}
         for param_idx, param_name in enumerate(['T', 'Vz', 'Bz']):
             param_normalized = predictions_reshaped[:, :, param_idx]
             param_denorm = mhd_normalizer.denormalize(param_normalized, param_name)
-            prediction_atm[param_name] = param_denorm.reshape(H_region, W_region, 21)
+            prediction_atm[param_name] = param_denorm.reshape(H_region, W_region, n_tau)
+            std_atm[param_name] = np.zeros_like(prediction_atm[param_name], dtype=np.float32)
 
         all_predictions_region[model_name] = {
             'prediction': prediction_atm,
+            'std': std_atm,
             'label': model_configs[model_name]['label'],
             'color': model_configs[model_name]['color']
         }
-        
+
         print(f"  T range: {prediction_atm['T'].min():.1f} - {prediction_atm['T'].max():.1f} K")
         print(f"  Vz range: {prediction_atm['Vz'].min():.2f} - {prediction_atm['Vz'].max():.2f} km/s")
         print(f"  Bz range: {prediction_atm['Bz'].min():.2f} - {prediction_atm['Bz'].max():.2f} G")
-    
+
     print("\n" + "="*70)
     print("✓ All model inferences complete for the region\n")
-    
+
     return all_predictions_region, logtau
 
 
-def run_analysis(all_predictions_region, region_data, modest, images_save_path):
+def run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau):
     """Run all analysis and plotting."""
     analysis = ModestAnalysis()
-    modest_logtau = list(modest.spinor_atm["T"].keys())
-    logtau = np.arange(-2, 0.1, 0.1)
-    
-    for od_to_plot in modest_logtau:
+    spinor_ods = list(modest.spinor_atm["T"].keys())
+    matched_ods = _get_matching_spinor_ods(spinor_ods, logtau)
+
+    if not matched_ods:
+        raise ValueError(
+            f"No SPINOR optical depths match model logtau grid. "
+            f"SPINOR={sorted(float(k) for k in spinor_ods)}, model={logtau.tolist()}"
+        )
+
+    print(f"Plotting only matched ODs: {matched_ods}")
+
+    for od_to_plot in matched_ods:
         for param in ['T', 'Vz', 'Bz']:
             # Single model comparisons
             for model_name, pred_data in all_predictions_region.items():
@@ -337,15 +398,18 @@ def run_analysis(all_predictions_region, region_data, modest, images_save_path):
             
             # Uncertainty analysis
             filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
-            analysis.plot_uncertainty_vs_error(
-                all_predictions=all_predictions_region,
-                ground_truth=region_data['spinor_atm'],
-                mag_to_plot=param,
-                od_val=od_to_plot,
-                logtau=logtau,
-                save_dir=images_save_path,
-                filename=filename
-            )
+            if hasattr(analysis, "plot_uncertainty_vs_error"):
+                analysis.plot_uncertainty_vs_error(
+                    all_predictions=all_predictions_region,
+                    ground_truth=region_data['spinor_atm'],
+                    mag_to_plot=param,
+                    od_val=od_to_plot,
+                    logtau=logtau,
+                    save_dir=images_save_path,
+                    filename=filename
+                )
+            else:
+                print("⚠ Skipping uncertainty_vs_error: method not available in ModestAnalysis")
             print(f"✓ {param} at log(tau)={od_to_plot}")
     
     # Vertical profile analysis
@@ -383,23 +447,24 @@ def print_region_statistics(all_predictions_region, region_data, region_bounds, 
         print(f"\n{param}:")
         print("-"*80)
         gt_key = {'T': 'T', 'Vz': 'Vlos', 'Bz': 'Blos'}[param]
-        for od_val in [-2.0, -0.8, 0.0]:
-            if od_val in region_data['spinor_atm'][gt_key]:
-                od_idx = np.argmin(np.abs(logtau - od_val))
-                gt = region_data['spinor_atm'][gt_key][od_val]
-                print(f"\n  log(τ) = {od_val:.1f}:")
-                print(f"    Ground Truth:  mean={np.mean(gt):.2f}, std={np.std(gt):.2f}")
-                for model_name, pred_data in all_predictions_region.items():
-                    pred_mean = pred_data['prediction'][param][:, :, od_idx]
-                    pred_std_map = pred_data['std'][param][:, :, od_idx]
-                    diff = pred_mean - gt
-                    rmse = np.sqrt(np.mean(diff**2))
-                    bias = np.mean(diff)
-                    corr, _ = pearsonr(pred_mean.flatten(), gt.flatten())
-                    mean_uncertainty = np.mean(pred_std_map)
-                    print(f"    {pred_data['label']:15s}: "
-                          f"R={corr:.3f}, RMSE={rmse:.2f}, "
-                          f"Bias={bias:+.2f}, σ_pred={mean_uncertainty:.2f}")
+        gt_ods = list(region_data['spinor_atm'][gt_key].keys())
+        matched_ods = _get_matching_spinor_ods(gt_ods, logtau)
+        for od_val in matched_ods:
+            od_idx = int(np.argmin(np.abs(logtau - od_val)))
+            gt = region_data['spinor_atm'][gt_key][od_val]
+            print(f"\n  log(τ) = {od_val:.1f}:")
+            print(f"    Ground Truth:  mean={np.mean(gt):.2f}, std={np.std(gt):.2f}")
+            for model_name, pred_data in all_predictions_region.items():
+                pred_mean = pred_data['prediction'][param][:, :, od_idx]
+                pred_std_map = pred_data['std'][param][:, :, od_idx]
+                diff = pred_mean - gt
+                rmse = np.sqrt(np.mean(diff**2))
+                bias = np.mean(diff)
+                corr, _ = pearsonr(pred_mean.flatten(), gt.flatten())
+                mean_uncertainty = np.mean(pred_std_map)
+                print(f"    {pred_data['label']:15s}: "
+                      f"R={corr:.3f}, RMSE={rmse:.2f}, "
+                      f"Bias={bias:+.2f}, σ_pred={mean_uncertainty:.2f}")
     print("\n" + "="*80)
 
 
@@ -448,7 +513,7 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}\n")
     
-    data_path = Path("/scratchsan/observatorio/juagudeloo/data")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data")
     
     # Load data
     modest, region_data = load_and_extract_region(data_path, region_bounds)
@@ -467,16 +532,23 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
     print("\nProceeding with full analysis...\n")
     
     mhd_normalizer, stokes_normalizer, normalized_stokes = load_normalizers(data_path, region_data)
-    
+
     # Load models
     model_configs = get_model_configs()
-    models = load_all_models(model_configs, device)
-    
+    models, n_tau = load_all_models(model_configs, device)
+    logtau = _resolve_logtau_from_experiment_results(model_configs)
+    if n_tau != len(logtau):
+        raise ValueError(f"Checkpoint n_tau={n_tau} but results.json has {len(logtau)} logtau values")
+    print(f"Using logtau from experiment_results.json: {logtau.tolist()}")
+
     # Prepare inputs and run inference
     inputs_tensor, shape = prepare_input_data(normalized_stokes, device)
-    all_predictions_region, logtau = run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer)
-    
-    run_analysis(all_predictions_region, region_data, modest, images_save_path)
+    all_predictions_region, logtau = run_inference(
+        inputs_tensor, shape, models, model_configs, mhd_normalizer, logtau
+    )
+
+    # Run analysis
+    run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau)
     
     # Print statistics and save results
     print_region_statistics(all_predictions_region, region_data, region_bounds, logtau)
