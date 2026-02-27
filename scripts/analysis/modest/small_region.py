@@ -26,7 +26,7 @@ plt.rcParams['font.size'] = 10
 def setup_region(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage"):
     """Setup region boundaries and output directories."""
     images_base_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images")
-    images_save_path = images_base_path / f"modest_analysis/cut_region_{region_name}"
+    images_save_path = images_base_path / f"analysis/modest/cut_region_{region_name}"
     images_save_path.mkdir(parents=True, exist_ok=True)
     
     print(f"Region boundaries:")
@@ -309,7 +309,7 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer, l
     return all_predictions_region, logtau
 
 
-def run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau):
+def run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau, skip_existing_plots: bool = True):
     """Run all analysis and plotting."""
     analysis = ModestAnalysis()
     spinor_ods = list(modest.spinor_atm["T"].keys())
@@ -328,96 +328,114 @@ def run_analysis(all_predictions_region, region_data, modest, images_save_path, 
             # Single model comparisons
             for model_name, pred_data in all_predictions_region.items():
                 filename = f"{pred_data['label'].lower().replace(' ', '_')}_comparison_{param}_logtau_{od_to_plot}.png"
-                analysis.plot_prediction_comparison(
-                    mean_atm=pred_data['prediction'],
+                if skip_existing_plots and (images_save_path / filename).exists():
+                    print(f"↷ Skip existing: {filename}")
+                else:
+                    analysis.plot_prediction_comparison(
+                        mean_atm=pred_data['prediction'],
+                        ground_truth=region_data['spinor_atm'],
+                        mag_to_plot=param,
+                        od_to_plot=od_to_plot,
+                        logtau=logtau,
+                        model_label=f"{pred_data['label']} (Region)",
+                        figsize=(14, 12),
+                        save_dir=images_save_path,
+                        filename=filename
+                    )
+            
+            # Multi-model comparison
+            filename = f"model_comparison_{param}_logtau_{od_to_plot}.png"
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                analysis.compare_models_at_optical_depth(
+                    all_predictions=all_predictions_region,
                     ground_truth=region_data['spinor_atm'],
                     mag_to_plot=param,
                     od_to_plot=od_to_plot,
                     logtau=logtau,
-                    model_label=f"{pred_data['label']} (Region)",
-                    figsize=(14, 12),
+                    figsize=(20, 10),
                     save_dir=images_save_path,
                     filename=filename
                 )
             
-            # Multi-model comparison
-            filename = f"model_comparison_{param}_logtau_{od_to_plot}.png"
-            analysis.compare_models_at_optical_depth(
-                all_predictions=all_predictions_region,
-                ground_truth=region_data['spinor_atm'],
-                mag_to_plot=param,
-                od_to_plot=od_to_plot,
-                logtau=logtau,
-                figsize=(20, 10),
-                save_dir=images_save_path,
-                filename=filename
-            )
-            
             # Joint plots
             filename_prefix = f"jointplot_{param}_logtau_{od_to_plot}"
-            analysis.plot_jointplot_comparison(
-                all_predictions=all_predictions_region,
-                ground_truth=region_data['spinor_atm'],
-                mag_to_plot=param,
-                od_val=od_to_plot,
-                logtau=logtau,
-                n_samples=5000,
-                kind='reg',
-                save_dir=images_save_path,
-                filename_prefix=filename_prefix
-            )
-            
-            # Combined jointplot
-            filename = f"combined_jointplot_{param}_logtau_{od_to_plot}.png"
-            analysis.plot_combined_jointplot(
-                all_predictions=all_predictions_region,
-                ground_truth=region_data['spinor_atm'],
-                mag_to_plot=param,
-                od_val=od_to_plot,
-                logtau=logtau,
-                n_samples=3000,
-                save_dir=images_save_path,
-                filename=filename
-            )
-            
-            # Error analysis
-            filename = f"error_analysis_{param}_logtau_{od_to_plot}.png"
-            analysis.analyze_error_by_magnitude(
-                all_predictions=all_predictions_region,
-                ground_truth=region_data['spinor_atm'],
-                mag_to_analyze=param,
-                od_val=od_to_plot,
-                logtau=logtau,
-                n_bins=15,
-                plot_counts=True,
-                use_absolute=False,
-                rrmse_ylim=(0, 100),
-                save_dir=images_save_path,
-                filename=filename
-            )
-            
-            # Uncertainty analysis
-            filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
-            if hasattr(analysis, "plot_uncertainty_vs_error"):
-                analysis.plot_uncertainty_vs_error(
+            if _plot_prefix_exists(images_save_path, filename_prefix, skip_existing_plots):
+                print(f"↷ Skip existing prefix: {filename_prefix}")
+            else:
+                analysis.plot_jointplot_comparison(
                     all_predictions=all_predictions_region,
                     ground_truth=region_data['spinor_atm'],
                     mag_to_plot=param,
                     od_val=od_to_plot,
                     logtau=logtau,
+                    n_samples=5000,
+                    kind='reg',
+                    save_dir=images_save_path,
+                    filename_prefix=filename_prefix
+                )
+            
+            # Combined jointplot
+            filename = f"combined_jointplot_{param}_logtau_{od_to_plot}.png"
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                analysis.plot_combined_jointplot(
+                    all_predictions=all_predictions_region,
+                    ground_truth=region_data['spinor_atm'],
+                    mag_to_plot=param,
+                    od_val=od_to_plot,
+                    logtau=logtau,
+                    n_samples=3000,
                     save_dir=images_save_path,
                     filename=filename
                 )
+            
+            # Error analysis
+            filename = f"error_analysis_{param}_logtau_{od_to_plot}.png"
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
             else:
-                print("⚠ Skipping uncertainty_vs_error: method not available in ModestAnalysis")
-            print(f"✓ {param} at log(tau)={od_to_plot}")
+                analysis.analyze_error_by_magnitude(
+                    all_predictions=all_predictions_region,
+                    ground_truth=region_data['spinor_atm'],
+                    mag_to_analyze=param,
+                    od_val=od_to_plot,
+                    logtau=logtau,
+                    n_bins=15,
+                    plot_counts=True,
+                    use_absolute=False,
+                    rrmse_ylim=(0, 100),
+                    save_dir=images_save_path,
+                    filename=filename
+                )
+            
+            # Uncertainty analysis
+            filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                if hasattr(analysis, "plot_uncertainty_vs_error"):
+                    analysis.plot_uncertainty_vs_error(
+                        all_predictions=all_predictions_region,
+                        ground_truth=region_data['spinor_atm'],
+                        mag_to_plot=param,
+                        od_val=od_to_plot,
+                        logtau=logtau,
+                        save_dir=images_save_path,
+                        filename=filename
+                    )
+                else:
+                    print("⚠ Skipping uncertainty_vs_error: method not available in ModestAnalysis")
+                print(f"✓ {param} at log(tau)={od_to_plot}")
     
     # Vertical profile analysis
     for model_name, pred_data in all_predictions_region.items():
-        print(f"\n{'='*80}")
-        print(f"Model: {pred_data['label']} (Region Analysis)")
-        print(f"{'='*80}")
         filename = f"{pred_data['label'].lower().replace(' ', '_')}_mean_vs_optical_depth.png"
+        if skip_existing_plots and (images_save_path / filename).exists():
+            print(f"↷ Skip existing: {filename}")
+            continue
         analysis.plot_mean_vs_optical_depth(
             mean_atm=pred_data['prediction'],
             logtau=logtau,
@@ -485,8 +503,14 @@ def save_results(all_predictions_region, region_bounds):
     print(f"\n✓ All region predictions saved to {output_dir}")
 
 
+def _plot_prefix_exists(save_dir: Path, filename_prefix: str, skip_existing: bool) -> bool:
+    if not skip_existing:
+        return False
+    return any(save_dir.rglob(f"{filename_prefix}*.png")) or any(save_dir.rglob(f"{filename_prefix}*.json"))
+
+
 def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
-         visualization_only=False):
+         visualization_only=False, skip_existing_plots: bool = True):
     """Main analysis pipeline.
     
     Parameters
@@ -503,6 +527,8 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
         Name of the region (used for output directory)
     visualization_only : bool
         If True, only visualize the region and exit without running analysis
+    skip_existing_plots : bool
+        If True, skip existing plots even if they already exist
     """
     print("="*80)
     print(f"MODEST Regional Analysis Pipeline ({region_name})")
@@ -536,7 +562,7 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
     # Load models
     model_configs = get_model_configs()
     models, n_tau = load_all_models(model_configs, device)
-    logtau = _resolve_logtau_from_experiment_results(model_configs)
+    logtau = np.asarray(_resolve_logtau_from_experiment_results(model_configs), dtype=np.float32)
     if n_tau != len(logtau):
         raise ValueError(f"Checkpoint n_tau={n_tau} but results.json has {len(logtau)} logtau values")
     print(f"Using logtau from experiment_results.json: {logtau.tolist()}")
@@ -548,7 +574,7 @@ def main(y_start=0, y_end=100, x_start=400, x_end=600, region_name="plage",
     )
 
     # Run analysis
-    run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau)
+    run_analysis(all_predictions_region, region_data, modest, images_save_path, logtau, skip_existing_plots=skip_existing_plots)
     
     # Print statistics and save results
     print_region_statistics(all_predictions_region, region_data, region_bounds, logtau)
@@ -568,6 +594,7 @@ if __name__ == "__main__":
     parser.add_argument("--region-name", type=str, default="plage", help="Region name for output directory")
     parser.add_argument("--visualization-only", action="store_true", 
                         help="Only visualize region without running analysis")
+    parser.add_argument("--overwrite-plots", action="store_true", help="Regenerate plots even if they already exist")
     
     args = parser.parse_args()
     
@@ -578,4 +605,5 @@ if __name__ == "__main__":
         x_end=args.x_end,
         region_name=args.region_name,
         visualization_only=args.visualization_only,
+        skip_existing_plots=not args.overwrite_plots,
     )

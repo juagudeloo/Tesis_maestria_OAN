@@ -9,6 +9,7 @@ import sys
 from scipy.stats import pearsonr
 import pandas as pd
 from typing import Dict, Tuple, Optional
+import json
 
 sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN")
 from utils.modest_data import ModestData
@@ -25,7 +26,7 @@ plt.rcParams['font.size'] = 10
 def setup_paths():
     """Setup output directories."""
     images_base_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images")
-    images_save_path = images_base_path / "modest_analysis/whole_region"
+    images_save_path = images_base_path / "analysis/modest/whole_region"
     images_save_path.mkdir(parents=True, exist_ok=True)
     return images_save_path
 
@@ -57,6 +58,8 @@ def load_normalizers(data_path, modest):
 def get_model_configs():
     """Return model configurations."""
     base_model_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/")
+    experiment_dir = base_model_path / "experiment_80_to_113"
+    results_path = experiment_dir / "experiment_results.json"
     no_physics_weights = "no_physics/final_model.pth"
     wfa_only_weights = "wfa_only/final_model.pth"
     doppler_only_weights = "doppler_only/final_model.pth"
@@ -64,7 +67,9 @@ def get_model_configs():
     all_physics_terms_weights = "all_physics_terms/final_model.pth"
     return {
         'no_physics_80_to_113': {
-            'path': base_model_path / 'experiment_80_to_113' / no_physics_weights,
+            'path': experiment_dir / no_physics_weights,
+            'results_path': results_path,
+            'experiment_key': 'no_physics',
             'use_physics': None,
             'lambda_wfa': 0.0,
             'lambda_doppler': 0.0,
@@ -73,7 +78,9 @@ def get_model_configs():
             'color': 'blue'
         },
         'wfa_only_80_to_113': {
-            'path': base_model_path / 'experiment_80_to_113' / wfa_only_weights,
+            'path': experiment_dir / wfa_only_weights,
+            'results_path': results_path,
+            'experiment_key': 'wfa_only',
             'use_physics': ['wfa'],
             'lambda_wfa': 1.0,
             'lambda_doppler': 0.0,
@@ -84,8 +91,66 @@ def get_model_configs():
     }
 
 
-def load_model(config: Dict, device) -> PhysicsInformedMSCNN:
-    """Load a trained PINN-MSCNN model."""
+def _infer_output_features_from_checkpoint(checkpoint: Dict) -> int:
+    state = checkpoint["model_state_dict"]
+    key = "linear_block.output_layer.bias"
+    if key not in state:
+        raise KeyError(f"Missing '{key}' in checkpoint state_dict")
+    return int(state[key].shape[0])
+
+def _resolve_results_meta(cfg: Dict) -> tuple[Path, str]:
+    """Resolve results_path/experiment_key with fallback from checkpoint path."""
+    model_path = Path(cfg["path"])
+    results_path = Path(cfg.get("results_path", model_path.parent.parent / "experiment_results.json"))
+    experiment_key = str(cfg.get("experiment_key", model_path.parent.name))
+    return results_path, experiment_key
+
+def _resolve_logtau_from_experiment_results(model_configs: Dict) -> np.ndarray:
+    cache: Dict[Path, Dict] = {}
+    resolved: Dict[str, np.ndarray] = {}
+
+    for model_name, cfg in model_configs.items():
+        results_path, exp_key = _resolve_results_meta(cfg)
+
+        if results_path not in cache:
+            with open(results_path, "r") as f:
+                cache[results_path] = json.load(f)
+
+        results = cache[results_path]
+        if exp_key not in results:
+            raise KeyError(f"'{exp_key}' not found in {results_path}")
+
+        vals = results[exp_key].get("config", {}).get("logtau_values", None)
+        if vals is None:
+            raise KeyError(f"'config.logtau_values' not found for '{exp_key}' in {results_path}")
+
+        arr = np.asarray(vals, dtype=np.float32)
+        if arr.ndim != 1 or arr.size == 0:
+            raise ValueError(f"Invalid logtau_values for '{exp_key}' in {results_path}: {vals}")
+
+        resolved[model_name] = np.round(arr, 6)
+
+    ref_name = next(iter(resolved))
+    ref = resolved[ref_name]
+    for name, arr in resolved.items():
+        if arr.shape != ref.shape or not np.allclose(arr, ref, atol=1e-6, rtol=0.0):
+            raise ValueError(f"Inconsistent logtau_values between models: {ref_name} vs {name}")
+    return ref
+
+def _get_matching_spinor_ods(spinor_od_values, logtau, tol: float = 1e-6):
+    return [
+        float(od) for od in sorted(float(v) for v in spinor_od_values)
+        if np.any(np.isclose(logtau, float(od), atol=tol, rtol=0.0))
+    ]
+
+def load_model(config: Dict, device) -> Tuple[PhysicsInformedMSCNN, int]:
+    """Load a trained PINN-MSCNN model with checkpoint-matched output size."""
+    checkpoint = torch.load(config['path'], map_location=device)
+    output_features = _infer_output_features_from_checkpoint(checkpoint)
+    if output_features % 3 != 0:
+        raise ValueError(f"Invalid output_features={output_features}; expected multiple of 3")
+    n_tau = output_features // 3
+
     model = PhysicsInformedMSCNN(
         scales=[1, 2, 3],
         in_channels=2,
@@ -94,29 +159,32 @@ def load_model(config: Dict, device) -> PhysicsInformedMSCNN:
         kernel_size=5,
         pool_size=2,
         n_linear_layers=4,
-        output_features=3*21,
+        output_features=output_features,
         input_length=112,
-        dropout_rate=0.2,
         lambda_wfa=config['lambda_wfa'],
         lambda_doppler=config['lambda_doppler'],
         lambda_temp=config['lambda_temp'],
     ).to(device)
-    checkpoint = torch.load(config['path'], map_location=device)
+
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    return model
-
+    return model, n_tau
 
 def load_all_models(model_configs, device):
-    """Load all trained models."""
+    """Load all trained models and enforce consistent tau dimension."""
     models = {}
+    n_tau_ref = None
     for name, config in model_configs.items():
         print(f"Loading {config['label']}...")
-        models[name] = load_model(config, device)
-        print(f"  ✓ Model loaded successfully")
+        model, n_tau = load_model(config, device)
+        if n_tau_ref is None:
+            n_tau_ref = n_tau
+        elif n_tau != n_tau_ref:
+            raise ValueError(f"Inconsistent n_tau across models: {name} has {n_tau}, expected {n_tau_ref}")
+        models[name] = model
+        print(f"  ✓ Model loaded successfully (n_tau={n_tau})")
     print(f"\n✓ All {len(models)} models loaded\n")
-    return models
-
+    return models, int(n_tau_ref)
 
 def prepare_input_data(normalized_stokes, device):
     """Prepare input tensor."""
@@ -131,11 +199,11 @@ def prepare_input_data(normalized_stokes, device):
     return inputs_tensor, (H, W, Nstokes, Nlambda)
 
 
-def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
+def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer, logtau):
     """Run inference for all models."""
     all_predictions = {}
-    logtau = np.arange(-2, 0.1, 0.1)
     H, W, Nstokes, Nlambda = shape
+    n_tau = int(len(logtau))
     
     print("="*70)
     for model_name, model in models.items():
@@ -154,18 +222,21 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
                 all_predictions_batch.append(batch_predictions.cpu().numpy())
         
         # Concatenate predictions
-        predictions = np.concatenate(all_predictions_batch, axis=0)  # (n_pixels, 63)
+        predictions = np.concatenate(all_predictions_batch, axis=0)  # (n_pixels, n_tau, 3)
+        if predictions.shape[1] != 3 * n_tau:
+            raise ValueError(f"Prediction size mismatch: got {predictions.shape[1]}, expected {3*n_tau}")
+        predictions_reshaped = predictions.reshape(n_pixels, n_tau, 3)
         
         # Reshape and denormalize
-        predictions_reshaped = predictions.reshape(n_pixels, 21, 3)  # (n_pixels, 21, T/Vz/Bz)
+        predictions_reshaped = predictions_reshaped.reshape(n_pixels, n_tau, 3)
         
         prediction_atm = {}
         param_names = ['T', 'Vz', 'Bz']
         
         for param_idx, param_name in enumerate(param_names):
-            param_normalized = predictions_reshaped[:, :, param_idx]  # (n_pixels, 21)
+            param_normalized = predictions_reshaped[:, :, param_idx]  # (n_pixels, n_tau)
             param_denorm = mhd_normalizer.denormalize(param_normalized, param_name)
-            prediction_atm[param_name] = param_denorm.reshape(H, W, 21)
+            prediction_atm[param_name] = param_denorm.reshape(H, W, n_tau)
         
         all_predictions[model_name] = {
             'prediction': prediction_atm,
@@ -183,112 +254,89 @@ def run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer):
     return all_predictions, logtau
 
 
-def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_ods=None, skip_existing_plots: bool = True):
-    """Run all analysis and plotting.
-    
-    Parameters
-    ----------
-    plot_ods : list, optional
-        Optical depth values to plot. If None, uses all available.
-    """
+def _plot_prefix_exists(save_dir: Path, filename_prefix: str, skip_existing: bool) -> bool:
+    if not skip_existing:
+        return False
+    return any(save_dir.rglob(f"{filename_prefix}*.png")) or any(save_dir.rglob(f"{filename_prefix}*.json"))
+
+def run_analysis(all_predictions, modest, model_configs, images_save_path, logtau, plot_ods=None, skip_existing_plots: bool = True):
+    """Run all analysis and plotting."""
+    spinor_ods = list(modest.spinor_atm["T"].keys())
+    matched_ods = _get_matching_spinor_ods(spinor_ods, logtau)
+    if not matched_ods:
+        raise ValueError(
+            f"No SPINOR optical depths match model logtau grid. "
+            f"SPINOR={sorted(float(k) for k in spinor_ods)}, model={logtau.tolist()}"
+        )
+
     if plot_ods is None:
-        plot_ods = list(modest.spinor_atm["T"].keys())
-    
+        target_ods = matched_ods
+    else:
+        target_ods = [
+            float(od) for od in plot_ods
+            if np.any(np.isclose(logtau, float(od), atol=1e-6, rtol=0.0))
+        ]
+        if not target_ods:
+            raise ValueError(f"Requested ODs {plot_ods} are not in model logtau grid {logtau.tolist()}")
+
     analysis = ModestAnalysis()
-    logtau = np.arange(-2, 0.1, 0.1)
-    
-    for od_to_plot in plot_ods:
+    for od_to_plot in target_ods:
         for param in ['T', 'Vz', 'Bz']:
             # Single model comparisons
             for model_name, pred_data in all_predictions.items():
+                filename = f"{pred_data['label'].lower().replace(' ', '_')}_comparison_{param}_logtau_{od_to_plot}.png"
+                if skip_existing_plots and (images_save_path / filename).exists():
+                    print(f"↷ Skip existing: {filename}")
+                    continue
                 try:
-                    filename = f"{pred_data['label'].lower().replace(' ', '_')}_comparison_{param}_logtau_{od_to_plot}.png"
-                    analysis.plot_prediction_comparison(
-                        mean_atm=pred_data['prediction'],
-                        ground_truth=modest.spinor_atm,
-                        mag_to_plot=param,
-                        od_to_plot=od_to_plot,
-                        logtau=logtau,
-                        model_label=pred_data['label'],
-                        figsize=(14, 12),
-                        save_dir=images_save_path,
-                        filename=filename
-                    )
-                    print(f"✓ {param} at log(tau)={od_to_plot} - {pred_data['label']}")
+                    # ...existing code...
+                    pass
                 except Exception as e:
                     print(f"✗ Failed: {e}")
-            
+
             # Multi-model comparison
             filename = f"model_comparison_{param}_logtau_{od_to_plot}.png"
-            try:
-                analysis.compare_models_at_optical_depth(
-                    all_predictions=all_predictions,
-                    ground_truth=modest.spinor_atm,
-                    mag_to_plot=param,
-                    od_to_plot=od_to_plot,
-                    logtau=logtau,
-                    figsize=(20, 10),
-                    save_dir=images_save_path,
-                    filename=filename
-                )
-                print(f"✓ Model comparison {param} at log(tau)={od_to_plot}")
-            except Exception as e:
-                print(f"Error: {e}")
-            
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                try:
+                    # ...existing code...
+                    pass
+                except Exception as e:
+                    print(f"Error: {e}")
+
             # Joint plots
-            try:
-                filename_prefix = f"jointplot_{param}_logtau_{od_to_plot}"
-                analysis.plot_jointplot_comparison(
-                    all_predictions=all_predictions,
-                    ground_truth=modest.spinor_atm,
-                    mag_to_plot=param,
-                    od_val=od_to_plot,
-                    logtau=logtau,
-                    n_samples=10000,
-                    kind='reg',
-                    save_dir=images_save_path,
-                    filename_prefix=filename_prefix
-                )
-                print(f"✓ Jointplot {param}")
-            except Exception as e:
-                print(f"Error: {e}")
-            
+            filename_prefix = f"jointplot_{param}_logtau_{od_to_plot}"
+            if _plot_prefix_exists(images_save_path, filename_prefix, skip_existing_plots):
+                print(f"↷ Skip existing prefix: {filename_prefix}")
+            else:
+                try:
+                    # ...existing code...
+                    pass
+                except Exception as e:
+                    print(f"Error: {e}")
+
             # Combined jointplot
             filename = f"combined_jointplot_{param}_logtau_{od_to_plot}.png"
-            try:
-                analysis.plot_combined_jointplot(
-                    all_predictions=all_predictions,
-                    ground_truth=modest.spinor_atm,
-                    mag_to_plot=param,
-                    od_val=od_to_plot,
-                    logtau=logtau,
-                    n_samples=5000,
-                    save_dir=images_save_path,
-                    filename=filename
-                )
-                print(f"✓ Combined jointplot {param}")
-            except Exception as e:
-                print(f"Error: {e}")
-            
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                try:
+                    # ...existing code...
+                    pass
+                except Exception as e:
+                    print(f"Error: {e}")
+
             # Error analysis
             filename = f"error_analysis_{param}_logtau_{od_to_plot}.png"
-            try:
-                analysis.analyze_error_by_magnitude(
-                    all_predictions=all_predictions,
-                    ground_truth=modest.spinor_atm,
-                    mag_to_analyze=param,
-                    od_val=od_to_plot,
-                    logtau=logtau,
-                    n_bins=20,
-                    plot_counts=False,
-                    use_absolute=False,
-                    rrmse_ylim=(0, 100),
-                    save_dir=images_save_path,
-                    filename=filename
-                )
-                print(f"✓ Error analysis {param}")
-            except Exception as e:
-                print(f"Error: {e}")
+            if skip_existing_plots and (images_save_path / filename).exists():
+                print(f"↷ Skip existing: {filename}")
+            else:
+                try:
+                    # ...existing code...
+                    pass
+                except Exception as e:
+                    print(f"Error: {e}")
             
             # Uncertainty analysis
             # filename = f"uncertainty_vs_error_{param}_logtau_{od_to_plot}.png"
@@ -309,6 +357,9 @@ def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_
     # Vertical profile analysis
     for model_name, pred_data in all_predictions.items():
         filename = f"{pred_data['label'].lower().replace(' ', '_')}_mean_vs_optical_depth.png"
+        if skip_existing_plots and (images_save_path / filename).exists():
+            print(f"↷ Skip existing: {filename}")
+            continue
         print(f"\n{'='*80}")
         print(f"Model: {pred_data['label']}")
         print(f"{'='*80}")
@@ -325,7 +376,7 @@ def run_analysis(all_predictions, modest, model_configs, images_save_path, plot_
         print(f"✓ Saved mean vs optical depth")
 
 
-def main(od_values=None):
+def main(od_values=None, skip_existing_plots: bool = True):
     """Main analysis pipeline.
     
     Parameters
@@ -353,13 +404,20 @@ def main(od_values=None):
     
     # Load models
     model_configs = get_model_configs()
-    models = load_all_models(model_configs, device)
-    
+    models, n_tau = load_all_models(model_configs, device)
+    logtau = _resolve_logtau_from_experiment_results(model_configs)
+    if n_tau != len(logtau):
+        raise ValueError(f"Checkpoint n_tau={n_tau} but results.json has {len(logtau)} logtau values")
+    print(f"Using logtau from experiment_results.json: {logtau.tolist()}")
+
     # Prepare inputs and run inference
     inputs_tensor, shape = prepare_input_data(normalized_stokes, device)
-    all_predictions, logtau = run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer)
-    
-    run_analysis(all_predictions, modest, model_configs, images_save_path, od_values)
+    all_predictions, logtau = run_inference(inputs_tensor, shape, models, model_configs, mhd_normalizer, logtau)
+
+    run_analysis(
+        all_predictions, modest, model_configs, images_save_path, logtau, od_values,
+        skip_existing_plots=skip_existing_plots,
+    )
     
     print("\n✓ All analysis complete")
 
@@ -370,6 +428,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MODEST Full Region Analysis Pipeline")
     parser.add_argument("--od-values", type=float, nargs="+", default=None,
                        help="Optical depth values to analyze (default: all available)")
+    parser.add_argument("--overwrite-plots", action="store_true", help="Regenerate plots even if they already exist")
     
     args = parser.parse_args()
-    main(od_values=args.od_values)
+    main(od_values=args.od_values, skip_existing_plots=not args.overwrite_plots)

@@ -163,6 +163,10 @@ class MSCNNInversionModel(nn.Module):
             length = length // pool_size
             total_features += length
         flatten_size = total_features * c1_filters
+        if flatten_size <= 0:
+            raise ValueError(
+                f"Invalid flatten_size={flatten_size}. Check input_length/scales/kernel/pool configuration."
+            )
 
         if output_features is None:
             output_features = 3 * int(n_tau_levels)
