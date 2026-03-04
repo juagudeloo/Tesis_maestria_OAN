@@ -82,7 +82,7 @@ class ExperimentTracker:
         # Print rows
         for exp_name in self.results.keys():
             metrics = self.results[exp_name]
-            is_best = "★ YES" if exp_name == best_exp else "";
+            is_best = "★ YES" if exp_name == best_exp else ""
             
             row = (f"{exp_name:<25} "
                   f"{metrics['final_val_loss']:<12.6f} "
@@ -386,6 +386,14 @@ class ExperimentTracker:
         print(f"Comparison plots saved to {plot_path}")
         plt.show()
 
+def _tau_average(values: np.ndarray, logtau_values: np.ndarray) -> np.ndarray:
+    # 1D integration in tau; independent from spatial plotting choices.
+    tau_linear = 10 ** logtau_values
+    dtau = np.diff(tau_linear)
+    denom = (tau_linear[-1] - tau_linear[0]) + 1e-12
+    vals_mid = (values[:, :-1] + values[:, 1:]) / 2
+    return np.sum(vals_mid * dtau[np.newaxis, :], axis=1) / denom
+
 def compute_tau_averaged_metrics(
     model: PhysicsInformedMSCNN,
     test_steps: list[int],
@@ -467,29 +475,11 @@ def compute_tau_averaged_metrics(
                 T_denorm = mhd_normalizer.denormalize(T_norm, param='T')
                 Vz_denorm = mhd_normalizer.denormalize(Vz_norm, param='Vz')
                 Bz_denorm = mhd_normalizer.denormalize(Bz_norm, param='Bz')
-                
-                # Compute tau-averaged B_LOS
-                tau_linear = 10 ** logtau_values
-                dtau = np.diff(tau_linear)
-                integral_dtau = tau_linear[-1] - tau_linear[0]
-                
-                # Bz shape: (batch_size, n_tau=21)
-                Bz_avg = (Bz_denorm[:, :-1] + Bz_denorm[:, 1:]) / 2
-                integral_Bz = np.sum(Bz_avg * dtau[np.newaxis, :], axis=1)
-                pred_blos_batch = integral_Bz / integral_dtau
-                
-                # Compute tau-averaged V_LOS
-                # Vz shape: (batch_size, n_tau=21)
-                Vz_avg = (Vz_denorm[:, :-1] + Vz_denorm[:, 1:]) / 2
-                integral_Vz = np.sum(Vz_avg * dtau[np.newaxis, :], axis=1)
-                pred_vlos_batch = integral_Vz / integral_dtau
-                
-                # Compute tau-averaged Temperature
-                # T shape: (batch_size, n_tau=21)
-                T_avg = (T_denorm[:, :-1] + T_denorm[:, 1:]) / 2
-                integral_T = np.sum(T_avg * dtau[np.newaxis, :], axis=1)
-                pred_temp_batch = integral_T / integral_dtau
-                
+
+                pred_blos_batch = _tau_average(Bz_denorm, logtau_values)
+                pred_vlos_batch = _tau_average(Vz_denorm, logtau_values)
+                pred_temp_batch = _tau_average(T_denorm, logtau_values)
+
                 step_pred_blos.append(pred_blos_batch)
                 step_pred_vlos.append(pred_vlos_batch)
                 step_pred_temp.append(pred_temp_batch)

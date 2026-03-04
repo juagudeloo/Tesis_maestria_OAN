@@ -1,31 +1,27 @@
 from pathlib import Path
 import json
 import torch
+import torch.nn.functional as F
+from typing import Callable
 
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from scripts.base_training import load_and_prepare_step, TrainingConfig
+from scripts.base_training import TrainingConfig
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
-from utils.normalizer import MhdNormalizer, StokesNormalizer
-from utils.cache_manage import DataCache
 
 try:
     from torchinfo import summary as torch_summary
 except Exception:
     torch_summary = None
 
-images_dir = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram")
-
-
 class AnalysisModelPipeline:
     """Reusable pipeline for config selection, runtime cfg building, and model loading."""
 
-    def __init__(self, device, cache_dir: str, output_dir: Path | None = None):
+    def __init__(self, device, output_dir: Path | None = None):
         self.device = device
-        self.cache_dir = cache_dir
-        self.output_dir = output_dir or images_dir
+        self.output_dir = output_dir
 
     def get_model_configs(self) -> dict:
         base_model_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/")
@@ -35,6 +31,7 @@ class AnalysisModelPipeline:
             return {
                 "path": experiment_dir / exp_name / "final_model.pth",
                 "config_path": experiment_dir / exp_name / "experiment_config.json",
+                "results_path": experiment_dir / "experiment_results.json",
                 "experiment_key": exp_name,
                 "output_subdir": exp_name,
                 "use_physics": use_physics,
@@ -73,8 +70,6 @@ class AnalysisModelPipeline:
     def build_runtime_training_config(self, model_cfg: dict) -> TrainingConfig:
         cfg_kwargs = {
             "device": str(self.device),
-            "cache_dir": self.cache_dir,
-            "use_cache": True,
             "batch_size": 512,
             "enable_epoch_plots": True,
         }
@@ -187,172 +182,272 @@ class AnalysisModelPipeline:
         print(model)
         print(f"Total params: {n_params:,}")
         print(f"Trainable params: {n_trainable:,}")
+
+    def get_model_logtau_values(self, model_cfg: dict) -> list[float] | None:
+        """Read model log(tau) nodes from experiment_results.json, fallback to experiment_config.json."""
+        exp_key = model_cfg.get("experiment_key")
+        results_path = model_cfg.get("results_path")
+
+        if exp_key and results_path and Path(results_path).exists():
+            try:
+                with open(results_path, "r") as f:
+                    raw = json.load(f)
+                vals = raw.get(exp_key, {}).get("config", {}).get("logtau_values", None)
+                if vals is not None:
+                    return [float(v) for v in vals]
+            except Exception:
+                pass
+
+        cfg_path = model_cfg.get("config_path")
+        if cfg_path and Path(cfg_path).exists():
+            try:
+                with open(cfg_path, "r") as f:
+                    raw = json.load(f)
+                vals = raw.get("data_config", {}).get("logtau_values", None)
+                if vals is not None:
+                    return [float(v) for v in vals]
+            except Exception:
+                pass
+
+        return None
+
+    def predict_and_denormalize(
+        self,
+        model: PhysicsInformedMSCNN,
+        stokes_input: np.ndarray,
+        mhd_normalizer,
+        pred_nx: int,
+        pred_ny: int,
+        batch_size: int = 4096,
+    ) -> dict[str, np.ndarray]:
+        """Predict and denormalize model outputs on the native prediction grid (no resizing)."""
+        model.eval()
+        all_pred = []
+
+        with torch.no_grad():
+            for i in range(0, stokes_input.shape[0], batch_size):
+                x = torch.from_numpy(stokes_input[i:i + batch_size]).float().to(self.device)
+                y = model(x).detach().cpu().numpy()
+                all_pred.append(y)
+
+        pred = np.concatenate(all_pred, axis=0)  # (N, 3*n_tau)
+        n_tau_local = pred.shape[1] // 3
+        pred = pred.reshape(-1, n_tau_local, 3)
+
+        T_denorm = mhd_normalizer.denormalize(pred[:, :, 0], param="T").reshape(pred_nx, pred_ny, n_tau_local)
+        Vz_denorm = mhd_normalizer.denormalize(pred[:, :, 1], param="Vz").reshape(pred_nx, pred_ny, n_tau_local)
+        Bz_denorm = mhd_normalizer.denormalize(pred[:, :, 2], param="Bz").reshape(pred_nx, pred_ny, n_tau_local)
+        return {"T": T_denorm, "Vz": Vz_denorm, "Bz": Bz_denorm}
+
+    @staticmethod
+    def common_tau_matches(
+        modest_tau: list[float],
+        pred_tau: list[float],
+        atol: float = 1e-6,
+    ) -> list[tuple[float, int, int]]:
+        """Return (tau_value, idx_modest, idx_pred) for optical depths present in both grids."""
+        matches: list[tuple[float, int, int]] = []
+        for i_m, mt in enumerate(modest_tau):
+            for i_p, pt in enumerate(pred_tau):
+                if np.isclose(float(mt), float(pt), atol=atol, rtol=0.0):
+                    matches.append((float(mt), i_m, i_p))
+                    break
+        return matches
+
+class DiagnosticPlots:
+    """Data-agnostic diagnostic plot generator."""
+
+    def __init__(
+        self,
+        config: TrainingConfig,
+        model_name: str,
+        label: str | None = None,
+        step: int | None = None,
+        output_dir: str | Path | None = Path('./images'),
+    ):
+        self.config = config
+        self.model_name = model_name
+        self.label = label if label is not None else (f"step_{step}" if step is not None else "snapshot")
+
+        self.logtau = config.get_logtau_values()
+        self.ods = config.epoch_plot_ods if config.epoch_plot_ods is not None else [-1.0, -0.8, 0.0]
+        self.params = config.epoch_plot_params if config.epoch_plot_params is not None else ["T", "Vz", "Bz"]
+        self.n_sample = int(config.epoch_plot_scatter_samples)
+
+        self.param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
+        self.error_cmap = "RdBu_r"
         
-def generate_epoch_diagnostic_plots(
-    model: PhysicsInformedMSCNN,
-    model_name: str,
-    step: int,
-    config: TrainingConfig,
-    mhd_normalizer: MhdNormalizer,
-    stokes_normalizer: StokesNormalizer,
-    cache: DataCache | None = None,
-) -> None:
-    """
-    Save image + jointplot diagnostics for one monitoring step (final model).
-    """
-    logtau = config.get_logtau_values()
-    ods = config.epoch_plot_ods if config.epoch_plot_ods is not None else [-1.0, -0.8, 0.0]
-    params = config.epoch_plot_params if config.epoch_plot_params is not None else ["T", "Vz", "Bz"]
-    n_sample = int(config.epoch_plot_scatter_samples)
+        base_out_dir = Path(output_dir)
+        self.out_dir = base_out_dir / "final" / model_name
+        self.out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Colormaps aligned with utils/analysis_functions.py
-    param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
-    error_cmap = "RdBu_r"
+    def predict(self, model: PhysicsInformedMSCNN, stokes_input: np.ndarray) -> np.ndarray:
+        n_pixels = stokes_input.shape[0]
+        all_pred = []
+        with torch.no_grad():
+            for i in range(0, n_pixels, self.config.batch_size):
+                x = torch.from_numpy(stokes_input[i:i + self.config.batch_size]).float().to(self.config.device)
+                y = model(x).detach().cpu().numpy()
+                all_pred.append(y)
+        return np.concatenate(all_pred, axis=0)
 
-    base_out_dir = config.log_dir / "epoch_diagnostics" / f"step_{step}"
-    out_dir = base_out_dir / "final" / model_name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    def denormalize_maps(
+        self,
+        pred_norm: np.ndarray,
+        gt_values: np.ndarray,
+        nx_pred: int,
+        ny_pred: int,
+        nx_gt: int,
+        ny_gt: int,
+        denormalize_param: Callable[[np.ndarray, str], np.ndarray],
+        param_names: list[str],
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+        n_tau = int(len(self.logtau))
 
-    was_training = model.training
-    model.eval()
+        pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau, len(param_names)) if pred_norm.ndim == 2 else pred_norm
+        gt_reshaped = gt_values.reshape(gt_values.shape[0], n_tau, len(param_names)) if gt_values.ndim == 2 else gt_values
 
-    dataset, _ = load_and_prepare_step(
-        step=step,
-        config=config,
-        mhd_normalizer=mhd_normalizer,
-        stokes_normalizer=stokes_normalizer,
-        cache=cache,
-    )
+        pred_den, gt_den = {}, {}
+        for param_idx, param_name in enumerate(param_names):
+            pred_param_norm = pred_reshaped[:, :, param_idx]
+            gt_param_values = gt_reshaped[:, :, param_idx]
 
-    n_pixels = dataset.stokes_input.shape[0]
-    all_pred = []
-    with torch.no_grad():
-        for i in range(0, n_pixels, config.batch_size):
-            x = torch.from_numpy(dataset.stokes_input[i:i + config.batch_size]).float().to(config.device)
-            y = model(x).detach().cpu().numpy()
-            all_pred.append(y)
+            # Only predictions are denormalized
+            pred_param_den = denormalize_param(pred_param_norm, param_name)
 
-    pred_norm = np.concatenate(all_pred, axis=0)
-    gt_norm = dataset.mhd_targets
+            pred_den[param_name] = pred_param_den.reshape(nx_pred, ny_pred, n_tau)
+            gt_den[param_name] = gt_param_values.reshape(nx_gt, ny_gt, n_tau)
 
-    # Loop-based denormalization pipeline (same style as other scripts)
-    n_tau = int(len(logtau))
-    param_names = ["T", "Vz", "Bz"]
+        return pred_den, gt_den
 
-    if pred_norm.ndim == 2:
-        pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau, 3)
-    else:
-        pred_reshaped = pred_norm
+    def plot_image_panel(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float) -> None:
+        err_map = pred_map - true_map
+        both = np.concatenate([true_map.ravel(), pred_map.ravel()])
 
-    if gt_norm.ndim == 2:
-        gt_reshaped = gt_norm.reshape(gt_norm.shape[0], n_tau, 3)
-    else:
-        gt_reshaped = gt_norm
+        if p in ("Vz", "Bz"):
+            vmax = np.nanquantile(np.abs(both), 0.99)
+            vmin = -vmax
+        else:
+            vmin, vmax = np.nanquantile(both, [0.01, 0.99])
 
-    pred_den = {}
-    gt_den = {}
-    nx, ny = dataset.nx, dataset.ny
+        emax = np.nanquantile(np.abs(err_map.ravel()), 0.99)
+        param_cmap = self.param_cmaps.get(p, "viridis")
 
-    for param_idx, param_name in enumerate(param_names):
-        pred_param_norm = pred_reshaped[:, :, param_idx]
-        gt_param_norm = gt_reshaped[:, :, param_idx]
+        fig, ax = plt.subplots(1, 3, figsize=(14, 4))
+        im0 = ax[0].imshow(true_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+        ax[0].set_title(f"GT {p}")
+        ax[0].axis("off")
+        plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
 
-        pred_param_den = mhd_normalizer.denormalize(pred_param_norm, param=param_name)
-        gt_param_den = mhd_normalizer.denormalize(gt_param_norm, param=param_name)
+        im1 = ax[1].imshow(pred_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+        ax[1].set_title(f"Pred {p}")
+        ax[1].axis("off")
+        plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
 
-        pred_den[param_name] = pred_param_den.reshape(nx, ny, n_tau)
-        gt_den[param_name] = gt_param_den.reshape(nx, ny, n_tau)
+        im2 = ax[2].imshow(err_map.T, origin="lower", cmap=self.error_cmap, vmin=-emax, vmax=emax)
+        ax[2].set_title(f"Error {p}")
+        ax[2].axis("off")
+        plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
 
-    for od in ods:
-        tau_idx = int(np.argmin(np.abs(logtau - od)))
-        od_eff = float(logtau[tau_idx])
+        fig.suptitle(f"Final Model | {self.model_name} | Snapshot {self.label} | {p} @ log(tau)={od_eff:.2f}")
+        fig.tight_layout()
+        fig.savefig(self.out_dir / f"{p}_logtau_{od_eff:.2f}_images.png", dpi=170, bbox_inches="tight")
+        plt.close(fig)
 
-        for p in params:
-            true_map = gt_den[p][:, :, tau_idx]
-            pred_map = pred_den[p][:, :, tau_idx]
-            err_map = pred_map - true_map
+    def plot_jointplot(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float, tau_idx: int) -> None:
+        x = true_map.ravel()
+        y = pred_map.ravel()
+        m = np.isfinite(x) & np.isfinite(y)
+        x, y = x[m], y[m]
+        if x.size == 0:
+            return
 
-            both = np.concatenate([true_map.ravel(), pred_map.ravel()])
-            if p in ("Vz", "Bz"):
-                vmax = np.nanquantile(np.abs(both), 0.99)
-                vmin = -vmax
-            else:
-                vmin, vmax = np.nanquantile(both, [0.01, 0.99])
+        if x.size > self.n_sample > 0:
+            rng = np.random.default_rng(seed=tau_idx + 7)
+            idx = rng.choice(x.size, size=self.n_sample, replace=False)
+            x, y = x[idx], y[idx]
 
-            emax = np.nanquantile(np.abs(err_map.ravel()), 0.99)
+        rmse = np.sqrt(np.mean((y - x) ** 2))
+        rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
+        corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
 
-            param_cmap = param_cmaps.get(p, "viridis")
+        lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
+        g = sns.jointplot(
+            x=x,
+            y=y,
+            kind="scatter",
+            height=6,
+            s=8,
+            alpha=0.25,
+            marginal_kws={"bins": 50, "fill": True},
+        )
+        g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
+        g.ax_joint.set_xlim(lo, hi)
+        g.ax_joint.set_ylim(lo, hi)
+        g.ax_joint.set_xlabel("Ground truth")
+        g.ax_joint.set_ylabel("Prediction")
+        g.fig.suptitle(
+            f"Final Model | {self.model_name} | Snapshot {self.label} | {p} @ log(tau)={od_eff:.2f}\n"
+            f"Corr={corr:.3f}, RRMSE={rrmse:.3f}",
+            y=1.02,
+        )
+        g.fig.tight_layout()
+        g.fig.savefig(self.out_dir / f"{p}_logtau_{od_eff:.2f}_jointplot.png", dpi=170, bbox_inches="tight")
+        plt.close(g.fig)
 
-            # Image panel
-            fig, ax = plt.subplots(1, 3, figsize=(14, 4))
-            im0 = ax[0].imshow(true_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
-            ax[0].set_title(f"GT {p}")
-            ax[0].axis("off")
-            plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+    def generate(
+        self,
+        model: PhysicsInformedMSCNN,
+        stokes_input: np.ndarray,
+        gt_values: np.ndarray,
+        nx_pred: int,
+        ny_pred: int,
+        denormalize_param: Callable[[np.ndarray, str], np.ndarray],
+        param_names: list[str] | None = None,
+        nx_gt: int | None = None,
+        ny_gt: int | None = None,
+    ) -> None:
+        param_names = param_names or ["T", "Vz", "Bz"]
+        nx_gt = nx_pred if nx_gt is None else nx_gt
+        ny_gt = ny_pred if ny_gt is None else ny_gt
 
-            im1 = ax[1].imshow(pred_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
-            ax[1].set_title(f"Pred {p}")
-            ax[1].axis("off")
-            plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+        was_training = model.training
+        model.eval()
 
-            im2 = ax[2].imshow(err_map.T, origin="lower", cmap=error_cmap, vmin=-emax, vmax=emax)
-            ax[2].set_title(f"Error {p}")
-            ax[2].axis("off")
-            plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
+        pred_norm = self.predict(model=model, stokes_input=stokes_input)
+        pred_den, gt_den = self.denormalize_maps(
+            pred_norm=pred_norm,
+            gt_values=gt_values,
+            nx_pred=nx_pred,
+            ny_pred=ny_pred,
+            nx_gt=nx_gt,
+            ny_gt=ny_gt,
+            denormalize_param=denormalize_param,
+            param_names=param_names,
+        )
 
-            fig.suptitle(f"Final Model | {model_name} | Step {step} | {p} @ log(tau)={od_eff:.2f}")
-            fig.tight_layout()
-            fig.savefig(
-                out_dir / f"{p}_logtau_{od_eff:.2f}_images.png",
-                dpi=170,
-                bbox_inches="tight",
-            )
-            plt.close(fig)
+        for od in self.ods:
+            tau_idx = int(np.argmin(np.abs(self.logtau - od)))
+            od_eff = float(self.logtau[tau_idx])
 
-            # Jointplot (seaborn): scatter + marginal histograms
-            x = true_map.ravel()
-            y = pred_map.ravel()
-            m = np.isfinite(x) & np.isfinite(y)
-            x, y = x[m], y[m]
-            if x.size == 0:
-                continue
+            for p in self.params:
+                true_map = gt_den[p][:, :, tau_idx]
+                pred_map = pred_den[p][:, :, tau_idx]
 
-            if x.size > n_sample > 0:
-                rng = np.random.default_rng(seed=tau_idx + 7)
-                idx = rng.choice(x.size, size=n_sample, replace=False)
-                x, y = x[idx], y[idx]
+                # Align GT to pred resolution for fair pixel-wise diagnostics
+                if true_map.shape != pred_map.shape:
+                    true_map = self._resize_map_to_shape(true_map, pred_map.shape)
 
-            rmse = np.sqrt(np.mean((y - x) ** 2))
-            rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
-            corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
+                self.plot_image_panel(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff)
+                self.plot_jointplot(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff, tau_idx=tau_idx)
 
-            lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
-            g = sns.jointplot(
-                x=x,
-                y=y,
-                kind="scatter",
-                height=6,
-                s=8,
-                alpha=0.25,
-                marginal_kws={"bins": 50, "fill": True},
-            )
-            g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
-            g.ax_joint.set_xlim(lo, hi)
-            g.ax_joint.set_ylim(lo, hi)
-            g.ax_joint.set_xlabel("Ground truth")
-            g.ax_joint.set_ylabel("Prediction")
-            g.fig.suptitle(
-                f"Final Model | {model_name} | Step {step} | {p} @ log(tau)={od_eff:.2f}\n"
-                f"Corr={corr:.3f}, RRMSE={rrmse:.3f}",
-                y=1.02
-            )
-            g.fig.tight_layout()
-            g.fig.savefig(
-                out_dir / f"{p}_logtau_{od_eff:.2f}_jointplot.png",
-                dpi=170,
-                bbox_inches="tight",
-            )
-            plt.close(g.fig)
+        if was_training:
+            model.train()
 
-    if was_training:
-        model.train()
+    @staticmethod
+    def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+        if arr2d.shape == target_shape:
+            return arr2d
+        t = torch.from_numpy(arr2d).float().unsqueeze(0).unsqueeze(0)
+        out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
+        return out.squeeze(0).squeeze(0).cpu().numpy()

@@ -606,12 +606,18 @@ class ModestData:
 	# ------------------------------------------------------------------
 	# Orchestration
 	# ------------------------------------------------------------------
+	def get_sorted_tau_values(self, param_key: str = "T") -> Tuple[float, ...]:
+		"""Return sorted optical-depth keys for SPINOR; used for tau-grid overlap checks."""
+		if self.spinor_atm is None:
+			raise ValueError("SPINOR atmosphere not available")
+		if param_key not in self.spinor_atm:
+			raise KeyError(f"Unknown SPINOR key: {param_key}")
+		return tuple(sorted(self.spinor_atm[param_key].keys()))
+
 	def load_all(
 		self, 
 		region_bounds: Optional[Tuple[int, int, int, int]] = None, 
 		apply_mask: bool = True,
-		upsample: bool = False,
-		upsampling_factor: int = 2
 	) -> Dict[str, object]:
 		"""Load all MODEST data products with optional upsampling.
 
@@ -630,12 +636,9 @@ class ModestData:
 		self.load_obs_stokes()
 		self.compute_wavelength_arrays()
 
-		if upsample:
-			print("Upsampling Stokes data for PSF compatibility...")
-			self.upsampled_stokes = self.upsample_stokes(upsampling_factor=upsampling_factor)
-			self.deconvolve_stokes(use_upsampled=True)
-		else:
-			self.deconvolve_stokes(use_upsampled=False)
+		print("Upsampling Stokes data for PSF compatibility...")
+		self.upsampled_stokes = self.upsample_stokes(upsampling_factor=2)
+		self.deconvolve_stokes(use_upsampled=True)
 
 		self.compute_circular_polarization()
 		self.find_sample_pixels()
@@ -649,7 +652,11 @@ class ModestData:
 			self.apply_mask_to_data()
 
 		if region_bounds is not None:
-			return self.extract_region(*region_bounds) | {"wl": self.wl, "wl_inv": self.wl_inv}
+			return self.extract_region(*region_bounds) | {
+				"wl": self.wl,
+				"wl_inv": self.wl_inv,
+				"tau_values": self.get_sorted_tau_values("T"),
+			}
 
 		return {
 			"continuum": self.continuum,
@@ -664,4 +671,5 @@ class ModestData:
 			"mask": self.mask,
 			"circ_pol": self.circ_pol,
 			"sample_pixels": self.sample_pixels,
+			"tau_values": self.get_sorted_tau_values("T"),
 		}
