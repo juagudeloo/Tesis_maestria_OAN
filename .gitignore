@@ -1,4 +1,4 @@
-.data_cache/
+*_cache/
 *.out
 *.err
 logs/

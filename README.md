@@ -43,17 +43,28 @@ Tesis_maestria_OAN/
 │
 ├── utils/                           # Utility modules
 │   ├── muram_data.py               # MURaM data loading & preprocessing
+│   ├── modest_data.py              # MODEST data loading & processing
 │   ├── normalizer.py               # Data normalization utilities
 │   ├── physics_utils.py            # Physics approximations (WFA, Doppler, Temperature)
 │   ├── grad_norm.py                # GradNorm loss balancing
-│   ├── analysis_functions.py       # Data analysis & visualization helpers
+│   ├── analysis.py                 # Shared analysis pipelines & diagnostic plot classes
+│   ├── cache_manage.py             # HDF5 cache for processed steps
 │   └── model_prof_tools.py         # Model profiling & performance tools
 │
 ├── scripts/                         # Training & experiment scripts
 │   ├── base_training.py            # Core training loop with interleaved epoch training
+│   ├── compute_normalization_stats.py # Builds MHD/Stokes normalization JSONs
 │   └── experiments/
 │       ├── ablation_study.py       # Physics regularization ablation study (5 configurations)
-│       └── as_run.batch            # SLURM batch script for HPC submission
+│
+├── scripts/analysis/                # Post-training diagnostics
+│   ├── muram_analysis.py           # Diagnostic maps on MURaM steps
+│   └── modest_analysis.py          # Diagnostic comparison on MODEST data
+│
+├── tools/                           # Run wrappers (HPC/local)
+│   ├── run_experiments.sh          # SLURM-ready ablation launcher
+│   ├── compute_normalization_stats.sh # SLURM-ready normalization launcher
+│   └── generate_analysis.sh        # Unified analysis launcher (MURaM/MODEST)
 │
 ├── notebooks/                       # Jupyter notebooks (documentation & analysis)
 │   ├── 1-muram_mhd_data.ipynb      # MURaM MHD data loading & optical depth mapping
@@ -77,7 +88,7 @@ Tesis_maestria_OAN/
     │   ├── doppler_only/
     │   ├── black_body_only/
     │   └── no_physics/
-    └── checkpoints/                 # Model checkpoints
+  └── region_analysis/             # Saved regional diagnostics (.npy)
 ```
 
 ---
@@ -133,16 +144,25 @@ Tesis_maestria_OAN/
 - Based on: Chen et al., "GradNorm: Gradient Normalization for Adaptive Loss Balancing", ICML 2018
 - Includes gradient norm computation per task
 
-#### `analysis_functions.py`
-- Helper functions for data analysis and visualization
-- Statistical utilities for evaluation metrics
-- Post-processing functions for results
+#### `analysis.py`
+- **AnalysisModelPipeline**: Centralized loading of trained experiment models/configs
+- Builds runtime `TrainingConfig` from saved experiment metadata
+- Produces denormalized model predictions and shared tau-grid alignment helpers
+- Includes **MuramDiagnosticPlots** and **ModestDiagnosticPlots** for standardized outputs
+
+#### `cache_manage.py`
+- **DataCache**: HDF5 caching layer for processed MURaM/MHD/Stokes/physics tensors
+- Enforces cache compatibility with config hash and `logtau_values`
+- Reduces repeated preprocessing in normalization, training, and analysis scripts
+
+#### `modest_data.py`
+- **ModestData**: End-to-end MODEST/Hinode data loader + processor
+- Supports deconvolution, optional upsampling/smoothing, polarization masking, and diagnostics
+- Provides FITS-based access to observed/inverted profiles and atmospheric products
 
 #### `model_prof_tools.py`
-- Model profiling and performance analysis tools
-- Memory usage tracking
-- Inference time measurements
-- Parameter count utilities
+- Legacy utility set for reading/writing/checking NICOLE model/profile formats
+- Includes binary/ASCII format validation helpers used in inversion-oriented workflows
 
 ### 3. **Training** (`scripts/`)
 
@@ -174,10 +194,34 @@ Tesis_maestria_OAN/
   - Improvement matrices over baseline
   - JSON summary files
 
-#### `experiments/as_run.batch`
-- SLURM batch script for HPC job submission
-- Configurable hyperparameters (learning rate, lambda values, physics modes)
-- Environment setup with Anaconda
+#### `compute_normalization_stats.py`
+- Computes and saves `mhd_normalization.json` and `stokes_normalization.json`
+- Supports explicit `logtau_values` and resume from intermediate states
+- Can reuse shared cache semantics via `load_and_prepare_step`
+
+### 4. **Analysis Scripts** (`scripts/analysis/`)
+
+#### `analysis/muram_analysis.py`
+- Loads trained experiment checkpoints and generates MURaM diagnostic plots
+- Uses shared cache and normalizers to compare denormalized predictions vs ground truth
+
+#### `analysis/modest_analysis.py`
+- Runs inference and diagnostics on MODEST products (whole FOV or cropped regions)
+- Supports polarization masking and configurable model subset comparisons
+
+### 5. **Automation Wrappers** (`tools/`)
+
+#### `run_experiments.sh`
+- SLURM-ready launcher for `scripts/experiments/ablation_study.py`
+- Centralizes step ranges, lambda weights, physics modes, and selected experiment branches
+
+#### `compute_normalization_stats.sh`
+- SLURM-ready launcher for normalization-stat computation script
+- Supports cache toggle, resume mode, and explicit/range logtau configuration
+
+#### `generate_analysis.sh`
+- Unified entry point to run `muram_analysis.py`, `modest_analysis.py`, or both
+- Exposes runtime flags for crop mode and analysis selection
 
 ---
 
@@ -227,8 +271,8 @@ pip install torch torchvision astropy scipy tqdm matplotlib
 
 4. **Submit to HPC**:
    ```bash
-   # Edit as_run.batch to set hyperparameters
-   sbatch as_run.batch
+  # Edit tools/run_experiments.sh to set hyperparameters
+  sbatch tools/run_experiments.sh
    ```
 
 ---
@@ -515,4 +559,4 @@ This project is developed as part of a Master's thesis at Universidad Nacional d
 
 ---
 
-**Last Updated**: 2025-01-27
+**Last Updated**: 2026-03-05
