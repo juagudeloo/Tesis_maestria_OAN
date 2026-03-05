@@ -8,7 +8,7 @@ import torch
 import numpy as np
 from utils.cache_manage import DataCache
 from utils.normalizer import MhdNormalizer, StokesNormalizer
-from utils.analysis import AnalysisModelPipeline, DiagnosticPlots
+from utils.analysis import AnalysisModelPipeline, MuramDiagnosticPlots
 from scripts.base_training import TrainingConfig, load_and_prepare_step
 
 def main(args):
@@ -51,31 +51,32 @@ def main(args):
             cache=cache,
         )
 
-        # Convert normalized GT to physical units once; predictions are denormalized in DiagnosticPlots.
-        gt_reshaped = dataset.mhd_targets.reshape(dataset.mhd_targets.shape[0], n_tau, 3)
-        gt_values_reshaped = np.empty_like(gt_reshaped)
-        for param_idx, param_name in enumerate(["T", "Vz", "Bz"]):
-            gt_values_reshaped[:, :, param_idx] = mhd_normalizer.denormalize(
-                gt_reshaped[:, :, param_idx], param=param_name
-            )
-        muram_gt_values = gt_values_reshaped.reshape(dataset.mhd_targets.shape)
+        # Denormalize predictions using the pipeline
+        pred_den = pipeline.predict_and_denormalize(
+            model=model,
+            stokes_input=dataset.stokes_input,
+            mhd_normalizer=mhd_normalizer,
+            pred_nx=dataset.nx,
+            pred_ny=dataset.ny,
+        )
 
-        plotter = DiagnosticPlots(
+        # Denormalize GT to physical units
+        gt_reshaped = dataset.mhd_targets.reshape(dataset.mhd_targets.shape[0], n_tau, 3)
+        gt_den = {}
+        for param_idx, param_name in enumerate(["T", "Vz", "Bz"]):
+            gt_den[param_name] = mhd_normalizer.denormalize(
+                gt_reshaped[:, :, param_idx], param=param_name
+            ).reshape(dataset.nx, dataset.ny, n_tau)
+
+        plotter = MuramDiagnosticPlots(
             config=cfg,
             model_name=model_type,
             step=args.step_to_plot,
             output_dir=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram"),
         )
         plotter.generate(
-            model=model,
-            stokes_input=dataset.stokes_input,
-            gt_values=muram_gt_values,
-            nx_pred=dataset.nx,
-            ny_pred=dataset.ny,
-            nx_gt=dataset.nx,
-            ny_gt=dataset.ny,
-            denormalize_param=lambda arr, param: mhd_normalizer.denormalize(arr, param=param),
-            param_names=["T", "Vz", "Bz"],
+            pred_den=pred_den,
+            gt_den=gt_den,
         )
 
 if __name__ == "__main__":

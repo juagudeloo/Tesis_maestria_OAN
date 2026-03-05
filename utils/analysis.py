@@ -254,7 +254,7 @@ class AnalysisModelPipeline:
                     break
         return matches
 
-class DiagnosticPlots:
+class MuramDiagnosticPlots:
     """Data-agnostic diagnostic plot generator."""
 
     def __init__(
@@ -280,45 +280,6 @@ class DiagnosticPlots:
         base_out_dir = Path(output_dir)
         self.out_dir = base_out_dir / "final" / model_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
-
-    def predict(self, model: PhysicsInformedMSCNN, stokes_input: np.ndarray) -> np.ndarray:
-        n_pixels = stokes_input.shape[0]
-        all_pred = []
-        with torch.no_grad():
-            for i in range(0, n_pixels, self.config.batch_size):
-                x = torch.from_numpy(stokes_input[i:i + self.config.batch_size]).float().to(self.config.device)
-                y = model(x).detach().cpu().numpy()
-                all_pred.append(y)
-        return np.concatenate(all_pred, axis=0)
-
-    def denormalize_maps(
-        self,
-        pred_norm: np.ndarray,
-        gt_values: np.ndarray,
-        nx_pred: int,
-        ny_pred: int,
-        nx_gt: int,
-        ny_gt: int,
-        denormalize_param: Callable[[np.ndarray, str], np.ndarray],
-        param_names: list[str],
-    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-        n_tau = int(len(self.logtau))
-
-        pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau, len(param_names)) if pred_norm.ndim == 2 else pred_norm
-        gt_reshaped = gt_values.reshape(gt_values.shape[0], n_tau, len(param_names)) if gt_values.ndim == 2 else gt_values
-
-        pred_den, gt_den = {}, {}
-        for param_idx, param_name in enumerate(param_names):
-            pred_param_norm = pred_reshaped[:, :, param_idx]
-            gt_param_values = gt_reshaped[:, :, param_idx]
-
-            # Only predictions are denormalized
-            pred_param_den = denormalize_param(pred_param_norm, param_name)
-
-            pred_den[param_name] = pred_param_den.reshape(nx_pred, ny_pred, n_tau)
-            gt_den[param_name] = gt_param_values.reshape(nx_gt, ny_gt, n_tau)
-
-        return pred_den, gt_den
 
     def plot_image_panel(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float) -> None:
         err_map = pred_map - true_map
@@ -397,35 +358,9 @@ class DiagnosticPlots:
 
     def generate(
         self,
-        model: PhysicsInformedMSCNN,
-        stokes_input: np.ndarray,
-        gt_values: np.ndarray,
-        nx_pred: int,
-        ny_pred: int,
-        denormalize_param: Callable[[np.ndarray, str], np.ndarray],
-        param_names: list[str] | None = None,
-        nx_gt: int | None = None,
-        ny_gt: int | None = None,
+        pred_den: dict[str, np.ndarray],
+        gt_den: dict[str, np.ndarray],
     ) -> None:
-        param_names = param_names or ["T", "Vz", "Bz"]
-        nx_gt = nx_pred if nx_gt is None else nx_gt
-        ny_gt = ny_pred if ny_gt is None else ny_gt
-
-        was_training = model.training
-        model.eval()
-
-        pred_norm = self.predict(model=model, stokes_input=stokes_input)
-        pred_den, gt_den = self.denormalize_maps(
-            pred_norm=pred_norm,
-            gt_values=gt_values,
-            nx_pred=nx_pred,
-            ny_pred=ny_pred,
-            nx_gt=nx_gt,
-            ny_gt=ny_gt,
-            denormalize_param=denormalize_param,
-            param_names=param_names,
-        )
-
         for od in self.ods:
             tau_idx = int(np.argmin(np.abs(self.logtau - od)))
             od_eff = float(self.logtau[tau_idx])
@@ -441,9 +376,6 @@ class DiagnosticPlots:
                 self.plot_image_panel(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff)
                 self.plot_jointplot(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff, tau_idx=tau_idx)
 
-        if was_training:
-            model.train()
-
     @staticmethod
     def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
         if arr2d.shape == target_shape:
@@ -451,3 +383,215 @@ class DiagnosticPlots:
         t = torch.from_numpy(arr2d).float().unsqueeze(0).unsqueeze(0)
         out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
         return out.squeeze(0).squeeze(0).cpu().numpy()
+
+class ModestDiagnosticPlots:
+    def __init__(
+        self,
+        pipeline: AnalysisModelPipeline,
+        modest_output_dir: Path,
+        mhd_normalizer,
+        stokes_normalizer,
+        modest,
+        args,
+    ):
+        self.pipeline = pipeline
+        self.modest_output_dir = modest_output_dir
+        self.mhd_normalizer = mhd_normalizer
+        self.stokes_normalizer = stokes_normalizer
+        self.modest = modest
+        self.args = args
+
+        self.modest_data = None
+        self.modest_logtau = None
+        self.modest_mhd_data = None
+        self.modest_stokes_input = None
+        self.pred_nx = None
+        self.pred_ny = None
+        self.n_tau_eff = None
+        self.tau_indices = None
+
+    def _resolve_tau_indices(self, indices: list[int] | None, n_tau: int) -> list[int]:
+        if not indices:
+            return sorted(set([0, n_tau // 2, n_tau - 1]))
+        out = []
+        for idx in indices:
+            ridx = idx if idx >= 0 else n_tau + idx
+            if 0 <= ridx < n_tau:
+                out.append(ridx)
+        return sorted(set(out))
+
+    def prepare_snapshot(self, n_tau: int):
+        self.modest_data = self.modest.load_all(
+            region_bounds=tuple(self.args.crop_bounds) if self.args.cropped_region else None,
+            apply_mask=self.args.polarization_mask,
+        )
+        self.modest_logtau = list(
+            self.modest_data.get("tau_values", sorted(self.modest_data["spinor_atm"]["T"].keys()))
+        )
+        self.n_tau_eff = min(n_tau, len(self.modest_logtau))
+        self.modest_mhd_data = {
+            "T": np.stack(
+                [self.modest_data["spinor_atm"]["T"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
+            ).astype(np.float32),
+            "Vz": np.stack(
+                [self.modest_data["spinor_atm"]["Vlos"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
+            ).astype(np.float32),
+            "Bz": np.stack(
+                [self.modest_data["spinor_atm"]["Blos"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
+            ).astype(np.float32),
+        }
+        self.pred_nx, self.pred_ny = self.modest_data["smoothed_stokes"]["I"].shape[:2]
+        norm_stokes = self.stokes_normalizer.transform(self.modest_data["smoothed_stokes"])
+        I_flat = norm_stokes["I"].reshape(self.pred_nx * self.pred_ny, -1)
+        V_flat = norm_stokes["V"].reshape(self.pred_nx * self.pred_ny, -1)
+        self.modest_stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)
+        self.tau_indices = self._resolve_tau_indices(self.args.tau_indices, self.n_tau_eff)
+        print(f"\nMODEST optical depth nodes: {[float(v) for v in self.modest_logtau]}")
+
+    def _filter_matches(self, matches):
+        if not self.tau_indices:
+            return matches
+        allowed = set(self.tau_indices)
+        return [m for m in matches if m[1] in allowed]
+
+    def _plot_imshows(
+        self,
+        true_2d: np.ndarray,
+        pred_2d: np.ndarray,
+        title: str,
+        save_path: Path,
+        param: str,
+        transpose: bool = True,
+        transpose_pred: bool | None = None,
+    ):
+        gt = true_2d.T if transpose else true_2d
+        pred_do_transpose = transpose if transpose_pred is None else transpose_pred
+        pr = pred_2d.T if pred_do_transpose else pred_2d
+
+        param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
+        cmap = param_cmaps.get(param, "viridis")
+
+        vals = (
+            np.concatenate([gt[np.isfinite(gt)], pr[np.isfinite(pr)]])
+            if (np.isfinite(gt).any() and np.isfinite(pr).any())
+            else np.array([0.0, 1.0])
+        )
+        vmin, vmax = np.quantile(vals, [0.01, 0.99])
+        if np.nanmin(vals) < 0 < np.nanmax(vals):
+            vmax_abs = max(abs(vmin), abs(vmax))
+            vmin, vmax = -vmax_abs, vmax_abs
+
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+        im0 = axes[0].imshow(gt, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax)
+        axes[0].set_title(f"Ground truth ({gt.shape[0]}x{gt.shape[1]})")
+        plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+        im1 = axes[1].imshow(pr, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax)
+        axes[1].set_title(f"Prediction ({pr.shape[0]}x{pr.shape[1]})")
+        plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+        if gt.shape == pr.shape:
+            er = pr - gt
+            emax = np.quantile(np.abs(er[np.isfinite(er)]), 0.99) if np.isfinite(er).any() else 1.0
+            im2 = axes[2].imshow(er, origin="lower", cmap="RdBu_r", vmin=-emax, vmax=emax)
+            axes[2].set_title("Error (Pred-GT)")
+            plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+        else:
+            axes[2].text(
+                0.5, 0.5,
+                f"Error skipped\nshape mismatch\nGT={gt.shape}\nPred={pr.shape}",
+                ha="center", va="center", transform=axes[2].transAxes,
+            )
+            axes[2].set_axis_off()
+        fig.suptitle(title)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+
+    def _plot_jointplot(
+        self,
+        true_2d: np.ndarray,
+        pred_2d: np.ndarray,
+        title: str,
+        save_path: Path,
+        max_points: int = 50000,
+    ):
+        x = true_2d[np.isfinite(true_2d)].ravel()
+        y = pred_2d[np.isfinite(pred_2d)].ravel()
+        if x.size == 0 or y.size == 0:
+            return
+        n = min(max_points, x.size, y.size)
+        q = np.linspace(0.0, 1.0, n, endpoint=False) + 0.5 / n
+        xq = np.quantile(x, q)
+        yq = np.quantile(y, q)
+        lo = float(min(np.min(xq), np.min(yq)))
+        hi = float(max(np.max(xq), np.max(yq)))
+        g = sns.jointplot(x=xq, y=yq, kind="scatter", s=8, alpha=0.25, height=6)
+        g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
+        g.ax_joint.set_xlim(lo, hi)
+        g.ax_joint.set_ylim(lo, hi)
+        g.ax_joint.set_xlabel("Ground truth (quantiles)")
+        g.ax_joint.set_ylabel("Prediction (quantiles)")
+        g.fig.suptitle(title, y=1.02)
+        g.fig.tight_layout()
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        g.fig.savefig(save_path, dpi=200, bbox_inches="tight")
+        plt.close(g.fig)
+
+    def run(self, model_configs, models):
+        for name, model in models.items():
+            model_type = model_configs[name]["experiment_key"]
+            pred_tau = self.pipeline.get_model_logtau_values(model_configs[name])
+            if pred_tau is None:
+                print(f"[{model_type}] Predicted optical depth nodes: not found in experiment_results/config.")
+                continue
+            matches = self.pipeline.common_tau_matches([float(v) for v in self.modest_logtau], pred_tau)
+            matches = self._filter_matches(matches)
+            print(f"[{model_type}] Predicted optical depth nodes: {pred_tau}")
+            print(f"[{model_type}] Common optical depth values (MODEST ∩ predicted): {[m[0] for m in matches]}")
+            if not matches:
+                print(f"[{model_type}] No common optical depths. Skipping plots.")
+                continue
+            pred_mhd = self.pipeline.predict_and_denormalize(
+                model=model,
+                stokes_input=self.modest_stokes_input,
+                mhd_normalizer=self.mhd_normalizer,
+                pred_nx=self.pred_nx,
+                pred_ny=self.pred_ny,
+                batch_size=self.args.inference_batch_size,
+            )
+            out_root = self.modest_output_dir / model_type
+            surface_dir = out_root / "surface"
+            joint_dir = out_root / "jointplots"
+            surface_dir.mkdir(parents=True, exist_ok=True)
+            joint_dir.mkdir(parents=True, exist_ok=True)
+            saved_any = False
+            for param in ("T", "Vz", "Bz"):
+                pred_cube = pred_mhd[param]
+                true_cube = self.modest_mhd_data[param]
+                for tau_val, i_mod, i_pred in matches:
+                    if i_mod >= true_cube.shape[2] or i_pred >= pred_cube.shape[2]:
+                        print(f"[{model_type}] Skip {param} @ tau={tau_val}: index out of bounds (mod={i_mod}, pred={i_pred}).")
+                        continue
+                    true_map = true_cube[:, :, i_mod]
+                    pred_map = pred_cube[:, :, i_pred]
+                    self._plot_imshows(
+                        true_2d=true_map,
+                        pred_2d=pred_map,
+                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        save_path=surface_dir / f"{param}_tau_{tau_val:+.2f}_imshow.png",
+                        param=param,
+                        transpose=True,
+                        transpose_pred=not self.args.cropped_region,
+                    )
+                    self._plot_jointplot(
+                        true_2d=true_map,
+                        pred_2d=pred_map,
+                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        save_path=joint_dir / f"{param}_tau_{tau_val:+.2f}_jointplot.png",
+                    )
+                    saved_any = True
+            if saved_any:
+                print(f"[{model_type}] Surface images saved to: {surface_dir}")
+                print(f"[{model_type}] Jointplots saved to: {joint_dir}")
+            else:
+                print(f"[{model_type}] No images were saved.")
