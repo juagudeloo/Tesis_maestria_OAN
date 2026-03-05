@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# ANALYSIS CONFIGURATION
+# ==============================================================================
+
+# Shared model selection (space-separated list)
+# Options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
+MODEL_TYPES="no_physics wfa_only"
+
+# Runtime control
+RUN_TARGET="both"                       # both | muram | modest
+
+# MURaM analysis args
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+STEP_TO_PLOT="90"
+
+# MODEST analysis args
+CROPPED_REGION="0"                      # 1 => --cropped-region
+CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
+POLARIZATION_MASK="0"                   # 1 => --polarization-mask
+POLARIZATION_THRESHOLD="1e-2"
+CROP_LABEL="plage"
+
+usage() {
+  cat <<'EOF'
+Usage: tools/generate_analysis.sh [options]
+
+Options:
+  --run both|muram|modest   Select analyses to run (default: both)
+  --cropped-region 0|1      MODEST only: enable/disable cropped-region output (default: 0)
+  -h, --help                Show this help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --run)
+      RUN_TARGET="${2:-}"
+      shift 2
+      ;;
+    --cropped-region)
+      CROPPED_REGION="${2:-}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+case "${RUN_TARGET}" in
+  both|muram|modest) ;;
+  *)
+    echo "Invalid value for --run: ${RUN_TARGET} (use: both|muram|modest)" >&2
+    exit 1
+    ;;
+esac
+
+if [[ "${CROPPED_REGION}" != "0" && "${CROPPED_REGION}" != "1" ]]; then
+  echo "Invalid value for --cropped-region: ${CROPPED_REGION} (use: 0|1)" >&2
+  exit 1
+fi
+
+CROPPED_REGION_FLAG=""
+if [[ "${CROPPED_REGION}" == "1" ]]; then
+  CROPPED_REGION_FLAG="--cropped-region"
+fi
+
+POLARIZATION_MASK_FLAG=""
+if [[ "${POLARIZATION_MASK}" == "1" ]]; then
+  POLARIZATION_MASK_FLAG="--polarization-mask"
+fi
+
+# ==============================================================================
+# RUN ANALYSIS
+# ==============================================================================
+
+if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "muram" ]]; then
+  python3 ./scripts/analysis/muram_analysis.py \
+    --cache-dir "${CACHE_DIR}" \
+    --step-to-plot "${STEP_TO_PLOT}" \
+    --model-types ${MODEL_TYPES}
+fi
+
+if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
+  python3 ./scripts/analysis/modest_analysis.py \
+    ${CROPPED_REGION_FLAG} \
+    --crop-bounds "${CROP_BOUNDS[@]}" \
+    ${POLARIZATION_MASK_FLAG} \
+    --polarization-threshold "${POLARIZATION_THRESHOLD}" \
+    --model-types ${MODEL_TYPES} \
+    --crop-label "${CROP_LABEL}"
+fi

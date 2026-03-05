@@ -97,5 +97,18 @@ if __name__ == "__main__":
         default='plage',
         help='name of the cropped region subfolder (used only with --cropped-region), e.g. "plage"',
     )
+    parser.add_argument(
+        '--tau-indices',
+        nargs='*',
+        type=int,
+        default=None,
+        help='Tau indices to plot (default: 0, mid, last)'
+    )
+    parser.add_argument(
+        '--inference-batch-size',
+        type=int,
+        default=4096,
+        help='Batch size for MODEST inference (default: 4096)'
+    )
     args = parser.parse_args()
     main(args)
