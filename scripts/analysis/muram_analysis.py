@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 import numpy as np
-from utils.cache_manage import DataCache
+from utils.cache_manage import MuramDataCache
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.analysis import AnalysisModelPipeline, MuramDiagnosticPlots
 from scripts.base_training import TrainingConfig, load_and_prepare_step
@@ -26,7 +26,7 @@ def main(args):
     for _, cfg in model_configs.items():
         print(f"  - {cfg['label']} ({cfg['experiment_key']})")
 
-    cache = DataCache(cache_dir=args.cache_dir, compression='gzip')
+    cache = MuramDataCache(cache_dir=args.cache_dir, compression='gzip')
     print(f"Shared MURaM data cache: {args.cache_dir}")
     print("\nInitial Cache Status:")
     cache.print_cache_info()
@@ -84,7 +84,7 @@ if __name__ == "__main__":
     parser.add_argument('--cache-dir', '--cache_dir', type=str,
                        default=os.environ.get(
                            "MURAM_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
                        ))
     parser.add_argument('--step-to-plot', type=int, default=90, help="Monitoring step to generate diagnostics for the trained models.")
     parser.add_argument(

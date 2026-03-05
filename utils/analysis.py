@@ -392,6 +392,7 @@ class ModestDiagnosticPlots:
         mhd_normalizer,
         stokes_normalizer,
         modest,
+        modest_cache,
         args,
     ):
         self.pipeline = pipeline
@@ -399,6 +400,7 @@ class ModestDiagnosticPlots:
         self.mhd_normalizer = mhd_normalizer
         self.stokes_normalizer = stokes_normalizer
         self.modest = modest
+        self.modest_cache = modest_cache
         self.args = args
 
         self.modest_data = None
@@ -424,6 +426,8 @@ class ModestDiagnosticPlots:
         self.modest_data = self.modest.load_all(
             region_bounds=tuple(self.args.crop_bounds) if self.args.cropped_region else None,
             apply_mask=self.args.polarization_mask,
+            cache=self.modest_cache,
+            use_cache=not self.args.no_modest_cache,
         )
         self.modest_logtau = list(
             self.modest_data.get("tau_values", sorted(self.modest_data["spinor_atm"]["T"].keys()))

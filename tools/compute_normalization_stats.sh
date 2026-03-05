@@ -31,7 +31,7 @@ MAX_STEP=200
 SAVE_INTERVAL=20
 
 USE_CACHE=true
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
 
 # Resume (optional)

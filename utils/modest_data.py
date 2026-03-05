@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +9,8 @@ from matplotlib.colors import SymLogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.fft import fft2, fftshift, ifft2
 from scipy.ndimage import uniform_filter1d
+
+from utils.cache_manage import ModestDataCache
 
 
 class ModestData:
@@ -34,6 +36,7 @@ class ModestData:
 		# Data containers
 		self.continuum: Optional[np.ndarray] = None
 		self.obs_stokes: Optional[Dict[str, np.ndarray]] = None  # (ny, nx, nwl)
+		self.upsampled_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.deconvolved_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.smoothed_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.inverted_profs: Optional[Dict[str, np.ndarray]] = None
@@ -659,6 +662,9 @@ class ModestData:
 		self, 
 		region_bounds: Optional[Tuple[int, int, int, int]] = None, 
 		apply_mask: bool = True,
+		cache: ModestDataCache | None = None,
+		use_cache: bool = True,
+		upsampling_factor: int = 2,
 	) -> Dict[str, object]:
 		"""Load all MODEST data products with optional upsampling.
 
@@ -668,27 +674,33 @@ class ModestData:
 			(y_start, y_end, x_start, x_end) for spatial subset
 		apply_mask : bool
 			Whether to apply circular polarization mask
-		upsample : bool
-			Whether to upsample fast-mode observations (0.32" → 0.16")
+		cache : ModestDataCache, optional
+			If provided and use_cache=True, stores/loads uncropped processed MODEST snapshot
+		use_cache : bool
+			Enable cache usage when cache instance is provided
 		upsampling_factor : int
-			Spatial upsampling factor
+			Spatial upsampling factor used before deconvolution
 		"""
-		self.load_continuum()
-		self.load_obs_stokes()
-		self.compute_wavelength_arrays()
+		cache_config = {
+			"modest_dir": str(self.modest_dir.resolve()),
+			"psf_path": str(self.psf_path.resolve()),
+			"upsampling_factor": int(upsampling_factor),
+		}
 
-		print("Upsampling Stokes data for PSF compatibility...")
-		self.upsampled_stokes = self.upsample_stokes(upsampling_factor=2)
-		self.deconvolve_stokes(use_upsampled=True)
+		cache_hash = None
+		if use_cache and cache is not None:
+			cache_hash = cache.make_config_hash(cache_config)
+			if cache.exists(cache_hash):
+				payload = cache.load(cache_hash)
+				self._restore_snapshot(payload)
+			else:
+				# Cache must always store uncropped + unmasked products
+				self._compute_all_products(upsampling_factor=upsampling_factor)
+				cache.save(cache_hash, self._snapshot_payload(), config=cache_config)
+		else:
+			self._compute_all_products(upsampling_factor=upsampling_factor)
 
-		self.compute_circular_polarization()
-		self.find_sample_pixels()
-		self.smooth_stokes()
-
-		self.load_inverted_profs()
-		self.load_inverted_atmos()
-		self.build_spinor_atmosphere()
-
+		# Apply optional mask AFTER restoring/building the base cached snapshot
 		if apply_mask:
 			self.apply_mask_to_data()
 
@@ -702,6 +714,7 @@ class ModestData:
 		return {
 			"continuum": self.continuum,
 			"obs_stokes": self.obs_stokes,
+			"upsampled_stokes": self.upsampled_stokes,
 			"deconvolved_stokes": self.deconvolved_stokes,
 			"smoothed_stokes": self.smoothed_stokes,
 			"inverted_profs": self.inverted_profs,
@@ -714,3 +727,52 @@ class ModestData:
 			"sample_pixels": self.sample_pixels,
 			"tau_values": self.get_sorted_tau_values("T"),
 		}
+
+	def _compute_all_products(self, upsampling_factor: int) -> None:
+		self.load_continuum()
+		self.load_obs_stokes()
+		self.compute_wavelength_arrays()
+
+		print("Upsampling Stokes data for PSF compatibility...")
+		self.upsampled_stokes = self.upsample_stokes(upsampling_factor=upsampling_factor)
+		self.deconvolve_stokes(use_upsampled=True)
+
+		self.compute_circular_polarization()
+		self.find_sample_pixels()
+		self.smooth_stokes()
+
+		self.load_inverted_profs()
+		self.load_inverted_atmos()
+		self.build_spinor_atmosphere()
+
+	def _snapshot_payload(self) -> Dict[str, Any]:
+		return {
+			"continuum": self.continuum,
+			"obs_stokes": self.obs_stokes,
+			"upsampled_stokes": self.upsampled_stokes,
+			"deconvolved_stokes": self.deconvolved_stokes,
+			"smoothed_stokes": self.smoothed_stokes,
+			"inverted_profs": self.inverted_profs,
+			"inverted_atmos": self.inverted_atmos,
+			"spinor_atm": self.spinor_atm,
+			"wl": self.wl,
+			"wl_inv": self.wl_inv,
+			"circ_pol": self.circ_pol,
+			"mask": self.mask,
+			"sample_pixels": self.sample_pixels,
+		}
+
+	def _restore_snapshot(self, payload: Dict[str, Any]) -> None:
+		self.continuum = payload.get("continuum")
+		self.obs_stokes = payload.get("obs_stokes")
+		self.upsampled_stokes = payload.get("upsampled_stokes")
+		self.deconvolved_stokes = payload.get("deconvolved_stokes")
+		self.smoothed_stokes = payload.get("smoothed_stokes")
+		self.inverted_profs = payload.get("inverted_profs")
+		self.inverted_atmos = payload.get("inverted_atmos")
+		self.spinor_atm = payload.get("spinor_atm")
+		self.wl = payload.get("wl")
+		self.wl_inv = payload.get("wl_inv")
+		self.circ_pol = payload.get("circ_pol")
+		self.mask = payload.get("mask")
+		self.sample_pixels = payload.get("sample_pixels")

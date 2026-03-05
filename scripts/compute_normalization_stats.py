@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from utils.muram_data import MhdData, StokesData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
-from utils.cache_manage import DataCache
+from utils.cache_manage import MuramDataCache
 from scripts.base_training import TrainingConfig, load_and_prepare_step
 
 def compute_normalization_stats(
@@ -22,7 +22,7 @@ def compute_normalization_stats(
     logtau_max: float = 0.0,
     logtau_step: float = 0.1,
     use_cache: bool = True,
-    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
 ):
     """
     Compute normalization statistics for both MHD and Stokes data.
@@ -146,7 +146,7 @@ def compute_normalization_stats(
     # Initialize cache (optional)
     cache = None
     if use_cache:
-        cache = DataCache(cache_dir=cache_dir, compression='gzip')
+        cache = MuramDataCache(cache_dir=cache_dir, compression='gzip')
         # strict logtau compatibility check up-front
         cache.exists(step=min_step, config_hash=None, logtau_values=new_logtau)  # validation side-effect only
 
@@ -314,7 +314,7 @@ if __name__ == "__main__":
         type=str,
         default=os.environ.get(
             "MURAM_CACHE_DIR",
-            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
         ),
         help="Cache directory (or set MURAM_CACHE_DIR)"
     )

@@ -13,7 +13,7 @@ MODEL_TYPES="no_physics wfa_only"
 RUN_TARGET="both"                       # both | muram | modest
 
 # MURaM analysis args
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 STEP_TO_PLOT="90"
 
 # MODEST analysis args
@@ -22,6 +22,8 @@ CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
 POLARIZATION_MASK="0"                   # 1 => --polarization-mask
 POLARIZATION_THRESHOLD="1e-2"
 CROP_LABEL="plage"
+MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+CLEAR_MODEST_CACHE="0"                  # 1 => --clear-modest-cache
 
 usage() {
   cat <<'EOF'
@@ -30,6 +32,8 @@ Usage: tools/generate_analysis.sh [options]
 Options:
   --run both|muram|modest   Select analyses to run (default: both)
   --cropped-region 0|1      MODEST only: enable/disable cropped-region output (default: 0)
+  --modest-cache-dir PATH   MODEST cache directory
+  --clear-modest-cache 0|1  Clear MODEST cache before run (default: 0)
   -h, --help                Show this help
 EOF
 }
@@ -42,6 +46,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cropped-region)
       CROPPED_REGION="${2:-}"
+      shift 2
+      ;;
+    --modest-cache-dir)
+      MODEST_CACHE_DIR="${2:-}"
+      shift 2
+      ;;
+    --clear-modest-cache)
+      CLEAR_MODEST_CACHE="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -69,6 +81,11 @@ if [[ "${CROPPED_REGION}" != "0" && "${CROPPED_REGION}" != "1" ]]; then
   exit 1
 fi
 
+if [[ "${CLEAR_MODEST_CACHE}" != "0" && "${CLEAR_MODEST_CACHE}" != "1" ]]; then
+  echo "Invalid value for --clear-modest-cache: ${CLEAR_MODEST_CACHE} (use: 0|1)" >&2
+  exit 1
+fi
+
 CROPPED_REGION_FLAG=""
 if [[ "${CROPPED_REGION}" == "1" ]]; then
   CROPPED_REGION_FLAG="--cropped-region"
@@ -77,6 +94,11 @@ fi
 POLARIZATION_MASK_FLAG=""
 if [[ "${POLARIZATION_MASK}" == "1" ]]; then
   POLARIZATION_MASK_FLAG="--polarization-mask"
+fi
+
+CLEAR_MODEST_CACHE_FLAG=""
+if [[ "${CLEAR_MODEST_CACHE}" == "1" ]]; then
+  CLEAR_MODEST_CACHE_FLAG="--clear-modest-cache"
 fi
 
 # ==============================================================================
@@ -97,5 +119,7 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
     ${POLARIZATION_MASK_FLAG} \
     --polarization-threshold "${POLARIZATION_THRESHOLD}" \
     --model-types ${MODEL_TYPES} \
-    --crop-label "${CROP_LABEL}"
+    --crop-label "${CROP_LABEL}" \
+    --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    ${CLEAR_MODEST_CACHE_FLAG}
 fi

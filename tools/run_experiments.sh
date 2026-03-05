@@ -29,13 +29,13 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # ==============================================================================
 
 # Data range
-MIN_STEP=80
+MIN_STEP=112
 MAX_STEP=113
 STEP_SIZE=1
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=30
+N_EPOCHS=5
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
@@ -57,8 +57,13 @@ TEMP_MODE='single_height'       # 'tau_averaged' or 'single_height'
 TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = photosphere)
 
 # Shared cache (same path used by normalization script)
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
+
+# MODEST epoch diagnostics (ablation study)
+ENABLE_MODEST_EPOCH_PLOTS=1
+MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+MODEST_CROP_BOUNDS=(0 100 400 600)   # default plage crop from scripts/analysis/modest_analysis.py
 
 # Experiments to run
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
@@ -91,5 +96,8 @@ python3 ./scripts/experiments/ablation_study.py \
     --temp_target_logtau "${TEMP_TARGET_LOGTAU}" \
     --logtau_values "${LOGTAU_VALUES[@]}" \
     --experiments ${EXPERIMENTS} \
+    --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    --modest-crop-bounds "${MODEST_CROP_BOUNDS[@]}" \
+    $( [[ "${ENABLE_MODEST_EPOCH_PLOTS}" == "1" ]] && echo "--modest-epoch-plots" ) \
     --no_scheduler
 

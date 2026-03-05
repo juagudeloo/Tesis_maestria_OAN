@@ -31,7 +31,7 @@ from utils.muram_data import MuramStepDataset
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 
 
-class DataCache:
+class MuramDataCache:
     """
     Cache manager for processed MURaM data using HDF5 format.
     
@@ -48,7 +48,7 @@ class DataCache:
     - Progress reporting
     """
     
-    def __init__(self, cache_dir: str = ".data_cache", compression: str = "gzip"):
+    def __init__(self, cache_dir: str = ".muram_cache", compression: str = "gzip"):
         """
         Initialize cache manager.
         
@@ -100,7 +100,7 @@ class DataCache:
     @staticmethod
     def make_config_hash(config_dict: dict) -> str:
         """Public helper for shared cache hashing across scripts."""
-        return DataCache._config_hash(config_dict)
+        return MuramDataCache._config_hash(config_dict)
     
     def _get_cache_path(self, step: int) -> Path:
         """Get cache file path for a step."""
@@ -460,3 +460,224 @@ class DataCache:
                       f"{meta['ntau']:>6} {meta['file_size_mb']:>12.1f} {meta['config_hash']:<10}")
         
         print("=" * 80 + "\n")
+
+
+class ModestDataCache:
+    """Cache manager for processed MODEST snapshots (pre-cropping)."""
+
+    def __init__(self, cache_dir: str = ".modest_cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.metadata_file = self.cache_dir / "metadata.json"
+        self.metadata = self._load_metadata()
+
+    def _load_metadata(self) -> dict[str, dict]:
+        if self.metadata_file.exists():
+            with open(self.metadata_file, 'r') as f:
+                return json.load(f)
+        return {}
+
+    def _save_metadata(self):
+        with open(self.metadata_file, 'w') as f:
+            json.dump(self.metadata, f, indent=2)
+
+    @staticmethod
+    def _config_hash(config_dict: dict) -> str:
+        payload = json.dumps(config_dict, sort_keys=True)
+        return hashlib.md5(payload.encode()).hexdigest()[:12]
+
+    @staticmethod
+    def make_config_hash(config_dict: dict) -> str:
+        return ModestDataCache._config_hash(config_dict)
+
+    def _cache_path(self, config_hash: str) -> Path:
+        return self.cache_dir / f"modest_{config_hash}.h5"
+
+    def exists(self, config_hash: str) -> bool:
+        return self._cache_path(config_hash).exists()
+
+    def save(self, config_hash: str, payload: dict, config: dict | None = None, verbose: bool = True) -> Path:
+        cache_path = self._cache_path(config_hash)
+        self._save_hdf5(cache_path, payload)
+
+        self.metadata[config_hash] = {
+            'file': cache_path.name,
+            'file_size_mb': cache_path.stat().st_size / (1024**2),
+            'config': config or {},
+            'backend': 'hdf5',
+        }
+        self._save_metadata()
+
+        if verbose:
+            print(f"  ✓ Cached MODEST snapshot ({cache_path.name}, {self.metadata[config_hash]['file_size_mb']:.1f} MB)")
+
+        return cache_path
+
+    def load(self, config_hash: str, verbose: bool = True) -> dict:
+        cache_path = self._cache_path(config_hash)
+        if not cache_path.exists():
+            raise FileNotFoundError(f"MODEST cache not found: {cache_path}")
+
+        payload = self._load_hdf5(cache_path)
+
+        if verbose:
+            print(f"  ✓ Loaded MODEST cache {cache_path.name}")
+
+        return payload
+
+    def clear(self, config_hash: str | None = None, confirm: bool = True) -> None:
+        if config_hash is not None:
+            cache_path = self._cache_path(config_hash)
+            if not cache_path.exists():
+                print(f"MODEST cache file not found: {cache_path}")
+                return
+
+            if confirm:
+                response = input(f"Delete MODEST cache {cache_path.name}? (y/n): ")
+                if response.lower() != 'y':
+                    return
+
+            cache_path.unlink()
+            self.metadata.pop(config_hash, None)
+            self._save_metadata()
+            print(f"  ✓ Deleted MODEST cache {cache_path.name}")
+            return
+
+        if confirm:
+            response = input(f"Delete all MODEST cache files in {self.cache_dir}? (y/n): ")
+            if response.lower() != 'y':
+                return
+
+        for cache_file in self.cache_dir.glob("modest_*.h5"):
+            cache_file.unlink()
+        self.metadata = {}
+        self._save_metadata()
+        print("  ✓ Cleared all MODEST cache files")
+
+    def get_cache_stats(self) -> dict[str, any]:
+        cache_files = list(self.cache_dir.glob("modest_*.h5"))
+        total_size_mb = sum(f.stat().st_size for f in cache_files) / (1024**2)
+        return {
+            'cache_dir': str(self.cache_dir),
+            'entries': len(cache_files),
+            'total_size_mb': total_size_mb,
+            'hashes': sorted(self.metadata.keys()),
+            'backend': 'hdf5',
+        }
+
+    def print_cache_info(self):
+        stats = self.get_cache_stats()
+        print("\n" + "=" * 80)
+        print("MODEST CACHE STATISTICS".center(80))
+        print("=" * 80)
+        print(f"Cache directory:      {stats['cache_dir']}")
+        print(f"Backend:              {stats['backend']}")
+        print(f"Entries cached:       {stats['entries']}")
+        print(f"Total size:           {stats['total_size_mb']:.1f} MB")
+        print("=" * 80 + "\n")
+
+    @staticmethod
+    def _array_like(value):
+        if value is None:
+            return None
+        if hasattr(value, 'value'):
+            return np.asarray(value.value)
+        return np.asarray(value)
+
+    def _save_hdf5(self, cache_path: Path, payload: dict) -> None:
+        with h5py.File(cache_path, 'w') as f:
+            f.attrs['backend'] = 'hdf5'
+
+            def _save_stokes_dict(name: str, data: dict | None):
+                if data is None:
+                    return
+                grp = f.create_group(name)
+                for key, arr in data.items():
+                    grp.create_dataset(key, data=np.asarray(arr), compression='lzf')
+
+            arr = self._array_like(payload.get('continuum'))
+            if arr is not None:
+                f.create_dataset('continuum', data=arr, compression='lzf')
+
+            _save_stokes_dict('obs_stokes', payload.get('obs_stokes'))
+            _save_stokes_dict('upsampled_stokes', payload.get('upsampled_stokes'))
+            _save_stokes_dict('deconvolved_stokes', payload.get('deconvolved_stokes'))
+            _save_stokes_dict('smoothed_stokes', payload.get('smoothed_stokes'))
+            _save_stokes_dict('inverted_profs', payload.get('inverted_profs'))
+
+            arr = self._array_like(payload.get('inverted_atmos'))
+            if arr is not None:
+                f.create_dataset('inverted_atmos', data=arr, compression='lzf')
+
+            spinor = payload.get('spinor_atm')
+            if spinor is not None:
+                spin_grp = f.create_group('spinor_atm')
+                for param, tau_dict in spinor.items():
+                    param_grp = spin_grp.create_group(param)
+                    tau_values = [float(tau) for tau in sorted(tau_dict.keys())]
+                    param_grp.attrs['tau_values'] = np.asarray(tau_values, dtype=np.float32)
+                    for idx, tau in enumerate(tau_values):
+                        param_grp.create_dataset(f"{idx:03d}", data=np.asarray(tau_dict[tau]), compression='lzf')
+
+            arr = self._array_like(payload.get('wl'))
+            if arr is not None:
+                f.create_dataset('wl', data=arr)
+            arr = self._array_like(payload.get('wl_inv'))
+            if arr is not None:
+                f.create_dataset('wl_inv', data=arr)
+
+            arr = self._array_like(payload.get('circ_pol'))
+            if arr is not None:
+                f.create_dataset('circ_pol', data=arr, compression='lzf')
+
+            arr = self._array_like(payload.get('mask'))
+            if arr is not None:
+                f.create_dataset('mask', data=np.asarray(arr, dtype=np.uint8), compression='lzf')
+
+            sample_pixels = payload.get('sample_pixels')
+            if sample_pixels is not None:
+                f.attrs['sample_pixels_json'] = json.dumps(sample_pixels)
+
+    def _load_hdf5(self, cache_path: Path) -> dict:
+        payload: dict = {}
+        with h5py.File(cache_path, 'r') as f:
+            def _load_stokes_dict(name: str):
+                if name not in f:
+                    return None
+                grp = f[name]
+                return {key: grp[key][:] for key in grp.keys()}
+
+            payload['continuum'] = f['continuum'][:] if 'continuum' in f else None
+            payload['obs_stokes'] = _load_stokes_dict('obs_stokes')
+            payload['upsampled_stokes'] = _load_stokes_dict('upsampled_stokes')
+            payload['deconvolved_stokes'] = _load_stokes_dict('deconvolved_stokes')
+            payload['smoothed_stokes'] = _load_stokes_dict('smoothed_stokes')
+            payload['inverted_profs'] = _load_stokes_dict('inverted_profs')
+            payload['inverted_atmos'] = f['inverted_atmos'][:] if 'inverted_atmos' in f else None
+
+            spinor = None
+            if 'spinor_atm' in f:
+                spinor = {}
+                spin_grp = f['spinor_atm']
+                for param in spin_grp.keys():
+                    param_grp = spin_grp[param]
+                    tau_values = [float(t) for t in param_grp.attrs.get('tau_values', [])]
+                    tau_dict = {}
+                    for idx, tau in enumerate(tau_values):
+                        tau_dict[tau] = param_grp[f"{idx:03d}"][:]
+                    spinor[param] = tau_dict
+            payload['spinor_atm'] = spinor
+
+            payload['wl'] = f['wl'][:] if 'wl' in f else None
+            payload['wl_inv'] = f['wl_inv'][:] if 'wl_inv' in f else None
+            payload['circ_pol'] = f['circ_pol'][:] if 'circ_pol' in f else None
+            payload['mask'] = (f['mask'][:] > 0) if 'mask' in f else None
+
+            sample_pixels_json = f.attrs.get('sample_pixels_json', None)
+            payload['sample_pixels'] = json.loads(sample_pixels_json) if sample_pixels_json is not None else None
+
+        return payload
+
+
+# Backward-compatible alias; prefer MuramDataCache in new code
+DataCache = MuramDataCache

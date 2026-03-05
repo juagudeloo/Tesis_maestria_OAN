@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from utils.modest_data import ModestData
+from utils.cache_manage import ModestDataCache
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.analysis import AnalysisModelPipeline, ModestDiagnosticPlots
 from scripts.base_training import TrainingConfig
@@ -43,8 +44,13 @@ def main(args):
     stokes_normalizer.load(filepath=default_cfg.data_path / default_cfg.stokes_normalizer_path)
 
     modest = ModestData(
-        circular_polarization_threshold=args.polarization_threshold if args.polarization_mask else None
+        circular_polarization_threshold=args.polarization_threshold
     )
+    modest_cache = ModestDataCache(cache_dir=args.modest_cache_dir)
+    print(f"MODEST cache directory: {args.modest_cache_dir}")
+    if args.clear_modest_cache:
+        modest_cache.clear(confirm=False)
+    modest_cache.print_cache_info()
 
     diagnostics = ModestDiagnosticPlots(
         pipeline=pipeline,
@@ -52,6 +58,7 @@ def main(args):
         mhd_normalizer=mhd_normalizer,
         stokes_normalizer=stokes_normalizer,
         modest=modest,
+        modest_cache=modest_cache,
         args=args,
     )
     diagnostics.prepare_snapshot(n_tau=n_tau)
@@ -109,6 +116,28 @@ if __name__ == "__main__":
         type=int,
         default=4096,
         help='Batch size for MODEST inference (default: 4096)'
+    )
+    parser.add_argument(
+        '--modest-cache-dir', '--modest_cache_dir',
+        dest='modest_cache_dir',
+        type=str,
+        default=os.environ.get(
+            "MODEST_CACHE_DIR",
+            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+        ),
+        help='MODEST cache directory (or set MODEST_CACHE_DIR)'
+    )
+    parser.add_argument(
+        '--no-modest-cache', '--no_modest_cache',
+        dest='no_modest_cache',
+        action='store_true',
+        help='Disable MODEST cache usage'
+    )
+    parser.add_argument(
+        '--clear-modest-cache', '--clear_modest_cache',
+        dest='clear_modest_cache',
+        action='store_true',
+        help='Clear MODEST cache before running analysis'
     )
     args = parser.parse_args()
     main(args)

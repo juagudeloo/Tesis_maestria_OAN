@@ -34,11 +34,13 @@ sys.path.insert(0, str(ROOT))
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.grad_norm import GradNormScheduler
-from utils.cache_manage import DataCache
+from utils.cache_manage import MuramDataCache
 from scripts.base_training import (
     TrainingConfig,
     load_and_prepare_step, validate, train_epoch, MetricsLogger,
-    generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos
+    generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos,
+    prepare_modest_epoch_snapshot, generate_epoch_modest_diagnostic_plots,
+    generate_epoch_modest_diagnostic_videos,
 )
 
 
@@ -401,7 +403,7 @@ def compute_tau_averaged_metrics(
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
     logtau_values: np.ndarray,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> dict[str, float]:
     """Evaluate model on test steps using tau-averaged physics metrics."""
     from scipy.stats import pearsonr
@@ -543,7 +545,7 @@ def run_single_experiment(
     min_step: int = 60,
     max_step: int = 200,
     step_size: int = 1,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> dict:
     """Run a single training experiment."""
     print("\n" + "=" * 100)
@@ -705,6 +707,22 @@ def run_single_experiment(
     
     # Initialize logger
     logger = MetricsLogger(config.log_dir)
+    monitor_step_for_epoch_plots = (
+        config.epoch_plot_step if config.epoch_plot_step is not None else val_steps[0]
+    )
+
+    modest_snapshot = None
+    if config.enable_modest_epoch_plots:
+        print("\nPreparing MODEST snapshot for per-epoch diagnostics...")
+        try:
+            modest_snapshot = prepare_modest_epoch_snapshot(
+                config=config,
+                stokes_normalizer=stokes_normalizer,
+            )
+            print("  ✓ MODEST snapshot prepared")
+        except Exception as e:
+            print(f"  ⚠ Failed to prepare MODEST snapshot diagnostics: {e}")
+            modest_snapshot = None
 
     # Training loop
     start_time = time.time()
@@ -762,9 +780,6 @@ def run_single_experiment(
             )
 
             if config.enable_epoch_plots:
-                monitor_step_for_epoch_plots = (
-                    config.epoch_plot_step if config.epoch_plot_step is not None else val_steps[0]
-                )
                 generate_epoch_diagnostic_plots(
                     model=model,
                     epoch=epoch,
@@ -773,6 +788,15 @@ def run_single_experiment(
                     mhd_normalizer=mhd_normalizer,
                     stokes_normalizer=stokes_normalizer,
                     cache=cache,
+                )
+
+            if config.enable_modest_epoch_plots and modest_snapshot is not None:
+                generate_epoch_modest_diagnostic_plots(
+                    model=model,
+                    epoch=epoch,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    modest_snapshot=modest_snapshot,
                 )
 
             val_loss_history.append(avg_val_loss)
@@ -811,6 +835,10 @@ def run_single_experiment(
             config=config,
             step=monitor_step_for_epoch_plots,
         )
+
+    if config.enable_modest_epoch_plots and config.enable_epoch_videos:
+        print("\nBuilding MODEST epoch diagnostic videos...")
+        generate_epoch_modest_diagnostic_videos(config=config)
 
     print("\nEvaluating on test set...")
     test_metrics = compute_tau_averaged_metrics(
@@ -942,7 +970,7 @@ def main():
     # Cache-related arguments
     default_cache_dir = os.environ.get(
         'MURAM_CACHE_DIR',
-        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache'
+        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache'
     )
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
@@ -982,8 +1010,42 @@ def main():
                        dest='epoch_plot_scatter_samples', type=int, default=5000,
                        help='Max sampled points per scatter plot')
 
+    # MODEST epoch diagnostics
+    parser.add_argument('--modest-epoch-plots', '--modest_epoch_plots', dest='modest_epoch_plots', action='store_true',
+                       help='Enable per-epoch diagnostics on MODEST snapshot')
+    parser.add_argument('--modest-cache-dir', '--modest_cache_dir', dest='modest_cache_dir', type=str,
+                       default=os.environ.get(
+                           "MODEST_CACHE_DIR",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+                       ),
+                       help='MODEST cache directory (or set MODEST_CACHE_DIR)')
+    parser.add_argument('--no-modest-cache', '--no_modest_cache', dest='no_modest_cache', action='store_true',
+                       help='Disable MODEST cache usage for per-epoch diagnostics')
+    parser.add_argument('--clear-modest-cache', '--clear_modest_cache', dest='clear_modest_cache', action='store_true',
+                       help='Clear MODEST cache before preparing per-epoch snapshot')
+    parser.add_argument('--modest-polarization-mask', '--modest_polarization_mask', dest='modest_polarization_mask',
+                       action='store_true',
+                       help='Apply circular polarization mask to MODEST snapshot for diagnostics')
+    parser.add_argument('--modest-polarization-threshold', '--modest_polarization_threshold',
+                       dest='modest_polarization_threshold', type=float, default=1e-2,
+                       help='Circular polarization threshold for MODEST mask')
+    parser.add_argument('--modest-crop-bounds', '--modest_crop_bounds', dest='modest_crop_bounds',
+                       nargs=4, type=int, default=None,
+                       metavar=('Y_MIN', 'Y_MAX', 'X_MIN', 'X_MAX'),
+                       help='Crop bounds for MODEST snapshot diagnostics')
+    parser.add_argument('--modest-epoch-plot-ods', '--modest_epoch_plot_ods', dest='modest_epoch_plot_ods',
+                       type=float, nargs='+', default=None,
+                       help='Optical-depth values for MODEST epoch diagnostics')
+    parser.add_argument('--modest-epoch-plot-params', '--modest_epoch_plot_params', dest='modest_epoch_plot_params',
+                       type=str, nargs='+', choices=['T', 'Vz', 'Bz'], default=None,
+                       help='Parameters for MODEST epoch diagnostics')
+    parser.add_argument('--modest-epoch-plot-scatter-samples', '--modest_epoch_plot_scatter_samples',
+                       dest='modest_epoch_plot_scatter_samples', type=int, default=None,
+                       help='Max sampled points per MODEST scatter plot')
+
     args = parser.parse_args()
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
+    args.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
     
     # Base configuration
     data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
@@ -1032,6 +1094,16 @@ def main():
         epoch_plot_scatter_samples=args.epoch_plot_scatter_samples,
         enable_epoch_videos=not args.no_epoch_videos,
         epoch_plot_video_fps=args.epoch_plot_video_fps,
+        enable_modest_epoch_plots=args.modest_epoch_plots,
+        modest_cache_dir=args.modest_cache_dir,
+        no_modest_cache=args.no_modest_cache,
+        clear_modest_cache=args.clear_modest_cache,
+        modest_polarization_mask=args.modest_polarization_mask,
+        modest_polarization_threshold=args.modest_polarization_threshold,
+        modest_crop_bounds=args.modest_crop_bounds,
+        modest_epoch_plot_ods=args.modest_epoch_plot_ods,
+        modest_epoch_plot_params=args.modest_epoch_plot_params,
+        modest_epoch_plot_scatter_samples=args.modest_epoch_plot_scatter_samples,
     )
 
     all_experiment_configs = {
@@ -1189,7 +1261,7 @@ def main():
     # Initialize shared cache for all experiments
     cache = None
     if not args.no_cache:
-        cache = DataCache(cache_dir=args.cache_dir, compression='gzip')
+        cache = MuramDataCache(cache_dir=args.cache_dir, compression='gzip')
         print(f"Shared MURaM data cache: {args.cache_dir}")
         print("\nInitial Cache Status:")
         cache.print_cache_info()

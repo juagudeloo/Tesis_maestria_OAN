@@ -36,8 +36,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from utils.muram_data import MhdData, StokesData, MuramStepDataset
+from utils.modest_data import ModestData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
-from utils.cache_manage import DataCache
+from utils.cache_manage import MuramDataCache, ModestDataCache
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.physics_utils import ApproxInversions
 
@@ -127,7 +128,7 @@ class TrainingConfig:
     
     # New: Caching parameters
     use_cache: bool = True
-    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
     
     # Epoch diagnostics (image + scatter evolution)
     enable_epoch_plots: bool = True
@@ -138,6 +139,18 @@ class TrainingConfig:
     enable_epoch_videos: bool = True
     epoch_plot_video_fps: int = 4
 
+    # MODEST snapshot diagnostics per epoch
+    enable_modest_epoch_plots: bool = False
+    modest_cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+    no_modest_cache: bool = False
+    clear_modest_cache: bool = False
+    modest_polarization_mask: bool = False
+    modest_polarization_threshold: float = 1e-2
+    modest_crop_bounds: list[int] | tuple[int, int, int, int] | None = None
+    modest_epoch_plot_ods: list[float] | None = None
+    modest_epoch_plot_params: list[str] | None = None
+    modest_epoch_plot_scatter_samples: int | None = None
+
     def __post_init__(self):
         if self.scales is None:
             self.scales = [1, 2, 3]
@@ -146,10 +159,20 @@ class TrainingConfig:
         if self.logtau_values is not None and len(self.logtau_values) == 0:
             self.logtau_values = None
         # Normalize cache dir (allow shared override via env)
-        default_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache"
+        default_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
         if (not self.cache_dir or self.cache_dir == default_cache) and os.environ.get("MURAM_CACHE_DIR"):
             self.cache_dir = os.environ["MURAM_CACHE_DIR"]
         self.cache_dir = str(Path(self.cache_dir).expanduser().resolve())
+
+        default_modest_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+        if (not self.modest_cache_dir or self.modest_cache_dir == default_modest_cache) and os.environ.get("MODEST_CACHE_DIR"):
+            self.modest_cache_dir = os.environ["MODEST_CACHE_DIR"]
+        self.modest_cache_dir = str(Path(self.modest_cache_dir).expanduser().resolve())
+
+        if self.modest_crop_bounds is not None:
+            if len(self.modest_crop_bounds) != 4:
+                raise ValueError("modest_crop_bounds must contain exactly 4 integers: [y_start, y_end, x_start, x_end]")
+            self.modest_crop_bounds = tuple(int(v) for v in self.modest_crop_bounds)
 
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
@@ -287,7 +310,7 @@ def load_and_prepare_step(
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> tuple[MuramStepDataset, dict[str, np.ndarray]]:
     """
     Load and prepare a single simulation step for training.
@@ -304,7 +327,7 @@ def load_and_prepare_step(
         MHD data normalizer
     stokes_normalizer : StokesNormalizer
         Stokes data normalizer
-    cache : DataCache, optional
+    cache : MuramDataCache, optional
         Cache manager for loading/saving processed data
     
     Returns
@@ -316,7 +339,7 @@ def load_and_prepare_step(
     """
     # Compute configuration hash for cache validation
     config_for_hash = build_cache_config_signature(config)
-    config_hash = DataCache.make_config_hash(config_for_hash) if cache else None
+    config_hash = MuramDataCache.make_config_hash(config_for_hash) if cache else None
     new_logtau = config.get_logtau_values()
 
     # Try to load from cache (strict first, then relaxed hash fallback)
@@ -614,7 +637,7 @@ def validate(
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> float:
     """
     Validate on a subset of steps.
@@ -631,7 +654,7 @@ def validate(
         MHD normalizer
     stokes_normalizer : StokesNormalizer
         Stokes normalizer
-    cache : DataCache, optional
+    cache : MuramDataCache, optional
         Cache manager for data loading
     
     Returns
@@ -774,7 +797,7 @@ def train_epoch(
     logger: MetricsLogger | None = None,
     n_steps_per_epoch: int = -1,
     gradnorm_scheduler: GradNormScheduler | None = None,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
@@ -801,7 +824,7 @@ def train_epoch(
         Maximum number of steps to use per epoch (-1 for all steps)
     gradnorm_scheduler : Optional[GradNormScheduler]
         GradNorm scheduler
-    cache : DataCache, optional
+    cache : MuramDataCache, optional
         Cache manager for data loading
     
     Returns
@@ -901,7 +924,7 @@ def generate_epoch_diagnostic_plots(
     config: TrainingConfig,
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
-    cache: DataCache | None = None,
+    cache: MuramDataCache | None = None,
 ) -> None:
     """
     Save per-epoch image + jointplot diagnostics for one monitoring step.
@@ -1063,6 +1086,227 @@ def generate_epoch_diagnostic_plots(
     if was_training:
         model.train()
 
+def prepare_modest_epoch_snapshot(
+    config: TrainingConfig,
+    stokes_normalizer: StokesNormalizer,
+) -> dict[str, object]:
+    """Load and normalize one MODEST snapshot for repeated per-epoch diagnostics."""
+    modest = ModestData(circular_polarization_threshold=config.modest_polarization_threshold)
+    modest_cache = ModestDataCache(cache_dir=config.modest_cache_dir)
+
+    print(f"MODEST cache directory: {config.modest_cache_dir}")
+    if config.clear_modest_cache and not config.no_modest_cache:
+        modest_cache.clear(confirm=False)
+    modest_cache.print_cache_info()
+
+    region_bounds = tuple(config.modest_crop_bounds) if config.modest_crop_bounds is not None else None
+    modest_data = modest.load_all(
+        region_bounds=region_bounds,
+        apply_mask=config.modest_polarization_mask,
+        cache=modest_cache,
+        use_cache=not config.no_modest_cache,
+    )
+
+    modest_logtau = list(
+        modest_data.get("tau_values", sorted(modest_data["spinor_atm"]["T"].keys()))
+    )
+
+    gt_den = {
+        "T": np.stack([modest_data["spinor_atm"]["T"][t] for t in modest_logtau], axis=-1).astype(np.float32),
+        "Vz": np.stack([modest_data["spinor_atm"]["Vlos"][t] for t in modest_logtau], axis=-1).astype(np.float32),
+        "Bz": np.stack([modest_data["spinor_atm"]["Blos"][t] for t in modest_logtau], axis=-1).astype(np.float32),
+    }
+
+    pred_nx, pred_ny = modest_data["smoothed_stokes"]["I"].shape[:2]
+    norm_stokes = stokes_normalizer.transform(modest_data["smoothed_stokes"])
+    I_flat = norm_stokes["I"].reshape(pred_nx * pred_ny, -1)
+    V_flat = norm_stokes["V"].reshape(pred_nx * pred_ny, -1)
+    stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)
+
+    return {
+        "stokes_input": stokes_input,
+        "pred_nx": int(pred_nx),
+        "pred_ny": int(pred_ny),
+        "modest_logtau": np.asarray(modest_logtau, dtype=np.float32),
+        "gt_den": gt_den,
+    }
+
+def generate_epoch_modest_diagnostic_plots(
+    model: PhysicsInformedMSCNN,
+    epoch: int,
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    modest_snapshot: dict[str, object],
+) -> None:
+    """Save per-epoch image + jointplot diagnostics for one MODEST snapshot."""
+    pred_logtau = config.get_logtau_values()
+    modest_logtau = np.asarray(modest_snapshot["modest_logtau"], dtype=np.float32)
+
+    # Match optical-depth nodes common to both grids
+    common_matches: list[tuple[float, int, int]] = []
+    for i_mod, tau_mod in enumerate(modest_logtau):
+        pred_idx = np.where(np.isclose(pred_logtau, float(tau_mod), atol=1e-6, rtol=0.0))[0]
+        if pred_idx.size > 0:
+            common_matches.append((float(tau_mod), i_mod, int(pred_idx[0])))
+
+    if not common_matches:
+        warnings.warn("No common optical-depth nodes between MODEST and model grid; skipping MODEST epoch diagnostics.")
+        return
+
+    requested_ods = (
+        config.modest_epoch_plot_ods
+        if config.modest_epoch_plot_ods is not None
+        else (config.epoch_plot_ods if config.epoch_plot_ods is not None else [m[0] for m in common_matches])
+    )
+    params = (
+        config.modest_epoch_plot_params
+        if config.modest_epoch_plot_params is not None
+        else (config.epoch_plot_params if config.epoch_plot_params is not None else ["T", "Vz", "Bz"])
+    )
+    n_sample = int(
+        config.modest_epoch_plot_scatter_samples
+        if config.modest_epoch_plot_scatter_samples is not None
+        else config.epoch_plot_scatter_samples
+    )
+
+    selected_matches: list[tuple[float, int, int]] = []
+    for od in requested_ods:
+        best = min(common_matches, key=lambda x: abs(x[0] - float(od)))
+        if best not in selected_matches:
+            selected_matches.append(best)
+
+    param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
+    error_cmap = "RdBu_r"
+
+    out_dir = config.log_dir / "epoch_diagnostics_modest" / f"epoch_{epoch+1:03d}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    was_training = model.training
+    model.eval()
+
+    stokes_input = np.asarray(modest_snapshot["stokes_input"], dtype=np.float32)
+    pred_nx = int(modest_snapshot["pred_nx"])
+    pred_ny = int(modest_snapshot["pred_ny"])
+    gt_den = modest_snapshot["gt_den"]
+
+    n_pixels = stokes_input.shape[0]
+    all_pred = []
+    with torch.no_grad():
+        for i in range(0, n_pixels, config.batch_size):
+            x = torch.from_numpy(stokes_input[i:i + config.batch_size]).float().to(config.device)
+            y = model(x).detach().cpu().numpy()
+            all_pred.append(y)
+
+    pred_norm = np.concatenate(all_pred, axis=0)
+    n_tau_pred = int(len(pred_logtau))
+    pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau_pred, 3)
+
+    pred_den = {
+        "T": mhd_normalizer.denormalize(pred_reshaped[:, :, 0], param="T").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Vz": mhd_normalizer.denormalize(pred_reshaped[:, :, 1], param="Vz").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Bz": mhd_normalizer.denormalize(pred_reshaped[:, :, 2], param="Bz").reshape(pred_nx, pred_ny, n_tau_pred),
+    }
+
+    for tau_val, tau_idx_mod, tau_idx_pred in selected_matches:
+        for p in params:
+            true_map = np.asarray(gt_den[p][:, :, tau_idx_mod], dtype=np.float32)
+            pred_map = np.asarray(pred_den[p][:, :, tau_idx_pred], dtype=np.float32)
+
+            vals = (
+                np.concatenate([true_map[np.isfinite(true_map)], pred_map[np.isfinite(pred_map)]])
+                if (np.isfinite(true_map).any() and np.isfinite(pred_map).any())
+                else np.array([0.0, 1.0])
+            )
+            if p in ("Vz", "Bz"):
+                vmax = np.quantile(np.abs(vals), 0.99)
+                vmin = -vmax
+            else:
+                vmin, vmax = np.quantile(vals, [0.01, 0.99])
+            param_cmap = param_cmaps.get(p, "viridis")
+
+            fig, ax = plt.subplots(1, 3, figsize=(14, 4))
+            im0 = ax[0].imshow(true_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+            ax[0].set_title(f"GT {p}")
+            ax[0].axis("off")
+            plt.colorbar(im0, ax=ax[0], fraction=0.046, pad=0.04)
+
+            im1 = ax[1].imshow(pred_map.T, origin="lower", cmap=param_cmap, vmin=vmin, vmax=vmax)
+            ax[1].set_title(f"Pred {p}")
+            ax[1].axis("off")
+            plt.colorbar(im1, ax=ax[1], fraction=0.046, pad=0.04)
+
+            if true_map.shape == pred_map.shape:
+                err_map = pred_map - true_map
+                emax = np.quantile(np.abs(err_map[np.isfinite(err_map)]), 0.99) if np.isfinite(err_map).any() else 1.0
+                im2 = ax[2].imshow(err_map.T, origin="lower", cmap=error_cmap, vmin=-emax, vmax=emax)
+                ax[2].set_title(f"Error {p}")
+                ax[2].axis("off")
+                plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
+            else:
+                ax[2].text(
+                    0.5,
+                    0.5,
+                    f"Error skipped\nshape mismatch\nGT={true_map.shape}\nPred={pred_map.shape}",
+                    ha="center",
+                    va="center",
+                    transform=ax[2].transAxes,
+                )
+                ax[2].set_axis_off()
+
+            fig.suptitle(f"Epoch {epoch+1} | MODEST snapshot | {p} @ log(tau)={tau_val:.2f}")
+            fig.tight_layout()
+            fig.savefig(
+                out_dir / f"{p}_logtau_{tau_val:.2f}_images.png",
+                dpi=170,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+
+            x = true_map[np.isfinite(true_map)].ravel()
+            y = pred_map[np.isfinite(pred_map)].ravel()
+            if x.size == 0 or y.size == 0:
+                continue
+
+            n = min(n_sample, x.size, y.size) if n_sample > 0 else min(x.size, y.size)
+            q = np.linspace(0.0, 1.0, n, endpoint=False) + 0.5 / n
+            x = np.quantile(x, q)
+            y = np.quantile(y, q)
+
+            rmse = np.sqrt(np.mean((y - x) ** 2))
+            rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
+            corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
+
+            lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
+            g = sns.jointplot(
+                x=x,
+                y=y,
+                kind="scatter",
+                height=6,
+                s=8,
+                alpha=0.25,
+                marginal_kws={"bins": 50, "fill": True},
+            )
+            g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
+            g.ax_joint.set_xlim(lo, hi)
+            g.ax_joint.set_ylim(lo, hi)
+            g.ax_joint.set_xlabel("Ground truth")
+            g.ax_joint.set_ylabel("Prediction")
+            g.fig.suptitle(
+                f"Epoch {epoch+1} | MODEST snapshot | {p} @ log(tau)={tau_val:.2f}\n"
+                f"Corr={corr:.3f}, RRMSE={rrmse:.3f}",
+                y=1.02
+            )
+            g.fig.tight_layout()
+            g.fig.savefig(
+                out_dir / f"{p}_logtau_{tau_val:.2f}_jointplot.png",
+                dpi=170,
+                bbox_inches="tight",
+            )
+            plt.close(g.fig)
+
+    if was_training:
+        model.train()
+
 def generate_epoch_diagnostic_videos(
     config: TrainingConfig,
     step: int | None = None,
@@ -1161,6 +1405,88 @@ def generate_epoch_diagnostic_videos(
 
     return
 
+def generate_epoch_modest_diagnostic_videos(config: TrainingConfig) -> None:
+    """Build MP4 videos from MODEST per-epoch diagnostic PNGs."""
+    try:
+        import imageio.v2 as imageio
+    except Exception as e:
+        warnings.warn(f"Skipping MODEST epoch diagnostic videos (imageio unavailable): {e}")
+        return
+
+    base_dir = config.log_dir / "epoch_diagnostics_modest"
+    if not base_dir.exists():
+        return
+
+    epoch_dirs = sorted([d for d in base_dir.glob("epoch_*") if d.is_dir()], key=lambda p: p.name)
+    if len(epoch_dirs) < 2:
+        return
+
+    grouped: dict[str, list[Path]] = {}
+    for e_dir in epoch_dirs:
+        for img_path in e_dir.glob("*.png"):
+            grouped.setdefault(img_path.name, []).append(img_path)
+
+    if not grouped:
+        return
+
+    video_dir = base_dir / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+
+    for img_name, img_paths in grouped.items():
+        ordered_paths = sorted(img_paths, key=lambda p: p.parent.name)
+        if len(ordered_paths) < 2:
+            continue
+
+        frames = []
+        max_h, max_w = 0, 0
+        for pth in ordered_paths:
+            frame = imageio.imread(pth)
+            if frame.ndim == 2:
+                frame = np.stack([frame] * 3, axis=-1)
+            elif frame.ndim == 3 and frame.shape[-1] == 4:
+                frame = frame[..., :3]
+            if frame.dtype != np.uint8:
+                frame = np.clip(frame, 0, 255).astype(np.uint8)
+
+            frames.append(frame)
+            max_h = max(max_h, frame.shape[0])
+            max_w = max(max_w, frame.shape[1])
+
+        padded_frames = []
+        for fr in frames:
+            h, w = fr.shape[:2]
+            if h == max_h and w == max_w:
+                padded_frames.append(fr)
+                continue
+            canvas = np.zeros((max_h, max_w, 3), dtype=np.uint8)
+            y0 = (max_h - h) // 2
+            x0 = (max_w - w) // 2
+            canvas[y0:y0+h, x0:x0+w] = fr
+            padded_frames.append(canvas)
+
+        stem = Path(img_name).stem
+        out_mp4 = video_dir / f"{stem}.mp4"
+        try:
+            with imageio.get_writer(
+                out_mp4,
+                format="FFMPEG",
+                mode="I",
+                fps=max(1, int(config.epoch_plot_video_fps)),
+                codec="libx264",
+                macro_block_size=16,
+            ) as writer:
+                for fr in padded_frames:
+                    writer.append_data(fr)
+            print(f"  ✓ MODEST video saved: {out_mp4}")
+        except Exception as e:
+            out_gif = video_dir / f"{stem}.gif"
+            warnings.warn(
+                f"MODEST MP4 generation failed for {out_mp4.name} ({e}). "
+                f"Falling back to GIF: {out_gif.name}"
+            )
+            imageio.mimsave(out_gif, padded_frames, fps=max(1, int(config.epoch_plot_video_fps)))
+            print(f"  ✓ MODEST GIF saved: {out_gif}")
+
 def train_pinn_model(config: TrainingConfig):
     """Main training loop with interleaved epoch training."""
     
@@ -1199,6 +1525,13 @@ def train_pinn_model(config: TrainingConfig):
         print(f"Epoch plot ODs: {config.epoch_plot_ods}")
         print(f"Epoch plot params: {config.epoch_plot_params}")
         print(f"Epoch videos: {config.enable_epoch_videos} (fps={config.epoch_plot_video_fps})")
+    print(f"MODEST epoch plots: {config.enable_modest_epoch_plots}")
+    if config.enable_modest_epoch_plots:
+        print(f"MODEST cache dir: {config.modest_cache_dir} (enabled={not config.no_modest_cache})")
+        print(f"MODEST polarization mask: {config.modest_polarization_mask} (thr={config.modest_polarization_threshold})")
+        print(f"MODEST crop bounds: {config.modest_crop_bounds}")
+        print(f"MODEST epoch ODs: {config.modest_epoch_plot_ods}")
+        print(f"MODEST epoch params: {config.modest_epoch_plot_params}")
     print("=" * 70)
     
     # Load normalizers
@@ -1302,6 +1635,9 @@ def train_pinn_model(config: TrainingConfig):
     
     print(f"\nTrain steps: {len(train_steps)}")
     print(f"Validation steps: {len(val_steps)}")
+    monitor_step_for_epoch_plots = (
+        config.epoch_plot_step if config.epoch_plot_step is not None else val_steps[0]
+    )
     
     # Save configuration
     config.save(config.checkpoint_dir / "config.json")
@@ -1314,9 +1650,22 @@ def train_pinn_model(config: TrainingConfig):
     # Initialize cache if enabled
     cache = None
     if config.use_cache:
-        cache = DataCache(cache_dir=config.cache_dir, compression='gzip')
+        cache = MuramDataCache(cache_dir=config.cache_dir, compression='gzip')
         print("\nCache Information:")
         cache.print_cache_info()
+
+    modest_snapshot = None
+    if config.enable_modest_epoch_plots:
+        print("\nPreparing MODEST snapshot for per-epoch diagnostics...")
+        try:
+            modest_snapshot = prepare_modest_epoch_snapshot(
+                config=config,
+                stokes_normalizer=stokes_normalizer,
+            )
+            print("  ✓ MODEST snapshot prepared")
+        except Exception as e:
+            warnings.warn(f"Failed to prepare MODEST snapshot diagnostics: {e}")
+            modest_snapshot = None
 
     for epoch in range(start_epoch, config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
@@ -1349,6 +1698,26 @@ def train_pinn_model(config: TrainingConfig):
             stokes_normalizer=stokes_normalizer,
             cache=cache,
         )
+
+        if config.enable_epoch_plots:
+            generate_epoch_diagnostic_plots(
+                model=model,
+                epoch=epoch,
+                step=monitor_step_for_epoch_plots,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                cache=cache,
+            )
+
+        if config.enable_modest_epoch_plots and modest_snapshot is not None:
+            generate_epoch_modest_diagnostic_plots(
+                model=model,
+                epoch=epoch,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                modest_snapshot=modest_snapshot,
+            )
         
         # Update scheduler
         if scheduler is not None:
@@ -1409,7 +1778,11 @@ def train_pinn_model(config: TrainingConfig):
     # Build epoch-diagnostic videos at end of training
     if config.enable_epoch_plots and config.enable_epoch_videos:
         print("\nBuilding epoch diagnostic videos...")
-        generate_epoch_diagnostic_videos(config=config, step=config.epoch_plot_step)
+        generate_epoch_diagnostic_videos(config=config, step=monitor_step_for_epoch_plots)
+
+    if config.enable_modest_epoch_plots and config.enable_epoch_videos:
+        print("\nBuilding MODEST epoch diagnostic videos...")
+        generate_epoch_modest_diagnostic_videos(config=config)
 
     logger.close()
 
@@ -1436,7 +1809,7 @@ def main():
     parser.add_argument('--cache-dir', '--cache_dir', type=str,
                        default=os.environ.get(
                            "MURAM_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.data_cache",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
                        ),
                        help='Directory for cached data (or set MURAM_CACHE_DIR)')
     parser.add_argument('--clear-cache', action='store_true',
@@ -1445,6 +1818,8 @@ def main():
     # Epoch diagnostics CLI
     parser.add_argument('--no-epoch-plots', '--no_epoch_plots', dest='no_epoch_plots', action='store_true',
                        help='Disable per-epoch diagnostic plots')
+    parser.add_argument('--no-epoch-videos', '--no_epoch_videos', dest='no_epoch_videos', action='store_true',
+                       help='Disable per-epoch diagnostic videos')
     parser.add_argument('--epoch-plot-step', '--epoch_plot_step', dest='epoch_plot_step', type=int, default=None,
                        help='Monitoring step for epoch diagnostics')
     parser.add_argument('--epoch-plot-ods', '--epoch_plot_ods', dest='epoch_plot_ods', type=float, nargs='+', default=None,
@@ -1455,6 +1830,39 @@ def main():
     parser.add_argument('--epoch-plot-scatter-samples', '--epoch_plot_scatter_samples',
                        dest='epoch_plot_scatter_samples', type=int, default=None,
                        help='Max sampled points per scatter plot')
+
+    # MODEST epoch diagnostics CLI
+    parser.add_argument('--modest-epoch-plots', '--modest_epoch_plots', dest='modest_epoch_plots', action='store_true',
+                       help='Enable per-epoch diagnostics on MODEST snapshot')
+    parser.add_argument('--modest-cache-dir', '--modest_cache_dir', dest='modest_cache_dir', type=str,
+                       default=os.environ.get(
+                           "MODEST_CACHE_DIR",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+                       ),
+                       help='MODEST cache directory (or set MODEST_CACHE_DIR)')
+    parser.add_argument('--no-modest-cache', '--no_modest_cache', dest='no_modest_cache', action='store_true',
+                       help='Disable MODEST cache usage for per-epoch diagnostics')
+    parser.add_argument('--clear-modest-cache', '--clear_modest_cache', dest='clear_modest_cache', action='store_true',
+                       help='Clear MODEST cache before preparing per-epoch snapshot')
+    parser.add_argument('--modest-polarization-mask', '--modest_polarization_mask', dest='modest_polarization_mask',
+                       action='store_true',
+                       help='Apply circular polarization mask to MODEST snapshot for diagnostics')
+    parser.add_argument('--modest-polarization-threshold', '--modest_polarization_threshold',
+                       dest='modest_polarization_threshold', type=float, default=None,
+                       help='Circular polarization threshold for MODEST mask')
+    parser.add_argument('--modest-crop-bounds', '--modest_crop_bounds', dest='modest_crop_bounds',
+                       nargs=4, type=int, default=None,
+                       metavar=('Y_MIN', 'Y_MAX', 'X_MIN', 'X_MAX'),
+                       help='Crop bounds for MODEST snapshot diagnostics')
+    parser.add_argument('--modest-epoch-plot-ods', '--modest_epoch_plot_ods', dest='modest_epoch_plot_ods',
+                       type=float, nargs='+', default=None,
+                       help='Optical-depth values for MODEST epoch diagnostics')
+    parser.add_argument('--modest-epoch-plot-params', '--modest_epoch_plot_params', dest='modest_epoch_plot_params',
+                       type=str, nargs='+', choices=['T', 'Vz', 'Bz'], default=None,
+                       help='Parameters for MODEST epoch diagnostics')
+    parser.add_argument('--modest-epoch-plot-scatter-samples', '--modest_epoch_plot_scatter_samples',
+                       dest='modest_epoch_plot_scatter_samples', type=int, default=None,
+                       help='Max sampled points per MODEST scatter plot')
     
     # Optical depth remapping grid (RESTORED)
     parser.add_argument(
@@ -1513,9 +1921,43 @@ def main():
     if args.no_scheduler:
         config.use_scheduler = False
 
+    # Apply cache CLI overrides
+    config.use_cache = not args.no_cache
+    config.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
+
+    # Apply epoch diagnostics CLI overrides
+    config.enable_epoch_plots = not args.no_epoch_plots
+    if args.no_epoch_videos:
+        config.enable_epoch_videos = False
+    if args.epoch_plot_step is not None:
+        config.epoch_plot_step = args.epoch_plot_step
+    if args.epoch_plot_ods is not None:
+        config.epoch_plot_ods = args.epoch_plot_ods
+    if args.epoch_plot_params is not None:
+        config.epoch_plot_params = args.epoch_plot_params
+    if args.epoch_plot_scatter_samples is not None:
+        config.epoch_plot_scatter_samples = args.epoch_plot_scatter_samples
+
+    # Apply MODEST epoch diagnostics CLI overrides
+    config.enable_modest_epoch_plots = args.modest_epoch_plots
+    config.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
+    config.no_modest_cache = args.no_modest_cache
+    config.clear_modest_cache = args.clear_modest_cache
+    config.modest_polarization_mask = args.modest_polarization_mask
+    if args.modest_polarization_threshold is not None:
+        config.modest_polarization_threshold = args.modest_polarization_threshold
+    if args.modest_crop_bounds is not None:
+        config.modest_crop_bounds = tuple(args.modest_crop_bounds)
+    if args.modest_epoch_plot_ods is not None:
+        config.modest_epoch_plot_ods = args.modest_epoch_plot_ods
+    if args.modest_epoch_plot_params is not None:
+        config.modest_epoch_plot_params = args.modest_epoch_plot_params
+    if args.modest_epoch_plot_scatter_samples is not None:
+        config.modest_epoch_plot_scatter_samples = args.modest_epoch_plot_scatter_samples
+
     # Handle cache clearing
     if args.clear_cache and config.use_cache:
-        cache = DataCache(cache_dir=config.cache_dir)
+        cache = MuramDataCache(cache_dir=config.cache_dir)
         cache.clear(step=None, confirm=False)
         print("✓ Cache cleared\n")
     
