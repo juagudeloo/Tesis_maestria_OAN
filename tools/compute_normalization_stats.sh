@@ -52,7 +52,7 @@ LOGTAU_STEP=0.1
 # RUN
 # ==============================================================================
 
-CMD=(python3 compute_normalization_stats.py
+CMD=(python3 ./scripts/compute_normalization_stats.py
     --min_step "${MIN_STEP}"
     --max_step "${MAX_STEP}"
     --save_interval "${SAVE_INTERVAL}"

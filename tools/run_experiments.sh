@@ -68,7 +68,7 @@ EXPERIMENTS="no_physics wfa_only"
 # RUN EXPERIMENT
 # ==============================================================================
 
-python3 ablation_study.py \
+python3 ./scripts/experiments/ablation_study.py \
     --n_epochs "${N_EPOCHS}" \
     --min_step "${MIN_STEP}" \
     --max_step "${MAX_STEP}" \
