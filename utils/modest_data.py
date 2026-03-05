@@ -365,22 +365,41 @@ class ModestData:
 		self, y_start: int, y_end: int, x_start: int, x_end: int
 	) -> Dict[str, object]:
 		region: Dict[str, object] = {}
+		base_bounds = (y_start, y_end, x_start, x_end)
+
+		# Reference grid for user-provided bounds (original resolution)
+		if self.continuum is not None:
+			ref_shape = self.continuum.shape
+		elif self.obs_stokes is not None:
+			ref_shape = self.obs_stokes["I"].shape[:2]
+		else:
+			ref_shape = None
+
+		def _crop_stokes_dict(stokes: Optional[Dict[str, np.ndarray]]) -> Optional[Dict[str, np.ndarray]]:
+			if stokes is None:
+				return None
+			any_key = next(iter(stokes))
+			target_shape = stokes[any_key].shape[:2]
+			if ref_shape is None:
+				b = base_bounds
+			else:
+				b = self._scale_region_bounds(base_bounds, ref_shape, target_shape)
+			return {k: v[b[0]:b[1], b[2]:b[3], :] for k, v in stokes.items()}
+
 		if self.continuum is not None:
 			region["continuum"] = self.continuum[y_start:y_end, x_start:x_end]
+
+		# Stokes-like cubes: crop with scaled bounds when needed (e.g., upsampled/deconvolved/smoothed)
 		if self.obs_stokes is not None:
-			region["obs_stokes"] = {k: v[y_start:y_end, x_start:x_end, :] for k, v in self.obs_stokes.items()}
+			region["obs_stokes"] = _crop_stokes_dict(self.obs_stokes)
 		if self.deconvolved_stokes is not None:
-			region["deconvolved_stokes"] = {
-				k: v[y_start:y_end, x_start:x_end, :] for k, v in self.deconvolved_stokes.items()
-			}
+			region["deconvolved_stokes"] = _crop_stokes_dict(self.deconvolved_stokes)
 		if self.smoothed_stokes is not None:
-			region["smoothed_stokes"] = {
-				k: v[y_start:y_end, x_start:x_end, :] for k, v in self.smoothed_stokes.items()
-			}
+			region["smoothed_stokes"] = _crop_stokes_dict(self.smoothed_stokes)
 		if self.inverted_profs is not None:
-			region["inverted_profs"] = {
-				k: v[y_start:y_end, x_start:x_end, :] for k, v in self.inverted_profs.items()
-			}
+			region["inverted_profs"] = _crop_stokes_dict(self.inverted_profs)
+
+		# Non-Stokes products remain in original-resolution bounds
 		if self.inverted_atmos is not None:
 			region["inverted_atmos"] = self.inverted_atmos[:, y_start:y_end, x_start:x_end]
 		if self.spinor_atm is not None:
@@ -391,6 +410,28 @@ class ModestData:
 		if self.mask is not None:
 			region["mask"] = self.mask[y_start:y_end, x_start:x_end]
 		return region
+
+	def _scale_region_bounds(
+		self,
+		region_bounds: Tuple[int, int, int, int],
+		source_shape: Tuple[int, int],
+		target_shape: Tuple[int, int],
+	) -> Tuple[int, int, int, int]:
+		"""Scale (y_start, y_end, x_start, x_end) from source grid to target grid."""
+		y_start, y_end, x_start, x_end = region_bounds
+		sy = target_shape[0] / max(source_shape[0], 1)
+		sx = target_shape[1] / max(source_shape[1], 1)
+
+		ty0 = int(np.floor(y_start * sy))
+		ty1 = int(np.ceil(y_end * sy))
+		tx0 = int(np.floor(x_start * sx))
+		tx1 = int(np.ceil(x_end * sx))
+
+		ty0 = max(0, min(ty0, target_shape[0]))
+		ty1 = max(0, min(ty1, target_shape[0]))
+		tx0 = max(0, min(tx0, target_shape[1]))
+		tx1 = max(0, min(tx1, target_shape[1]))
+		return ty0, ty1, tx0, tx1
 
 	# ------------------------------------------------------------------
 	# Plotting helpers
