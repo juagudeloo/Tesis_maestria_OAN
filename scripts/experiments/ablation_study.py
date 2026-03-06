@@ -609,6 +609,7 @@ def run_single_experiment(
             'test_steps': test_steps,
             'n_steps_per_epoch': n_steps_per_epoch,
             'logtau_values': [float(x) for x in config.get_logtau_values().tolist()],
+            'balanced_region_training': bool(config.apply_region_mask),
         },
         'model_config': {
             'scales': [1, 2, 3],
@@ -733,6 +734,7 @@ def run_single_experiment(
     wfa_loss_history = []
     doppler_loss_history = []
     temperature_loss_history = []
+    total_training_pixels = 0
     
     for epoch in range(config.n_epochs):
         with timer():
@@ -768,6 +770,7 @@ def run_single_experiment(
             wfa_loss_history.append(avg_wfa_loss)
             doppler_loss_history.append(avg_doppler_loss)
             temperature_loss_history.append(avg_temperature_loss)
+            total_training_pixels += int(epoch_metrics.get('n_pixels_used', 0))
             
             # Validation
             avg_val_loss = validate(
@@ -817,6 +820,7 @@ def run_single_experiment(
             print(f"    └─ Temperature Loss: {avg_temperature_loss:.6f}")
             print(f"  Validation Loss: {avg_val_loss:.6f}")
             print(f"  Learning Rate:   {current_lr:.2e}")
+            print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
             
             # Print GradNorm weights if enabled
             if gradnorm_scheduler is not None:
@@ -868,6 +872,11 @@ def run_single_experiment(
         torch.save(checkpoint_data, model_path)
     
     logger.close()
+
+    config_dict['data_config']['total_training_pixels_used'] = int(total_training_pixels)
+    with open(config_path, 'w') as f:
+        json.dump(config_dict, f, indent=2)
+
     return {
         'final_val_loss': val_loss_history[-1],
         'val_loss_history': val_loss_history,
@@ -878,6 +887,7 @@ def run_single_experiment(
         'doppler_loss_history': doppler_loss_history,
         'temperature_loss_history': temperature_loss_history,
         'training_time_minutes': training_time,
+        'total_training_pixels_used': int(total_training_pixels),
         'test_metrics': test_metrics,
         'config': {
             'lambda_wfa': config.lambda_wfa,
@@ -902,11 +912,11 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Physics regularization ablation study")
-    parser.add_argument('--n_epochs', type=int, default=30, help='Number of epochs')
+    parser.add_argument('--n_epochs', type=int, default=2, help='Number of epochs')
     parser.add_argument('--n_steps', type=int, default=-1, help='Number of training steps per epoch (-1 for all steps)')
     parser.add_argument('--device', type=str, default='cuda', help='Device (cuda/cpu)')
-    parser.add_argument('--min_step', type=int, default=60, help='Minimum training step (inclusive)')
-    parser.add_argument('--max_step', type=int, default=201, help='Maximum training step (exclusive)')
+    parser.add_argument('--min_step', type=int, default=112, help='Minimum training step (inclusive)')
+    parser.add_argument('--max_step', type=int, default=113, help='Maximum training step (exclusive)')
     parser.add_argument('--step_size', type=int, default=1,
                        help='Step size between simulation steps (default: 1)')
     parser.add_argument('--experiment_name', type=str, default='physics_regularization_ablation',
@@ -976,6 +986,22 @@ def main():
                        help='Disable data caching')
     parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=default_cache_dir,
                        help='Directory for cached MURaM data (or set MURAM_CACHE_DIR)')
+
+    # Region masking toggle (training only)
+    mask_group = parser.add_mutually_exclusive_group()
+    mask_group.add_argument(
+        '--apply-region-mask', '--apply_region_mask',
+        dest='apply_region_mask',
+        action='store_true',
+        help='Apply balanced 4-region mask during training (gran/intergran x strong/weak polarization).'
+    )
+    mask_group.add_argument(
+        '--no-region-mask', '--no_region_mask',
+        dest='apply_region_mask',
+        action='store_false',
+        help='Disable region masking and train with all available pixels.'
+    )
+    parser.set_defaults(apply_region_mask=True)
     
     # Optical depth remapping grid
     parser.add_argument(
@@ -1077,6 +1103,7 @@ def main():
     print(f"Use GradNorm:       {args.use_gradnorm}")
     if args.use_gradnorm:
         print(f"GradNorm alpha:     {args.gradnorm_alpha}")
+    print(f"Apply region mask:  {args.apply_region_mask}")
     if args.logtau_values is not None:
         print(f"log(tau) values:    {args.logtau_values}")
     else:
@@ -1132,6 +1159,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
         ),
@@ -1159,6 +1187,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
         ),
@@ -1186,6 +1215,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
         ),
@@ -1213,6 +1243,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
         ),
@@ -1240,6 +1271,7 @@ def main():
             logtau_step=args.logtau_step,
             use_scheduler=resolved_use_scheduler,
             scheduler_type=resolved_scheduler_type,
+            apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
         ),

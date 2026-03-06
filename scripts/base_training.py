@@ -35,7 +35,13 @@ import seaborn as sns
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from utils.muram_data import MhdData, StokesData, MuramStepDataset
+from utils.muram_data import (
+    MhdData,
+    StokesData,
+    MuramStepDataset,
+    build_granulation_polarization_masks,
+    build_balanced_region_indices,
+)
 from utils.modest_data import ModestData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.cache_manage import MuramDataCache, ModestDataCache
@@ -129,6 +135,10 @@ class TrainingConfig:
     # New: Caching parameters
     use_cache: bool = True
     cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+
+    # Region-mask balancing (training only)
+    apply_region_mask: bool = True
+    log_region_mask_stats: bool = True
     
     # Epoch diagnostics (image + scatter evolution)
     enable_epoch_plots: bool = True
@@ -311,6 +321,8 @@ def load_and_prepare_step(
     mhd_normalizer: MhdNormalizer,
     stokes_normalizer: StokesNormalizer,
     cache: MuramDataCache | None = None,
+    apply_balanced_masks: bool = False,
+    log_region_stats: bool = False,
 ) -> tuple[MuramStepDataset, dict[str, np.ndarray]]:
     """
     Load and prepare a single simulation step for training.
@@ -342,6 +354,8 @@ def load_and_prepare_step(
     config_hash = MuramDataCache.make_config_hash(config_for_hash) if cache else None
     new_logtau = config.get_logtau_values()
 
+    region_sampling_info = None
+
     # Try to load from cache (strict first, then relaxed hash fallback)
     if cache is not None:
         exact_hit = cache.exists(step, config_hash, logtau_values=new_logtau)
@@ -354,12 +368,7 @@ def load_and_prepare_step(
 
         if exact_hit or relaxed_hit:
             try:
-                dataset_cached, approx_cached = cache.load(
-                    step=step,
-                    stokes_normalizer=stokes_normalizer,
-                    mhd_normalizer=mhd_normalizer,
-                    verbose=True,
-                )
+                stokes_cached, mhd_cached, approx_cached = cache.load_raw(step=step, verbose=True)
                 required_keys = {"blos", "vlos", "temp"}
                 if not isinstance(approx_cached, dict) or not required_keys.issubset(approx_cached.keys()):
                     raise KeyError(f"Cache step {step} missing keys {required_keys}")
@@ -369,6 +378,58 @@ def load_and_prepare_step(
                     v = approx_cached[k]
                     if not isinstance(v, np.ndarray) or v.ndim != 2:
                         raise KeyError(f"Cache step {step} key '{k}' invalid (expected 2D np.ndarray)")
+
+                # New cache contract: circular polarization must be present
+                if "circular_polarization" not in stokes_cached:
+                    raise KeyError(
+                        f"Cache step {step} missing 'circular_polarization'. "
+                        "Reprocessing with updated pipeline."
+                    )
+
+                selected_indices = None
+                if apply_balanced_masks:
+                    mean_cont = stokes_cached.get("mean_continuum")
+                    if mean_cont is None:
+                        mean_cont = np.mean(stokes_cached["I"][:, :, :4], axis=2)
+
+                    mask_data = build_granulation_polarization_masks(
+                        mean_continuum=mean_cont,
+                        circular_polarization=stokes_cached["circular_polarization"],
+                    )
+                    selected_indices, balance_stats = build_balanced_region_indices(mask_data["masks"])
+                    region_sampling_info = {
+                        "thresholds": {
+                            "continuum": float(mask_data["continuum_threshold"]),
+                            "circular_polarization": float(mask_data["polarization_threshold"]),
+                        },
+                        "counts_before": balance_stats["counts_before"],
+                        "counts_after": balance_stats["counts_after"],
+                    }
+
+                dataset_cached = MuramStepDataset(
+                    stokes_data=stokes_cached,
+                    mhd_data=mhd_cached,
+                    stokes_normalizer=stokes_normalizer,
+                    mhd_normalizer=mhd_normalizer,
+                    selected_flat_indices=selected_indices,
+                    region_sampling_info=region_sampling_info,
+                )
+
+                if apply_balanced_masks and log_region_stats and dataset_cached.region_sampling_info is not None:
+                    stats = dataset_cached.region_sampling_info
+                    b = stats["counts_before"]
+                    a = stats["counts_after"]
+                    print(
+                        f"  Region counts (step {step}) before balance: "
+                        f"GS={b['granular_strong']}, IS={b['intergranular_strong']}, "
+                        f"GW={b['granular_weak']}, IW={b['intergranular_weak']}"
+                    )
+                    print(
+                        f"  Region counts (step {step}) after balance:  "
+                        f"GS={a['granular_strong']}, IS={a['intergranular_strong']}, "
+                        f"GW={a['granular_weak']}, IW={a['intergranular_weak']} "
+                        f"(total={a['total_selected']})"
+                    )
 
                 return dataset_cached, approx_cached
             except Exception as e:
@@ -404,6 +465,27 @@ def load_and_prepare_step(
     stokes.load_hinode_lsf(config.data_path / config.lsf_path)
     stokes.apply_spectral_convolution()
     stokes.resample_to_hinode()
+    stokes.spectropolarimetry()
+
+    # Keep derived 2D maps in stokes payload for cache/users that need region masking.
+    stokes.data["mean_continuum"] = np.asarray(stokes.mean_continuum, dtype=np.float32)
+    stokes.data["circular_polarization"] = np.asarray(stokes.circular_polarization, dtype=np.float32)
+
+    selected_indices = None
+    if apply_balanced_masks:
+        mask_data = build_granulation_polarization_masks(
+            mean_continuum=stokes.data["mean_continuum"],
+            circular_polarization=stokes.data["circular_polarization"],
+        )
+        selected_indices, balance_stats = build_balanced_region_indices(mask_data["masks"])
+        region_sampling_info = {
+            "thresholds": {
+                "continuum": float(mask_data["continuum_threshold"]),
+                "circular_polarization": float(mask_data["polarization_threshold"]),
+            },
+            "counts_before": balance_stats["counts_before"],
+            "counts_after": balance_stats["counts_after"],
+        }
     
     # Create dataset
     dataset = MuramStepDataset(
@@ -411,7 +493,25 @@ def load_and_prepare_step(
         mhd_data=mhd.od_data,
         stokes_normalizer=stokes_normalizer,
         mhd_normalizer=mhd_normalizer,
+        selected_flat_indices=selected_indices,
+        region_sampling_info=region_sampling_info,
     )
+
+    if apply_balanced_masks and log_region_stats and dataset.region_sampling_info is not None:
+        stats = dataset.region_sampling_info
+        b = stats["counts_before"]
+        a = stats["counts_after"]
+        print(
+            f"  Region counts (step {step}) before balance: "
+            f"GS={b['granular_strong']}, IS={b['intergranular_strong']}, "
+            f"GW={b['granular_weak']}, IW={b['intergranular_weak']}"
+        )
+        print(
+            f"  Region counts (step {step}) after balance:  "
+            f"GS={a['granular_strong']}, IS={a['intergranular_strong']}, "
+            f"GW={a['granular_weak']}, IW={a['intergranular_weak']} "
+            f"(total={a['total_selected']})"
+        )
     
     # Compute physics approximations (unnormalized)
     inv = ApproxInversions(
@@ -848,7 +948,8 @@ def train_epoch(
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
         'temperature_loss': 0.0,
-        'n_steps': 0
+        'n_steps': 0,
+        'n_pixels_used': 0,
     }
     
     # Progress bar
@@ -863,6 +964,8 @@ def train_epoch(
                 mhd_normalizer=mhd_normalizer,
                 stokes_normalizer=stokes_normalizer,
                 cache=cache,
+                apply_balanced_masks=config.apply_region_mask,
+                log_region_stats=(config.apply_region_mask and config.log_region_mask_stats),
             )
             
             # Create dataloader
@@ -896,6 +999,7 @@ def train_epoch(
             epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
             epoch_metrics['temperature_loss'] += step_metrics['temperature_loss']
             epoch_metrics['n_steps'] += 1
+            epoch_metrics['n_pixels_used'] += int(len(dataset))
             
             # Update progress bar
             step_pbar.set_postfix({'loss': f'{step_metrics["total_loss"]:.6f}'})
@@ -912,7 +1016,7 @@ def train_epoch(
     n_steps = epoch_metrics['n_steps']
     if n_steps > 0:
         for key in epoch_metrics:
-            if key != 'n_steps':
+            if key not in {'n_steps', 'n_pixels_used'}:
                 epoch_metrics[key] /= n_steps
     
     return epoch_metrics
@@ -1667,6 +1771,8 @@ def train_pinn_model(config: TrainingConfig):
             warnings.warn(f"Failed to prepare MODEST snapshot diagnostics: {e}")
             modest_snapshot = None
 
+    total_training_pixels = 0
+
     for epoch in range(start_epoch, config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         print("-" * 70)
@@ -1687,6 +1793,7 @@ def train_pinn_model(config: TrainingConfig):
         )
         
         avg_train_loss = epoch_metrics['total_loss']
+        total_training_pixels += int(epoch_metrics.get('n_pixels_used', 0))
         
         # Validation
         print("\nValidating...")
@@ -1744,6 +1851,7 @@ def train_pinn_model(config: TrainingConfig):
         print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
         print(f"        └─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
+        print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
         
         # Print GradNorm weights if enabled
         if gradnorm_scheduler is not None:
@@ -1774,6 +1882,18 @@ def train_pinn_model(config: TrainingConfig):
     print("Training Complete!".center(70))
     print("=" * 70)
     print(f"Best validation loss: {best_val_loss:.6f}")
+    print(f"Total training pixels used (all epochs): {total_training_pixels}")
+
+    training_metadata = {
+        "total_training_pixels_used": int(total_training_pixels),
+        "epochs": int(config.n_epochs),
+        "step_size": int(config.step_size),
+        "batch_size": int(config.batch_size),
+    }
+    metadata_path = config.log_dir / "training_metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(training_metadata, f, indent=2)
+    print(f"Training metadata saved to: {metadata_path}")
     
     # Build epoch-diagnostic videos at end of training
     if config.enable_epoch_plots and config.enable_epoch_videos:

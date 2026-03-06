@@ -35,7 +35,7 @@ STEP_SIZE=1
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=5
+N_EPOCHS=30
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
@@ -69,6 +69,10 @@ MODEST_CROP_BOUNDS=(0 100 400 600)   # default plage crop from scripts/analysis/
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
 EXPERIMENTS="no_physics wfa_only"
 
+# Region-mask balancing during training (ablation study)
+# 1 = apply balanced region mask, 0 = disable mask
+APPLY_REGION_MASK=1
+
 # ==============================================================================
 # RUN EXPERIMENT
 # ==============================================================================
@@ -99,5 +103,6 @@ python3 ./scripts/experiments/ablation_study.py \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
     --modest-crop-bounds "${MODEST_CROP_BOUNDS[@]}" \
     $( [[ "${ENABLE_MODEST_EPOCH_PLOTS}" == "1" ]] && echo "--modest-epoch-plots" ) \
+    $( [[ "${APPLY_REGION_MASK}" == "1" ]] && echo "--apply-region-mask" || echo "--no-region-mask" ) \
     --no_scheduler
 

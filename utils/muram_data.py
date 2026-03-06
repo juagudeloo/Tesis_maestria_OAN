@@ -1,6 +1,6 @@
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -1103,6 +1103,117 @@ class StokesData:
             plt.close(fig)
 
 
+def _otsu_threshold(values: np.ndarray, n_bins: int = 256) -> float:
+    """Compute Otsu threshold for finite values using numpy only."""
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        raise ValueError("Cannot compute Otsu threshold on empty/non-finite array.")
+    if np.allclose(arr.min(), arr.max()):
+        return float(arr.min())
+
+    hist, bin_edges = np.histogram(arr, bins=int(n_bins))
+    hist = hist.astype(np.float64)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+
+    prob = hist / (hist.sum() + 1e-12)
+    omega = np.cumsum(prob)
+    mu = np.cumsum(prob * bin_centers)
+    mu_t = mu[-1]
+
+    sigma_b2 = (mu_t * omega - mu) ** 2 / (omega * (1.0 - omega) + 1e-12)
+    sigma_b2[~np.isfinite(sigma_b2)] = -np.inf
+    idx = int(np.argmax(sigma_b2))
+    return float(bin_centers[idx])
+
+
+def build_granulation_polarization_masks(
+    mean_continuum: np.ndarray,
+    circular_polarization: np.ndarray,
+    continuum_threshold: Optional[float] = None,
+    polarization_threshold: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Build granular/intergranular and strong/weak circular-polarization masks.
+
+    Notebook-consistent rules:
+    - granular: mean_continuum > Otsu(mean_continuum)
+    - weak polarization: circular_polarization < Otsu(circular_polarization)
+    """
+    mean_continuum = np.asarray(mean_continuum)
+    circular_polarization = np.asarray(circular_polarization)
+
+    if mean_continuum.shape != circular_polarization.shape:
+        raise ValueError(
+            "mean_continuum and circular_polarization must have the same shape. "
+            f"Got {mean_continuum.shape} vs {circular_polarization.shape}."
+        )
+
+    t_cont = float(continuum_threshold) if continuum_threshold is not None else _otsu_threshold(mean_continuum)
+    t_pol = float(polarization_threshold) if polarization_threshold is not None else _otsu_threshold(circular_polarization)
+
+    granular = mean_continuum > t_cont
+    intergranular = ~granular
+    weak_pol = circular_polarization < t_pol
+    strong_pol = ~weak_pol
+
+    masks = {
+        "granular_strong": granular & strong_pol,
+        "intergranular_strong": intergranular & strong_pol,
+        "granular_weak": granular & weak_pol,
+        "intergranular_weak": intergranular & weak_pol,
+    }
+    counts = {k: int(v.sum()) for k, v in masks.items()}
+
+    return {
+        "continuum_threshold": t_cont,
+        "polarization_threshold": t_pol,
+        "masks": masks,
+        "counts": counts,
+    }
+
+
+def build_balanced_region_indices(
+    region_masks: Dict[str, np.ndarray],
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[np.ndarray, Dict[str, Dict[str, int]]]:
+    """Return flattened indices with equal samples in the 4 region masks."""
+    required = [
+        "granular_strong",
+        "intergranular_strong",
+        "granular_weak",
+        "intergranular_weak",
+    ]
+    missing = [k for k in required if k not in region_masks]
+    if missing:
+        raise KeyError(f"Missing region masks: {missing}")
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    idx_by_region = {name: np.flatnonzero(region_masks[name].ravel()) for name in required}
+    counts_before = {name: int(idx.size) for name, idx in idx_by_region.items()}
+    target = min(counts_before.values()) if counts_before else 0
+
+    if target <= 0:
+        raise ValueError(f"At least one region has zero pixels: {counts_before}")
+
+    selected_chunks = []
+    for name in required:
+        chosen = rng.choice(idx_by_region[name], size=target, replace=False)
+        selected_chunks.append(chosen)
+
+    selected = np.concatenate(selected_chunks)
+    rng.shuffle(selected)
+
+    counts_after = {name: int(target) for name in required}
+    counts_after["total_selected"] = int(selected.size)
+    return selected.astype(np.int64), {
+        "counts_before": counts_before,
+        "counts_after": counts_after,
+    }
+
+
 # ============================================================================
 # MuramStepDataset class - PyTorch Dataset for training
 # ============================================================================
@@ -1148,9 +1259,12 @@ class MuramStepDataset(Dataset):
         mhd_data: Dict[str, np.ndarray],
         stokes_normalizer: StokesNormalizer,
         mhd_normalizer: MhdNormalizer,
+        selected_flat_indices: Optional[np.ndarray] = None,
+        region_sampling_info: Optional[Dict[str, Any]] = None,
     ):
         self.nx, self.ny = stokes_data['I'].shape[:2]
-        self.n_pixels = self.nx * self.ny
+        self.n_pixels_full = self.nx * self.ny
+        self.region_sampling_info = region_sampling_info
         
         # Normalize data
         norm_stokes = stokes_normalizer.transform(stokes_data)
@@ -1158,20 +1272,38 @@ class MuramStepDataset(Dataset):
         
         # Flatten spatial dimensions: (nx, ny, ...) -> (nx*ny, ...)
         # Stokes input: (n_pixels, 2, nλ)
-        I_flat = norm_stokes['I'].reshape(self.n_pixels, -1)  # (n_pixels, 112)
-        V_flat = norm_stokes['V'].reshape(self.n_pixels, -1)
+        I_flat = norm_stokes['I'].reshape(self.n_pixels_full, -1)  # (n_pixels, 112)
+        V_flat = norm_stokes['V'].reshape(self.n_pixels_full, -1)
         self.stokes_input = np.stack([I_flat, V_flat], axis=1)  # (n_pixels, 2, 112)
         
         # MHD targets: concatenate T, Vz, Bz along feature dimension
         # Each has shape (n_pixels, 21) -> concatenate to (n_pixels, 63)
-        T_flat = norm_mhd['T'].reshape(self.n_pixels, -1)
-        Vz_flat = norm_mhd['Vz'].reshape(self.n_pixels, -1)
-        Bz_flat = norm_mhd['Bz'].reshape(self.n_pixels, -1)
+        T_flat = norm_mhd['T'].reshape(self.n_pixels_full, -1)
+        Vz_flat = norm_mhd['Vz'].reshape(self.n_pixels_full, -1)
+        Bz_flat = norm_mhd['Bz'].reshape(self.n_pixels_full, -1)
         self.mhd_targets = np.concatenate([T_flat, Vz_flat, Bz_flat], axis=1)
         
         # Store spatial indices for physics regularization
         ix, iy = np.meshgrid(np.arange(self.nx), np.arange(self.ny), indexing='ij')
-        self.spatial_indices = np.stack([ix.ravel(), iy.ravel()], axis=1)  # (n_pixels, 2)
+        self.spatial_indices = np.stack([ix.ravel(), iy.ravel()], axis=1)  # (n_pixels_full, 2)
+
+        if selected_flat_indices is not None:
+            selected_flat_indices = np.asarray(selected_flat_indices, dtype=np.int64)
+            if selected_flat_indices.ndim != 1:
+                raise ValueError("selected_flat_indices must be 1D")
+            if selected_flat_indices.size == 0:
+                raise ValueError("selected_flat_indices is empty")
+            if selected_flat_indices.min() < 0 or selected_flat_indices.max() >= self.n_pixels_full:
+                raise ValueError(
+                    "selected_flat_indices contains out-of-range values. "
+                    f"Valid range is [0, {self.n_pixels_full - 1}]"
+                )
+
+            self.stokes_input = self.stokes_input[selected_flat_indices]
+            self.mhd_targets = self.mhd_targets[selected_flat_indices]
+            self.spatial_indices = self.spatial_indices[selected_flat_indices]
+
+        self.n_pixels = int(self.stokes_input.shape[0])
         
     def __len__(self):
         return self.n_pixels
@@ -1188,4 +1320,6 @@ __all__ = [
     "MhdData",
     "StokesData",
     "MuramStepDataset",
+    "build_granulation_polarization_masks",
+    "build_balanced_region_indices",
 ]
