@@ -174,7 +174,7 @@ class ExperimentTracker:
             plt.tight_layout()
             
             # Save individual plot
-            plot_path = self.output_dir / f"{exp_name}_loss_curves.png"
+            plot_path = self.output_dir / f"{exp_name}-loss_curves.png"
             plt.savefig(plot_path, dpi=200, bbox_inches='tight')
             plt.close()
             
@@ -396,6 +396,25 @@ def _tau_average(values: np.ndarray, logtau_values: np.ndarray) -> np.ndarray:
     vals_mid = (values[:, :-1] + values[:, 1:]) / 2
     return np.sum(vals_mid * dtau[np.newaxis, :], axis=1) / denom
 
+
+def _normalize_lambda_values(values) -> list[float]:
+    if values is None:
+        return []
+    if isinstance(values, (list, tuple)):
+        return [float(v) for v in values]
+    return [float(values)]
+
+
+def _lambda_token(value: float) -> str:
+    return f"{float(value):g}".replace("-", "m").replace(".", "_")
+
+
+def _variant_names(base_key: str, folder_prefix: str, lambda_value: float, is_multi: bool) -> tuple[str, str]:
+    if not is_multi:
+        return base_key, base_key
+    token = _lambda_token(lambda_value)
+    return f"{base_key}-lambda-{token}", f"{folder_prefix}-lambda-{token}"
+
 def compute_tau_averaged_metrics(
     model: PhysicsInformedMSCNN,
     test_steps: list[int],
@@ -464,14 +483,15 @@ def compute_tau_averaged_metrics(
                 # Convert predictions to numpy for denormalization
                 predictions_np = predictions.cpu().numpy()
 
-                # Reshape predictions from (batch_size, 3*n_tau) to (batch_size, n_tau, 3)
-                batch_size = predictions_np.shape[0]
-                predictions_np = predictions_np.reshape(batch_size, n_tau, 3)
+                if predictions_np.ndim != 2 or predictions_np.shape[1] != 3 * n_tau:
+                    raise ValueError(
+                        f"Expected predictions shape (batch, {3 * n_tau}), got {predictions_np.shape}"
+                    )
 
-                # Denormalize parameter by parameter
-                T_norm = predictions_np[:, :, 0]
-                Vz_norm = predictions_np[:, :, 1]
-                Bz_norm = predictions_np[:, :, 2]
+                # Block-concatenated layout: [T(τ...), Vz(τ...), Bz(τ...)]
+                T_norm = predictions_np[:, :n_tau]
+                Vz_norm = predictions_np[:, n_tau:2 * n_tau]
+                Bz_norm = predictions_np[:, 2 * n_tau:3 * n_tau]
 
                 # Denormalize each parameter individually
                 T_denorm = mhd_normalizer.denormalize(T_norm, param='T')
@@ -941,12 +961,12 @@ def main():
                        help="Scheduler type: 'plateau', 'cosine', or 'none'")
     
     # Lambda values for physics terms
-    parser.add_argument('--lambda_wfa', type=float, default=0.01,
-                       help='Weight for WFA B_LOS loss (default: 0.01, use 0.0 to disable)')
-    parser.add_argument('--lambda_doppler', type=float, default=0.01,
-                       help='Weight for Doppler V_LOS loss (default: 0.01, use 0.0 to disable)')
-    parser.add_argument('--lambda_temp', type=float, default=0.01,
-                       help='Weight for temperature loss (default: 0.01, use 0.0 to disable)')
+    parser.add_argument('--lambda_wfa', type=float, nargs='+', default=[0.01],
+                       help='Weight(s) for WFA B_LOS loss. Example: --lambda_wfa 0.1 0.01 0.001')
+    parser.add_argument('--lambda_doppler', type=float, nargs='+', default=[0.01],
+                       help='Weight(s) for Doppler V_LOS loss. Example: --lambda_doppler 0.1 0.01')
+    parser.add_argument('--lambda_temp', type=float, nargs='+', default=[0.01],
+                       help='Weight(s) for temperature loss. Example: --lambda_temp 2.0 1.0 0.5')
     
     # Physics modes
     parser.add_argument('--blos_physics_mode', type=str, default='tau_averaged',
@@ -1072,6 +1092,9 @@ def main():
     args = parser.parse_args()
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
     args.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
+    args.lambda_wfa = _normalize_lambda_values(args.lambda_wfa)
+    args.lambda_doppler = _normalize_lambda_values(args.lambda_doppler)
+    args.lambda_temp = _normalize_lambda_values(args.lambda_temp)
     
     # Base configuration
     data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
@@ -1113,6 +1136,17 @@ def main():
     resolved_use_scheduler = (not args.no_scheduler) and (args.scheduler_type != 'none')
     resolved_scheduler_type = 'plateau' if args.scheduler_type == 'none' else args.scheduler_type
 
+    selected_experiments = set(args.experiments if 'all' not in args.experiments else [
+        'all_physics_terms', 'wfa_only', 'doppler_only', 'black_body_only', 'no_physics'
+    ])
+    if 'all_physics_terms' in selected_experiments:
+        if len(args.lambda_wfa) > 1 or len(args.lambda_doppler) > 1 or len(args.lambda_temp) > 1:
+            raise ValueError(
+                "all_physics_terms currently supports only one value per physics lambda. "
+                "Provide single values for --lambda_wfa, --lambda_doppler and --lambda_temp "
+                "when running all_physics_terms."
+            )
+
     common_epoch_plot_kwargs = dict(
         enable_epoch_plots=not args.no_epoch_plots,
         epoch_plot_step=args.epoch_plot_step,
@@ -1133,15 +1167,15 @@ def main():
         modest_epoch_plot_scatter_samples=args.modest_epoch_plot_scatter_samples,
     )
 
-    all_experiment_configs = {
-        'all_physics_terms': TrainingConfig(
+    def _build_cfg(folder_name: str, lambda_wfa: float, lambda_doppler: float, lambda_temp: float, use_gradnorm: bool) -> TrainingConfig:
+        return TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
             learning_rate=args.learning_rate,
-            lambda_wfa=args.lambda_wfa,
-            lambda_doppler=args.lambda_doppler,
-            lambda_temp=args.lambda_temp,
-            use_gradnorm=args.use_gradnorm,
+            lambda_wfa=lambda_wfa,
+            lambda_doppler=lambda_doppler,
+            lambda_temp=lambda_temp,
+            use_gradnorm=use_gradnorm,
             gradnorm_alpha=args.gradnorm_alpha,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
@@ -1150,8 +1184,8 @@ def main():
             temp_physics_mode=args.temp_physics_mode,
             temp_target_logtau=args.temp_target_logtau,
             device=args.device,
-            checkpoint_dir=output_dir / "all_physics_terms" / "checkpoints",
-            log_dir=output_dir / "all_physics_terms" / "logs",
+            checkpoint_dir=output_dir / folder_name / "checkpoints",
+            log_dir=output_dir / folder_name / "logs",
             step_size=args.step_size,
             logtau_values=args.logtau_values,
             logtau_min=args.logtau_min,
@@ -1162,126 +1196,89 @@ def main():
             apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
-        ),
-        'wfa_only': TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            learning_rate=args.learning_rate,
-            lambda_wfa=args.lambda_wfa,
-            lambda_doppler=0.0,
-            lambda_temp=0.0,
-            use_gradnorm=False,  # No GradNorm for single-term experiments
-            blos_physics_mode=args.blos_physics_mode,
-            blos_target_logtau=args.blos_target_logtau,
-            vlos_physics_mode=args.vlos_physics_mode,
-            vlos_target_logtau=args.vlos_target_logtau,
-            temp_physics_mode=args.temp_physics_mode,
-            temp_target_logtau=args.temp_target_logtau,
-            device=args.device,
-            checkpoint_dir=output_dir / "wfa_only" / "checkpoints",
-            log_dir=output_dir / "wfa_only" / "logs",
-            step_size=args.step_size,
-            logtau_values=args.logtau_values,
-            logtau_min=args.logtau_min,
-            logtau_max=args.logtau_max,
-            logtau_step=args.logtau_step,
-            use_scheduler=resolved_use_scheduler,
-            scheduler_type=resolved_scheduler_type,
-            apply_region_mask=args.apply_region_mask,
-            c1_filters=args.c1_filters,
-            **common_epoch_plot_kwargs,
-        ),
-        'doppler_only': TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            learning_rate=args.learning_rate,
-            lambda_wfa=0.0,
-            lambda_doppler=args.lambda_doppler,
-            lambda_temp=0.0,
-            use_gradnorm=False,  # No GradNorm for single-term experiments
-            blos_physics_mode=args.blos_physics_mode,
-            blos_target_logtau=args.blos_target_logtau,
-            vlos_physics_mode=args.vlos_physics_mode,
-            vlos_target_logtau=args.vlos_target_logtau,
-            temp_physics_mode=args.temp_physics_mode,
-            temp_target_logtau=args.temp_target_logtau,
-            device=args.device,
-            checkpoint_dir=output_dir / "doppler_only" / "checkpoints",
-            log_dir=output_dir / "doppler_only" / "logs",
-            step_size=args.step_size,
-            logtau_values=args.logtau_values,
-            logtau_min=args.logtau_min,
-            logtau_max=args.logtau_max,
-            logtau_step=args.logtau_step,
-            use_scheduler=resolved_use_scheduler,
-            scheduler_type=resolved_scheduler_type,
-            apply_region_mask=args.apply_region_mask,
-            c1_filters=args.c1_filters,
-            **common_epoch_plot_kwargs,
-        ),
-        'black_body_only': TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            learning_rate=args.learning_rate,
-            lambda_wfa=0.0,
-            lambda_doppler=0.0,
-            lambda_temp=args.lambda_temp,
-            use_gradnorm=False,  # No GradNorm for single-term experiments
-            blos_physics_mode=args.blos_physics_mode,
-            blos_target_logtau=args.blos_target_logtau,
-            vlos_physics_mode=args.vlos_physics_mode,
-            vlos_target_logtau=args.vlos_target_logtau,
-            temp_physics_mode=args.temp_physics_mode,
-            temp_target_logtau=args.temp_target_logtau,
-            device=args.device,
-            checkpoint_dir=output_dir / "black_body_only" / "checkpoints",
-            log_dir=output_dir / "black_body_only" / "logs",
-            step_size=args.step_size,
-            logtau_values=args.logtau_values,
-            logtau_min=args.logtau_min,
-            logtau_max=args.logtau_max,
-            logtau_step=args.logtau_step,
-            use_scheduler=resolved_use_scheduler,
-            scheduler_type=resolved_scheduler_type,
-            apply_region_mask=args.apply_region_mask,
-            c1_filters=args.c1_filters,
-            **common_epoch_plot_kwargs,
-        ),
-        'no_physics': TrainingConfig(
-            data_path=str(data_path),
-            n_epochs=args.n_epochs,
-            learning_rate=args.learning_rate,
-            lambda_wfa=0.0,
+        )
+
+    all_experiment_configs: dict[str, TrainingConfig] = {}
+
+    all_experiment_configs['all_physics_terms'] = _build_cfg(
+        folder_name="all_physics_terms",
+        lambda_wfa=args.lambda_wfa[0],
+        lambda_doppler=args.lambda_doppler[0],
+        lambda_temp=args.lambda_temp[0],
+        use_gradnorm=args.use_gradnorm,
+    )
+
+    all_experiment_configs['no_physics'] = _build_cfg(
+        folder_name="no_physics",
+        lambda_wfa=0.0,
+        lambda_doppler=0.0,
+        lambda_temp=0.0,
+        use_gradnorm=False,
+    )
+
+    wfa_multi = len(args.lambda_wfa) > 1
+    for lw in args.lambda_wfa:
+        key_name, folder_name = _variant_names(
+            base_key="wfa_only",
+            folder_prefix="wfa",
+            lambda_value=lw,
+            is_multi=wfa_multi,
+        )
+        all_experiment_configs[key_name] = _build_cfg(
+            folder_name=folder_name,
+            lambda_wfa=lw,
             lambda_doppler=0.0,
             lambda_temp=0.0,
             use_gradnorm=False,
-            blos_physics_mode=args.blos_physics_mode,
-            blos_target_logtau=args.blos_target_logtau,
-            vlos_physics_mode=args.vlos_physics_mode,
-            vlos_target_logtau=args.vlos_target_logtau,
-            temp_physics_mode=args.temp_physics_mode,
-            temp_target_logtau=args.temp_target_logtau,
-            device=args.device,
-            checkpoint_dir=output_dir / "no_physics" / "checkpoints",
-            log_dir=output_dir / "no_physics" / "logs",
-            step_size=args.step_size,
-            logtau_values=args.logtau_values,
-            logtau_min=args.logtau_min,
-            logtau_max=args.logtau_max,
-            logtau_step=args.logtau_step,
-            use_scheduler=resolved_use_scheduler,
-            scheduler_type=resolved_scheduler_type,
-            apply_region_mask=args.apply_region_mask,
-            c1_filters=args.c1_filters,
-            **common_epoch_plot_kwargs,
-        ),
-    }
+        )
+
+    doppler_multi = len(args.lambda_doppler) > 1
+    for ld in args.lambda_doppler:
+        key_name, folder_name = _variant_names(
+            base_key="doppler_only",
+            folder_prefix="doppler",
+            lambda_value=ld,
+            is_multi=doppler_multi,
+        )
+        all_experiment_configs[key_name] = _build_cfg(
+            folder_name=folder_name,
+            lambda_wfa=0.0,
+            lambda_doppler=ld,
+            lambda_temp=0.0,
+            use_gradnorm=False,
+        )
+
+    temp_multi = len(args.lambda_temp) > 1
+    for lt in args.lambda_temp:
+        key_name, folder_name = _variant_names(
+            base_key="black_body_only",
+            folder_prefix="black-body",
+            lambda_value=lt,
+            is_multi=temp_multi,
+        )
+        all_experiment_configs[key_name] = _build_cfg(
+            folder_name=folder_name,
+            lambda_wfa=0.0,
+            lambda_doppler=0.0,
+            lambda_temp=lt,
+            use_gradnorm=False,
+        )
     
     # Parse experiments to run
     if 'all' in args.experiments:
         experiments_to_run = list(all_experiment_configs.keys())
     else:
-        experiments_to_run = args.experiments
+        experiments_to_run = []
+        for selected in args.experiments:
+            if selected in all_experiment_configs:
+                experiments_to_run.append(selected)
+                continue
+            matched = [
+                key for key in all_experiment_configs.keys()
+                if key == selected or key.startswith(f"{selected}-lambda-")
+            ]
+            experiments_to_run.extend(matched)
+        experiments_to_run = list(dict.fromkeys(experiments_to_run))
     
     print("\n" + "=" * 80)
     print("EXPERIMENTS TO RUN".center(80))

@@ -16,6 +16,7 @@ def main(args):
     pipeline = AnalysisModelPipeline(
         device=device,
         output_dir=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram"),
+        experiment_root=args.experiment_root,
     )
     model_configs, models, n_tau = pipeline.prepare_models(args.model_types)
     
@@ -61,12 +62,16 @@ def main(args):
         )
 
         # Denormalize GT to physical units
-        gt_reshaped = dataset.mhd_targets.reshape(dataset.mhd_targets.shape[0], n_tau, 3)
-        gt_den = {}
-        for param_idx, param_name in enumerate(["T", "Vz", "Bz"]):
-            gt_den[param_name] = mhd_normalizer.denormalize(
-                gt_reshaped[:, :, param_idx], param=param_name
-            ).reshape(dataset.nx, dataset.ny, n_tau)
+        gt_norm = dataset.mhd_targets
+        if gt_norm.ndim != 2 or gt_norm.shape[1] != 3 * n_tau:
+            raise ValueError(
+                f"Expected dataset.mhd_targets shape (N, {3 * n_tau}), got {gt_norm.shape}"
+            )
+        gt_den = {
+            "T": mhd_normalizer.denormalize(gt_norm[:, :n_tau], param="T").reshape(dataset.nx, dataset.ny, n_tau),
+            "Vz": mhd_normalizer.denormalize(gt_norm[:, n_tau:2 * n_tau], param="Vz").reshape(dataset.nx, dataset.ny, n_tau),
+            "Bz": mhd_normalizer.denormalize(gt_norm[:, 2 * n_tau:3 * n_tau], param="Bz").reshape(dataset.nx, dataset.ny, n_tau),
+        }
 
         plotter = MuramDiagnosticPlots(
             config=cfg,
@@ -91,8 +96,13 @@ if __name__ == "__main__":
         '--model-types', '--model_types',
         nargs='+',
         default=['all'],
-        choices=['all', 'no_physics', 'wfa_only', 'doppler_only', 'black_body_only', 'all_physics_terms'],
-        help="Which trained model types to load (default: all). Example: --model-types no_physics wfa_only",
+        help="Which trained model types to load (default: all). Supports base types and lambda variants.",
+    )
+    parser.add_argument(
+        '--experiment-root', '--experiment_root',
+        type=str,
+        default='experiment_80_to_113',
+        help='Experiment folder under output/experiments (e.g., experiment_112_to_113)',
     )
     args = parser.parse_args()
     main(args)

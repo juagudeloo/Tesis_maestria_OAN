@@ -28,10 +28,12 @@ def main(args):
     pipeline = AnalysisModelPipeline(
         device=device,
         output_dir=modest_output_dir,
+        experiment_root=args.experiment_root,
     )
     model_configs, models, n_tau = pipeline.prepare_models(args.model_types)
     print(f"Using device: {device}")
     print(f"Number of log(tau) points: {n_tau}")
+    print(f"Prediction input mode: {'downsampled' if args.downsample_prediction_input else 'upsampled'}")
 
     print("Selected model configs:")
     for _, cfg in model_configs.items():
@@ -95,8 +97,13 @@ if __name__ == "__main__":
         '--model-types', '--model_types',
         nargs='+',
         default=['all'],
-        choices=['all', 'no_physics', 'wfa_only', 'doppler_only', 'black_body_only', 'all_physics_terms'],
-        help="Which trained model types to load (default: all). Example: --model-types no_physics wfa_only",
+        help="Which trained model types to load (default: all). Supports base types and lambda variants.",
+    )
+    parser.add_argument(
+        '--experiment-root', '--experiment_root',
+        type=str,
+        default='experiment_80_to_113',
+        help='Experiment folder under output/experiments (e.g., experiment_112_to_113)',
     )
     parser.add_argument(
         '--crop-label',
@@ -138,6 +145,11 @@ if __name__ == "__main__":
         dest='clear_modest_cache',
         action='store_true',
         help='Clear MODEST cache before running analysis'
+    )
+    parser.add_argument(
+        '--downsample-prediction-input',
+        action='store_true',
+        help='Downsample deconvolved+smoothed Stokes back to native grid before model inference',
     )
     args = parser.parse_args()
     main(args)

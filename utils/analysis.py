@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import csv
 import torch
 import torch.nn.functional as F
 from typing import Callable
@@ -16,48 +17,238 @@ try:
 except Exception:
     torch_summary = None
 
+
+def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    """Compute scalar quality metrics for prediction vs ground truth arrays."""
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
+    m = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true = y_true[m]
+    y_pred = y_pred[m]
+
+    if y_true.size == 0:
+        return {
+            "n_points": 0,
+            "rmse": np.nan,
+            "rrmse": np.nan,
+            "mae": np.nan,
+            "nmae": np.nan,
+            "bias": np.nan,
+            "corr": np.nan,
+            "r2": np.nan,
+        }
+
+    diff = y_pred - y_true
+    rmse = float(np.sqrt(np.mean(diff ** 2)))
+    mae = float(np.mean(np.abs(diff)))
+    bias = float(np.mean(diff))
+    denom = float(np.mean(np.abs(y_true)) + 1e-10)
+
+    if y_true.size > 1 and np.nanstd(y_true) > 0 and np.nanstd(y_pred) > 0:
+        corr = float(np.corrcoef(y_true, y_pred)[0, 1])
+    else:
+        corr = np.nan
+
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 1e-12 else np.nan
+
+    return {
+        "n_points": int(y_true.size),
+        "rmse": rmse,
+        "rrmse": float(rmse / denom),
+        "mae": mae,
+        "nmae": float(mae / denom),
+        "bias": bias,
+        "corr": corr,
+        "r2": r2,
+    }
+
+
+def format_metric(value: float, decimals: int = 3) -> str:
+    if not np.isfinite(value):
+        return "nan"
+    return f"{value:.{decimals}f}"
+
+
+def compute_distribution_similarity_metrics(x: np.ndarray, y: np.ndarray, bins: int = 128) -> dict[str, float]:
+    """Compute unpaired distribution-similarity metrics between two arrays."""
+    x = np.asarray(x).ravel()
+    y = np.asarray(y).ravel()
+    x = x[np.isfinite(x)]
+    y = y[np.isfinite(y)]
+
+    if x.size == 0 or y.size == 0:
+        return {
+            "n_true": int(x.size),
+            "n_pred": int(y.size),
+            "ks": np.nan,
+            "w1_quantile": np.nan,
+            "jsd": np.nan,
+            "overlap": np.nan,
+        }
+
+    # KS statistic (two-sample) using ECDFs
+    x_sorted = np.sort(x)
+    y_sorted = np.sort(y)
+    grid = np.sort(np.concatenate([x_sorted, y_sorted]))
+    cdf_x = np.searchsorted(x_sorted, grid, side="right") / x_sorted.size
+    cdf_y = np.searchsorted(y_sorted, grid, side="right") / y_sorted.size
+    ks = float(np.max(np.abs(cdf_x - cdf_y)))
+
+    # 1-Wasserstein approximation via quantile functions
+    n_q = min(20000, x.size, y.size)
+    q = np.linspace(0.0, 1.0, n_q, endpoint=False) + 0.5 / n_q
+    xq = np.quantile(x, q)
+    yq = np.quantile(y, q)
+    w1_quantile = float(np.mean(np.abs(xq - yq)))
+
+    # Histogram-based Jensen-Shannon divergence + overlap coefficient
+    lo = float(min(x.min(), y.min()))
+    hi = float(max(x.max(), y.max()))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        jsd = np.nan
+        overlap = np.nan
+    else:
+        hist_x, edges = np.histogram(x, bins=bins, range=(lo, hi), density=False)
+        hist_y, _ = np.histogram(y, bins=edges, density=False)
+        px = hist_x.astype(np.float64)
+        py = hist_y.astype(np.float64)
+        px /= max(px.sum(), 1.0)
+        py /= max(py.sum(), 1.0)
+
+        eps = 1e-12
+        m = 0.5 * (px + py)
+        kl_pm = np.sum(px * (np.log(px + eps) - np.log(m + eps)))
+        kl_qm = np.sum(py * (np.log(py + eps) - np.log(m + eps)))
+        jsd = float(0.5 * (kl_pm + kl_qm))
+        overlap = float(np.sum(np.minimum(px, py)))
+
+    return {
+        "n_true": int(x.size),
+        "n_pred": int(y.size),
+        "ks": ks,
+        "w1_quantile": w1_quantile,
+        "jsd": jsd,
+        "overlap": overlap,
+    }
+
+
 class AnalysisModelPipeline:
     """Reusable pipeline for config selection, runtime cfg building, and model loading."""
 
-    def __init__(self, device, output_dir: Path | None = None):
+    def __init__(
+        self,
+        device,
+        output_dir: Path | None = None,
+        experiments_base_dir: Path | str | None = None,
+        experiment_root: str = "experiment_80_to_113",
+    ):
         self.device = device
         self.output_dir = output_dir
+        self.experiments_base_dir = Path(experiments_base_dir) if experiments_base_dir is not None else Path(
+            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/"
+        )
+        self.experiment_root = str(experiment_root)
 
     def get_model_configs(self) -> dict:
-        base_model_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/")
-        experiment_dir = base_model_path / "experiment_80_to_113"
+        experiment_dir = self.experiments_base_dir / self.experiment_root
+        results_path = experiment_dir / "experiment_results.json"
+        if not experiment_dir.exists():
+            raise FileNotFoundError(f"Experiment root not found: {experiment_dir}")
 
-        def _exp_cfg(exp_name: str, label: str, color: str, lw: float, ld: float, lt: float, use_physics):
-            return {
-                "path": experiment_dir / exp_name / "final_model.pth",
-                "config_path": experiment_dir / exp_name / "experiment_config.json",
-                "results_path": experiment_dir / "experiment_results.json",
-                "experiment_key": exp_name,
-                "output_subdir": exp_name,
-                "use_physics": use_physics,
-                "lambda_wfa": lw,
-                "lambda_doppler": ld,
-                "lambda_temp": lt,
-                "label": label,
+        model_configs = {}
+        for subdir in sorted([p for p in experiment_dir.iterdir() if p.is_dir()]):
+            model_path = subdir / "final_model.pth"
+            config_path = subdir / "experiment_config.json"
+            if not model_path.exists():
+                continue
+
+            experiment_key = subdir.name
+            lambda_wfa = 0.0
+            lambda_doppler = 0.0
+            lambda_temp = 0.0
+
+            if config_path.exists():
+                try:
+                    with open(config_path, "r") as f:
+                        raw_cfg = json.load(f)
+                    experiment_key = raw_cfg.get("experiment_name", experiment_key)
+                    phys_cfg = raw_cfg.get("physics_config", {})
+                    lambda_wfa = float(phys_cfg.get("lambda_wfa", 0.0))
+                    lambda_doppler = float(phys_cfg.get("lambda_doppler", 0.0))
+                    lambda_temp = float(phys_cfg.get("lambda_temp", 0.0))
+                except Exception:
+                    pass
+
+            color = "gray"
+            if experiment_key.startswith("no_physics"):
+                color = "blue"
+            elif experiment_key.startswith("wfa_only"):
+                color = "orange"
+            elif experiment_key.startswith("doppler_only"):
+                color = "green"
+            elif experiment_key.startswith("black_body_only"):
+                color = "red"
+            elif experiment_key.startswith("all_physics_terms"):
+                color = "purple"
+
+            key_name = experiment_key if experiment_key not in model_configs else f"{experiment_key}__{subdir.name}"
+            model_configs[key_name] = {
+                "path": model_path,
+                "config_path": config_path,
+                "results_path": results_path,
+                "experiment_key": experiment_key,
+                "output_subdir": subdir.name,
+                "use_physics": None,
+                "lambda_wfa": lambda_wfa,
+                "lambda_doppler": lambda_doppler,
+                "lambda_temp": lambda_temp,
+                "label": f"{experiment_key} ({self.experiment_root})",
                 "color": color,
             }
 
-        return {
-            "no_physics_80_to_113": _exp_cfg("no_physics", "No Physics 80 to 113", "blue", 0.0, 0.0, 0.0, None),
-            "wfa_only_80_to_113": _exp_cfg("wfa_only", "WFA Only 80 to 113", "orange", 1.0, 0.0, 0.0, ["wfa"]),
-            "doppler_only_80_to_113": _exp_cfg("doppler_only", "Doppler Only 80 to 113", "green", 0.0, 1.0, 0.0, ["doppler"]),
-            "black_body_only_80_to_113": _exp_cfg("black_body_only", "BlackBody Only 80 to 113", "red", 0.0, 0.0, 1.0, ["temperature"]),
-            "all_physics_terms_80_to_113": _exp_cfg("all_physics_terms", "All Physics Terms 80 to 113", "purple", 1.0, 1.0, 1.0, ["wfa", "doppler", "temperature"]),
-        }
+        if not model_configs:
+            raise FileNotFoundError(
+                f"No models with final_model.pth found under {experiment_dir}"
+            )
+
+        return model_configs
 
     @staticmethod
     def select_model_configs(model_configs: dict, selected_types: list[str]) -> dict:
         if not selected_types or "all" in selected_types:
             return model_configs
-        selected_set = set(selected_types)
+
+        def _normalize_selected_type(value: str) -> str:
+            if value.startswith("wfa-lambda-"):
+                return value.replace("wfa-lambda-", "wfa_only-lambda-", 1)
+            if value.startswith("doppler-lambda-"):
+                return value.replace("doppler-lambda-", "doppler_only-lambda-", 1)
+            if value.startswith("black-body-lambda-"):
+                return value.replace("black-body-lambda-", "black_body_only-lambda-", 1)
+            if value.startswith("black_body-lambda-"):
+                return value.replace("black_body-lambda-", "black_body_only-lambda-", 1)
+            if value == "wfa":
+                return "wfa_only"
+            if value == "doppler":
+                return "doppler_only"
+            if value in {"black-body", "black_body"}:
+                return "black_body_only"
+            if value == "all_physics":
+                return "all_physics_terms"
+            return value
+
+        selected_set = {_normalize_selected_type(s) for s in selected_types}
         filtered = {
             name: cfg for name, cfg in model_configs.items()
-            if cfg.get("experiment_key") in selected_set
+            if (
+                cfg.get("experiment_key") in selected_set
+                or any(
+                    cfg.get("experiment_key", "").startswith(f"{sel}-lambda-")
+                    for sel in selected_set
+                )
+            )
         }
         if not filtered:
             available = sorted({cfg.get("experiment_key") for cfg in model_configs.values()})
@@ -230,13 +421,14 @@ class AnalysisModelPipeline:
                 y = model(x).detach().cpu().numpy()
                 all_pred.append(y)
 
-        pred = np.concatenate(all_pred, axis=0)  # (N, 3*n_tau)
+        pred = np.concatenate(all_pred, axis=0)  # (N, 3*n_tau) block order [T|Vz|Bz]
+        if pred.ndim != 2 or pred.shape[1] % 3 != 0:
+            raise ValueError(f"Expected prediction shape (N, 3*n_tau), got {pred.shape}")
         n_tau_local = pred.shape[1] // 3
-        pred = pred.reshape(-1, n_tau_local, 3)
 
-        T_denorm = mhd_normalizer.denormalize(pred[:, :, 0], param="T").reshape(pred_nx, pred_ny, n_tau_local)
-        Vz_denorm = mhd_normalizer.denormalize(pred[:, :, 1], param="Vz").reshape(pred_nx, pred_ny, n_tau_local)
-        Bz_denorm = mhd_normalizer.denormalize(pred[:, :, 2], param="Bz").reshape(pred_nx, pred_ny, n_tau_local)
+        T_denorm = mhd_normalizer.denormalize(pred[:, :n_tau_local], param="T").reshape(pred_nx, pred_ny, n_tau_local)
+        Vz_denorm = mhd_normalizer.denormalize(pred[:, n_tau_local:2 * n_tau_local], param="Vz").reshape(pred_nx, pred_ny, n_tau_local)
+        Bz_denorm = mhd_normalizer.denormalize(pred[:, 2 * n_tau_local:3 * n_tau_local], param="Bz").reshape(pred_nx, pred_ny, n_tau_local)
         return {"T": T_denorm, "Vz": Vz_denorm, "Bz": Bz_denorm}
 
     @staticmethod
@@ -280,6 +472,21 @@ class MuramDiagnosticPlots:
         base_out_dir = Path(output_dir)
         self.out_dir = base_out_dir / "final" / model_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_rows: list[dict[str, float | str | int]] = []
+
+    def _write_metrics_csv(self) -> None:
+        if not self.metrics_rows:
+            return
+        metrics_path = self.out_dir / "metrics_summary.csv"
+        fieldnames = [
+            "model", "snapshot", "param", "logtau", "pairing", "n_points",
+            "corr", "r2", "rmse", "rrmse", "mae", "nmae", "bias",
+        ]
+        with open(metrics_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self.metrics_rows)
+        print(f"[{self.model_name}] Metrics saved to: {metrics_path}")
 
     def plot_image_panel(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float) -> None:
         err_map = pred_map - true_map
@@ -315,22 +522,20 @@ class MuramDiagnosticPlots:
         fig.savefig(self.out_dir / f"{p}_logtau_{od_eff:.2f}_images.png", dpi=170, bbox_inches="tight")
         plt.close(fig)
 
-    def plot_jointplot(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float, tau_idx: int) -> None:
+    def plot_jointplot(self, true_map: np.ndarray, pred_map: np.ndarray, p: str, od_eff: float, tau_idx: int) -> dict[str, float] | None:
         x = true_map.ravel()
         y = pred_map.ravel()
         m = np.isfinite(x) & np.isfinite(y)
         x, y = x[m], y[m]
         if x.size == 0:
-            return
+            return None
+
+        metrics = compute_regression_metrics(x, y)
 
         if x.size > self.n_sample > 0:
             rng = np.random.default_rng(seed=tau_idx + 7)
             idx = rng.choice(x.size, size=self.n_sample, replace=False)
             x, y = x[idx], y[idx]
-
-        rmse = np.sqrt(np.mean((y - x) ** 2))
-        rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
-        corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
 
         lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
         g = sns.jointplot(
@@ -349,12 +554,14 @@ class MuramDiagnosticPlots:
         g.ax_joint.set_ylabel("Prediction")
         g.fig.suptitle(
             f"Final Model | {self.model_name} | Snapshot {self.label} | {p} @ log(tau)={od_eff:.2f}\n"
-            f"Corr={corr:.3f}, RRMSE={rrmse:.3f}",
+            f"Corr={format_metric(metrics['corr'])}, R²={format_metric(metrics['r2'])}, "
+            f"RRMSE={format_metric(metrics['rrmse'])}, NMAE={format_metric(metrics['nmae'])}",
             y=1.02,
         )
         g.fig.tight_layout()
         g.fig.savefig(self.out_dir / f"{p}_logtau_{od_eff:.2f}_jointplot.png", dpi=170, bbox_inches="tight")
         plt.close(g.fig)
+        return metrics
 
     def generate(
         self,
@@ -374,7 +581,25 @@ class MuramDiagnosticPlots:
                     true_map = self._resize_map_to_shape(true_map, pred_map.shape)
 
                 self.plot_image_panel(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff)
-                self.plot_jointplot(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff, tau_idx=tau_idx)
+                metrics = self.plot_jointplot(true_map=true_map, pred_map=pred_map, p=p, od_eff=od_eff, tau_idx=tau_idx)
+                if metrics is not None:
+                    self.metrics_rows.append({
+                        "model": self.model_name,
+                        "snapshot": self.label,
+                        "param": p,
+                        "logtau": od_eff,
+                        "pairing": "paired",
+                        "n_points": int(metrics["n_points"]),
+                        "corr": float(metrics["corr"]),
+                        "r2": float(metrics["r2"]),
+                        "rmse": float(metrics["rmse"]),
+                        "rrmse": float(metrics["rrmse"]),
+                        "mae": float(metrics["mae"]),
+                        "nmae": float(metrics["nmae"]),
+                        "bias": float(metrics["bias"]),
+                    })
+
+        self._write_metrics_csv()
 
     @staticmethod
     def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
@@ -411,6 +636,23 @@ class ModestDiagnosticPlots:
         self.pred_ny = None
         self.n_tau_eff = None
         self.tau_indices = None
+        self.metrics_rows: list[dict[str, float | str | int]] = []
+
+    def _write_metrics_csv(self, model_type: str, out_root: Path) -> None:
+        rows = [r for r in self.metrics_rows if r.get("model") == model_type]
+        if not rows:
+            return
+        metrics_path = out_root / "metrics_summary.csv"
+        fieldnames = [
+            "model", "param", "logtau", "comparison", "n_points", "n_true", "n_pred",
+            "corr", "r2", "rmse", "rrmse", "mae", "nmae", "bias",
+            "ks", "w1_quantile", "jsd", "overlap",
+        ]
+        with open(metrics_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"[{model_type}] Metrics saved to: {metrics_path}")
 
     def _resolve_tau_indices(self, indices: list[int] | None, n_tau: int) -> list[int]:
         if not indices:
@@ -423,11 +665,13 @@ class ModestDiagnosticPlots:
         return sorted(set(out))
 
     def prepare_snapshot(self, n_tau: int):
+        prediction_input_mode = "downsampled" if getattr(self.args, "downsample_prediction_input", False) else "upsampled"
         self.modest_data = self.modest.load_all(
             region_bounds=tuple(self.args.crop_bounds) if self.args.cropped_region else None,
             apply_mask=self.args.polarization_mask,
             cache=self.modest_cache,
             use_cache=not self.args.no_modest_cache,
+            prediction_input_mode=prediction_input_mode,
         )
         self.modest_logtau = list(
             self.modest_data.get("tau_values", sorted(self.modest_data["spinor_atm"]["T"].keys()))
@@ -444,13 +688,17 @@ class ModestDiagnosticPlots:
                 [self.modest_data["spinor_atm"]["Blos"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
             ).astype(np.float32),
         }
-        self.pred_nx, self.pred_ny = self.modest_data["smoothed_stokes"]["I"].shape[:2]
-        norm_stokes = self.stokes_normalizer.transform(self.modest_data["smoothed_stokes"])
+        prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
+        self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
+        norm_stokes = self.stokes_normalizer.transform(prediction_stokes)
         I_flat = norm_stokes["I"].reshape(self.pred_nx * self.pred_ny, -1)
         V_flat = norm_stokes["V"].reshape(self.pred_nx * self.pred_ny, -1)
         self.modest_stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)
         self.tau_indices = self._resolve_tau_indices(self.args.tau_indices, self.n_tau_eff)
         print(f"\nMODEST optical depth nodes: {[float(v) for v in self.modest_logtau]}")
+        gt_nx, gt_ny = self.modest_mhd_data["T"].shape[:2]
+        print(f"MODEST prediction input mode: {prediction_input_mode}")
+        print(f"MODEST prediction input grid: {self.pred_nx}x{self.pred_ny} (GT: {gt_nx}x{gt_ny})")
 
     def _filter_matches(self, matches):
         if not self.tau_indices:
@@ -500,9 +748,12 @@ class ModestDiagnosticPlots:
             plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
         else:
             axes[2].text(
-                0.5, 0.5,
+                0.5,
+                0.5,
                 f"Error skipped\nshape mismatch\nGT={gt.shape}\nPred={pr.shape}",
-                ha="center", va="center", transform=axes[2].transAxes,
+                ha="center",
+                va="center",
+                transform=axes[2].transAxes,
             )
             axes[2].set_axis_off()
         fig.suptitle(title)
@@ -518,28 +769,83 @@ class ModestDiagnosticPlots:
         title: str,
         save_path: Path,
         max_points: int = 50000,
-    ):
-        x = true_2d[np.isfinite(true_2d)].ravel()
-        y = pred_2d[np.isfinite(pred_2d)].ravel()
-        if x.size == 0 or y.size == 0:
-            return
-        n = min(max_points, x.size, y.size)
-        q = np.linspace(0.0, 1.0, n, endpoint=False) + 0.5 / n
-        xq = np.quantile(x, q)
-        yq = np.quantile(y, q)
-        lo = float(min(np.min(xq), np.min(yq)))
-        hi = float(max(np.max(xq), np.max(yq)))
-        g = sns.jointplot(x=xq, y=yq, kind="scatter", s=8, alpha=0.25, height=6)
+    ) -> tuple[dict[str, float], str] | None:
+        if true_2d.shape == pred_2d.shape:
+            x = true_2d.ravel()
+            y = pred_2d.ravel()
+            m = np.isfinite(x) & np.isfinite(y)
+            x_pair, y_pair = x[m], y[m]
+            if x_pair.size == 0:
+                return None
+
+            if x_pair.size > max_points:
+                rng = np.random.default_rng(seed=17)
+                idx = rng.choice(x_pair.size, size=max_points, replace=False)
+                x_plot, y_plot = x_pair[idx], y_pair[idx]
+            else:
+                x_plot, y_plot = x_pair, y_pair
+
+            metrics_reg = compute_regression_metrics(x_pair, y_pair)
+            metrics_dist = compute_distribution_similarity_metrics(x_pair, y_pair)
+            comparison = "paired_pixel"
+            title_metrics = (
+                f"paired | Corr={format_metric(metrics_reg['corr'])}, R²={format_metric(metrics_reg['r2'])}, "
+                f"RRMSE={format_metric(metrics_reg['rrmse'])}, NMAE={format_metric(metrics_reg['nmae'])}"
+            )
+        else:
+            x = true_2d[np.isfinite(true_2d)].ravel()
+            y = pred_2d[np.isfinite(pred_2d)].ravel()
+            if x.size == 0 or y.size == 0:
+                return None
+
+            n = min(max_points, x.size, y.size)
+            q = np.linspace(0.0, 1.0, n, endpoint=False) + 0.5 / n
+            x_plot = np.quantile(x, q)
+            y_plot = np.quantile(y, q)
+            metrics_reg = {
+                "n_points": np.nan,
+                "corr": np.nan,
+                "r2": np.nan,
+                "rmse": np.nan,
+                "rrmse": np.nan,
+                "mae": np.nan,
+                "nmae": np.nan,
+                "bias": np.nan,
+            }
+            metrics_dist = compute_distribution_similarity_metrics(x, y)
+            comparison = "distribution_quantile"
+            title_metrics = (
+                f"distribution | KS={format_metric(metrics_dist['ks'])}, "
+                f"W1q={format_metric(metrics_dist['w1_quantile'])}, "
+                f"JSD={format_metric(metrics_dist['jsd'])}, OVL={format_metric(metrics_dist['overlap'])}"
+            )
+
+        lo = float(min(np.min(x_plot), np.min(y_plot)))
+        hi = float(max(np.max(x_plot), np.max(y_plot)))
+        g = sns.jointplot(x=x_plot, y=y_plot, kind="scatter", s=8, alpha=0.25, height=6)
         g.ax_joint.plot([lo, hi], [lo, hi], "r--", lw=1.2)
         g.ax_joint.set_xlim(lo, hi)
         g.ax_joint.set_ylim(lo, hi)
-        g.ax_joint.set_xlabel("Ground truth (quantiles)")
-        g.ax_joint.set_ylabel("Prediction (quantiles)")
-        g.fig.suptitle(title, y=1.02)
+        if comparison == "paired_pixel":
+            g.ax_joint.set_xlabel("Ground truth")
+            g.ax_joint.set_ylabel("Prediction")
+        else:
+            g.ax_joint.set_xlabel("Ground truth (quantiles)")
+            g.ax_joint.set_ylabel("Prediction (quantiles)")
+        g.fig.suptitle(
+            f"{title}\n"
+            f"{title_metrics}",
+            y=1.02,
+        )
         g.fig.tight_layout()
         save_path.parent.mkdir(parents=True, exist_ok=True)
         g.fig.savefig(save_path, dpi=200, bbox_inches="tight")
         plt.close(g.fig)
+        out_metrics = {
+            **metrics_reg,
+            **metrics_dist,
+        }
+        return out_metrics, comparison
 
     def run(self, model_configs, models):
         for name, model in models.items():
@@ -587,15 +893,38 @@ class ModestDiagnosticPlots:
                         transpose=True,
                         transpose_pred=not self.args.cropped_region,
                     )
-                    self._plot_jointplot(
+                    metrics_out = self._plot_jointplot(
                         true_2d=true_map,
                         pred_2d=pred_map,
                         title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
                         save_path=joint_dir / f"{param}_tau_{tau_val:+.2f}_jointplot.png",
                     )
+                    if metrics_out is not None:
+                        metrics, comparison = metrics_out
+                        self.metrics_rows.append({
+                            "model": model_type,
+                            "param": param,
+                            "logtau": float(tau_val),
+                            "comparison": comparison,
+                            "n_points": int(metrics["n_points"]) if np.isfinite(metrics["n_points"]) else np.nan,
+                            "n_true": int(metrics["n_true"]),
+                            "n_pred": int(metrics["n_pred"]),
+                            "corr": float(metrics["corr"]),
+                            "r2": float(metrics["r2"]),
+                            "rmse": float(metrics["rmse"]),
+                            "rrmse": float(metrics["rrmse"]),
+                            "mae": float(metrics["mae"]),
+                            "nmae": float(metrics["nmae"]),
+                            "bias": float(metrics["bias"]),
+                            "ks": float(metrics["ks"]),
+                            "w1_quantile": float(metrics["w1_quantile"]),
+                            "jsd": float(metrics["jsd"]),
+                            "overlap": float(metrics["overlap"]),
+                        })
                     saved_any = True
             if saved_any:
                 print(f"[{model_type}] Surface images saved to: {surface_dir}")
                 print(f"[{model_type}] Jointplots saved to: {joint_dir}")
+                self._write_metrics_csv(model_type=model_type, out_root=out_root)
             else:
                 print(f"[{model_type}] No images were saved.")

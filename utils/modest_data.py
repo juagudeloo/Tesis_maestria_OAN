@@ -39,6 +39,7 @@ class ModestData:
 		self.upsampled_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.deconvolved_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.smoothed_stokes: Optional[Dict[str, np.ndarray]] = None
+		self.prediction_stokes: Optional[Dict[str, np.ndarray]] = None
 		self.inverted_profs: Optional[Dict[str, np.ndarray]] = None
 		self.inverted_atmos: Optional[np.ndarray] = None  # (n_params, ny, nx)
 		self.spinor_atm: Optional[Dict[str, Dict[float, np.ndarray]]] = None
@@ -293,12 +294,15 @@ class ModestData:
 				return None
 			masked = {k: v.copy() for k, v in stokes.items()}
 			for key in masked:
-				masked[key][~self.mask] = np.nan
+				target_shape = masked[key].shape[:2]
+				mask_on_target = self._mask_to_target_shape(self.mask, target_shape)
+				masked[key][~mask_on_target] = np.nan
 			return masked
 
 		self.obs_stokes = _mask_stokes(self.obs_stokes)
 		self.deconvolved_stokes = _mask_stokes(self.deconvolved_stokes)
 		self.smoothed_stokes = _mask_stokes(self.smoothed_stokes)
+		self.prediction_stokes = _mask_stokes(self.prediction_stokes)
 
 		if self.inverted_profs is not None:
 			self.inverted_profs = {k: v.copy() for k, v in self.inverted_profs.items()}
@@ -399,6 +403,8 @@ class ModestData:
 			region["deconvolved_stokes"] = _crop_stokes_dict(self.deconvolved_stokes)
 		if self.smoothed_stokes is not None:
 			region["smoothed_stokes"] = _crop_stokes_dict(self.smoothed_stokes)
+		if self.prediction_stokes is not None:
+			region["prediction_stokes"] = _crop_stokes_dict(self.prediction_stokes)
 		if self.inverted_profs is not None:
 			region["inverted_profs"] = _crop_stokes_dict(self.inverted_profs)
 
@@ -665,6 +671,7 @@ class ModestData:
 		cache: ModestDataCache | None = None,
 		use_cache: bool = True,
 		upsampling_factor: int = 2,
+		prediction_input_mode: str = "upsampled",
 	) -> Dict[str, object]:
 		"""Load all MODEST data products with optional upsampling.
 
@@ -680,7 +687,14 @@ class ModestData:
 			Enable cache usage when cache instance is provided
 		upsampling_factor : int
 			Spatial upsampling factor used before deconvolution
+		prediction_input_mode : str
+			Input grid used later for model prediction: 'upsampled' or 'downsampled'.
+			'upsampled' uses smoothed deconvolved upsampled Stokes directly.
+			'downsampled' reduces smoothed Stokes back to original observed grid.
 		"""
+		if prediction_input_mode not in ("upsampled", "downsampled"):
+			raise ValueError("prediction_input_mode must be 'upsampled' or 'downsampled'")
+
 		cache_config = {
 			"modest_dir": str(self.modest_dir.resolve()),
 			"psf_path": str(self.psf_path.resolve()),
@@ -700,7 +714,8 @@ class ModestData:
 		else:
 			self._compute_all_products(upsampling_factor=upsampling_factor)
 
-		# Apply optional mask AFTER restoring/building the base cached snapshot
+		# Build prediction-ready Stokes on requested grid (native pipeline option)
+		self.prediction_stokes = self._build_prediction_stokes(mode=prediction_input_mode)
 		if apply_mask:
 			self.apply_mask_to_data()
 
@@ -708,6 +723,7 @@ class ModestData:
 			return self.extract_region(*region_bounds) | {
 				"wl": self.wl,
 				"wl_inv": self.wl_inv,
+				"prediction_input_mode": prediction_input_mode,
 				"tau_values": self.get_sorted_tau_values("T"),
 			}
 
@@ -717,6 +733,7 @@ class ModestData:
 			"upsampled_stokes": self.upsampled_stokes,
 			"deconvolved_stokes": self.deconvolved_stokes,
 			"smoothed_stokes": self.smoothed_stokes,
+			"prediction_stokes": self.prediction_stokes,
 			"inverted_profs": self.inverted_profs,
 			"inverted_atmos": self.inverted_atmos,
 			"spinor_atm": self.spinor_atm,
@@ -725,8 +742,65 @@ class ModestData:
 			"mask": self.mask,
 			"circ_pol": self.circ_pol,
 			"sample_pixels": self.sample_pixels,
+			"prediction_input_mode": prediction_input_mode,
 			"tau_values": self.get_sorted_tau_values("T"),
 		}
+
+	def _build_prediction_stokes(self, mode: str) -> Dict[str, np.ndarray]:
+		if self.smoothed_stokes is None:
+			raise ValueError("Smoothed Stokes are not available to build prediction input")
+		if mode == "upsampled":
+			return {k: v.copy() for k, v in self.smoothed_stokes.items()}
+
+		if self.obs_stokes is None:
+			raise ValueError("Observed Stokes not available for downsampling target grid")
+
+		target_shape = self.obs_stokes["I"].shape[:2]
+		return {
+			k: self._downsample_cube_to_shape(v, target_shape)
+			for k, v in self.smoothed_stokes.items()
+		}
+
+	@staticmethod
+	def _mask_to_target_shape(mask: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
+		"""Map a boolean mask to a target grid using nearest-like integer scaling when possible."""
+		sy, sx = mask.shape
+		ty, tx = target_shape
+		if (sy, sx) == (ty, tx):
+			return mask.astype(bool)
+
+		if ty % sy == 0 and tx % sx == 0:
+			fy = ty // sy
+			fx = tx // sx
+			return np.repeat(np.repeat(mask, fy, axis=0), fx, axis=1).astype(bool)
+
+		raised = np.zeros(target_shape, dtype=bool)
+		sy_ratio = sy / ty
+		sx_ratio = sx / tx
+		for iy in range(ty):
+			sy_idx = min(int(np.floor(iy * sy_ratio)), sy - 1)
+			for ix in range(tx):
+				sx_idx = min(int(np.floor(ix * sx_ratio)), sx - 1)
+				raised[iy, ix] = bool(mask[sy_idx, sx_idx])
+		return raised
+
+	@staticmethod
+	def _downsample_cube_to_shape(cube: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
+		"""Downsample (ny, nx, nwl) cube to target (ny, nx) using block mean when possible."""
+		ny, nx, nwl = cube.shape
+		ty, tx = target_shape
+		if (ny, nx) == (ty, tx):
+			return cube.astype(np.float32)
+
+		if ny % ty == 0 and nx % tx == 0:
+			fy = ny // ty
+			fx = nx // tx
+			reduced = cube.reshape(ty, fy, tx, fx, nwl)
+			return np.nanmean(reduced, axis=(1, 3)).astype(np.float32)
+
+		raise ValueError(
+			f"Cannot downsample cube from {(ny, nx)} to {(ty, tx)} using integer block mean"
+		)
 
 	def _compute_all_products(self, upsampling_factor: int) -> None:
 		self.load_continuum()
@@ -752,6 +826,7 @@ class ModestData:
 			"upsampled_stokes": self.upsampled_stokes,
 			"deconvolved_stokes": self.deconvolved_stokes,
 			"smoothed_stokes": self.smoothed_stokes,
+			"prediction_stokes": self.prediction_stokes,
 			"inverted_profs": self.inverted_profs,
 			"inverted_atmos": self.inverted_atmos,
 			"spinor_atm": self.spinor_atm,
@@ -768,6 +843,7 @@ class ModestData:
 		self.upsampled_stokes = payload.get("upsampled_stokes")
 		self.deconvolved_stokes = payload.get("deconvolved_stokes")
 		self.smoothed_stokes = payload.get("smoothed_stokes")
+		self.prediction_stokes = payload.get("prediction_stokes")
 		self.inverted_profs = payload.get("inverted_profs")
 		self.inverted_atmos = payload.get("inverted_atmos")
 		self.spinor_atm = payload.get("spinor_atm")

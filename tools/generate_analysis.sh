@@ -6,8 +6,10 @@ set -euo pipefail
 # ==============================================================================
 
 # Shared model selection (space-separated list)
-# Options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
-MODEL_TYPES="no_physics wfa_only"
+# Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
+# Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
+MODEL_TYPES="no_physics wfa_only-lambda-1 wfa_only-lambda-0_1 wfa_only-lambda-0_01 wfa_only-lambda-0_001 wfa_only-lambda-0_0001 wfa_only-lambda-1em05"
+EXPERIMENT_ROOT="experiment_112_to_113"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest
@@ -24,6 +26,7 @@ POLARIZATION_THRESHOLD="1e-2"
 CROP_LABEL="plage"
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
 CLEAR_MODEST_CACHE="0"                  # 1 => --clear-modest-cache
+DOWNSAMPLE_PREDICTION_INPUT="0"         # 1 => --downsample-prediction-input
 
 usage() {
   cat <<'EOF'
@@ -32,8 +35,10 @@ Usage: tools/generate_analysis.sh [options]
 Options:
   --run both|muram|modest   Select analyses to run (default: both)
   --cropped-region 0|1      MODEST only: enable/disable cropped-region output (default: 0)
+  --experiment-root NAME    Experiment folder under output/experiments (default from script variable)
   --modest-cache-dir PATH   MODEST cache directory
   --clear-modest-cache 0|1  Clear MODEST cache before run (default: 0)
+  --downsample-prediction-input 0|1  MODEST: downsample prediction Stokes to native grid
   -h, --help                Show this help
 EOF
 }
@@ -48,12 +53,20 @@ while [[ $# -gt 0 ]]; do
       CROPPED_REGION="${2:-}"
       shift 2
       ;;
+    --experiment-root)
+      EXPERIMENT_ROOT="${2:-}"
+      shift 2
+      ;;
     --modest-cache-dir)
       MODEST_CACHE_DIR="${2:-}"
       shift 2
       ;;
     --clear-modest-cache)
       CLEAR_MODEST_CACHE="${2:-}"
+      shift 2
+      ;;
+    --downsample-prediction-input)
+      DOWNSAMPLE_PREDICTION_INPUT="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -86,6 +99,11 @@ if [[ "${CLEAR_MODEST_CACHE}" != "0" && "${CLEAR_MODEST_CACHE}" != "1" ]]; then
   exit 1
 fi
 
+if [[ "${DOWNSAMPLE_PREDICTION_INPUT}" != "0" && "${DOWNSAMPLE_PREDICTION_INPUT}" != "1" ]]; then
+  echo "Invalid value for --downsample-prediction-input: ${DOWNSAMPLE_PREDICTION_INPUT} (use: 0|1)" >&2
+  exit 1
+fi
+
 CROPPED_REGION_FLAG=""
 if [[ "${CROPPED_REGION}" == "1" ]]; then
   CROPPED_REGION_FLAG="--cropped-region"
@@ -101,6 +119,11 @@ if [[ "${CLEAR_MODEST_CACHE}" == "1" ]]; then
   CLEAR_MODEST_CACHE_FLAG="--clear-modest-cache"
 fi
 
+DOWNSAMPLE_PREDICTION_INPUT_FLAG=""
+if [[ "${DOWNSAMPLE_PREDICTION_INPUT}" == "1" ]]; then
+  DOWNSAMPLE_PREDICTION_INPUT_FLAG="--downsample-prediction-input"
+fi
+
 # ==============================================================================
 # RUN ANALYSIS
 # ==============================================================================
@@ -109,6 +132,7 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "muram" ]]; then
   python3 ./scripts/analysis/muram_analysis.py \
     --cache-dir "${CACHE_DIR}" \
     --step-to-plot "${STEP_TO_PLOT}" \
+    --experiment-root "${EXPERIMENT_ROOT}" \
     --model-types ${MODEL_TYPES}
 fi
 
@@ -118,8 +142,10 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
     --crop-bounds "${CROP_BOUNDS[@]}" \
     ${POLARIZATION_MASK_FLAG} \
     --polarization-threshold "${POLARIZATION_THRESHOLD}" \
+    --experiment-root "${EXPERIMENT_ROOT}" \
     --model-types ${MODEL_TYPES} \
     --crop-label "${CROP_LABEL}" \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
     ${CLEAR_MODEST_CACHE_FLAG}
 fi

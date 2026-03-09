@@ -1070,25 +1070,34 @@ def generate_epoch_diagnostic_plots(
 
     # Loop-based denormalization pipeline (same style as other scripts)
     n_tau = int(len(logtau))
-    param_names = ["T", "Vz", "Bz"]
 
-    if pred_norm.ndim == 2:
-        pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau, 3)
-    else:
-        pred_reshaped = pred_norm
+    if pred_norm.ndim != 2 or pred_norm.shape[1] != 3 * n_tau:
+        raise ValueError(
+            f"Expected pred_norm shape (N, {3 * n_tau}), got {pred_norm.shape}"
+        )
+    if gt_norm.ndim != 2 or gt_norm.shape[1] != 3 * n_tau:
+        raise ValueError(
+            f"Expected gt_norm shape (N, {3 * n_tau}), got {gt_norm.shape}"
+        )
 
-    if gt_norm.ndim == 2:
-        gt_reshaped = gt_norm.reshape(gt_norm.shape[0], n_tau, 3)
-    else:
-        gt_reshaped = gt_norm
+    pred_split = {
+        "T": pred_norm[:, :n_tau],
+        "Vz": pred_norm[:, n_tau:2 * n_tau],
+        "Bz": pred_norm[:, 2 * n_tau:3 * n_tau],
+    }
+    gt_split = {
+        "T": gt_norm[:, :n_tau],
+        "Vz": gt_norm[:, n_tau:2 * n_tau],
+        "Bz": gt_norm[:, 2 * n_tau:3 * n_tau],
+    }
 
     pred_den = {}
     gt_den = {}
     nx, ny = dataset.nx, dataset.ny
 
-    for param_idx, param_name in enumerate(param_names):
-        pred_param_norm = pred_reshaped[:, :, param_idx]
-        gt_param_norm = gt_reshaped[:, :, param_idx]
+    for param_name in ["T", "Vz", "Bz"]:
+        pred_param_norm = pred_split[param_name]
+        gt_param_norm = gt_split[param_name]
 
         pred_param_den = mhd_normalizer.denormalize(pred_param_norm, param=param_name)
         gt_param_den = mhd_normalizer.denormalize(gt_param_norm, param=param_name)
@@ -1303,12 +1312,15 @@ def generate_epoch_modest_diagnostic_plots(
 
     pred_norm = np.concatenate(all_pred, axis=0)
     n_tau_pred = int(len(pred_logtau))
-    pred_reshaped = pred_norm.reshape(pred_norm.shape[0], n_tau_pred, 3)
+    if pred_norm.ndim != 2 or pred_norm.shape[1] != 3 * n_tau_pred:
+        raise ValueError(
+            f"Expected pred_norm shape (N, {3 * n_tau_pred}), got {pred_norm.shape}"
+        )
 
     pred_den = {
-        "T": mhd_normalizer.denormalize(pred_reshaped[:, :, 0], param="T").reshape(pred_nx, pred_ny, n_tau_pred),
-        "Vz": mhd_normalizer.denormalize(pred_reshaped[:, :, 1], param="Vz").reshape(pred_nx, pred_ny, n_tau_pred),
-        "Bz": mhd_normalizer.denormalize(pred_reshaped[:, :, 2], param="Bz").reshape(pred_nx, pred_ny, n_tau_pred),
+        "T": mhd_normalizer.denormalize(pred_norm[:, :n_tau_pred], param="T").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Vz": mhd_normalizer.denormalize(pred_norm[:, n_tau_pred:2 * n_tau_pred], param="Vz").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Bz": mhd_normalizer.denormalize(pred_norm[:, 2 * n_tau_pred:3 * n_tau_pred], param="Bz").reshape(pred_nx, pred_ny, n_tau_pred),
     }
 
     for tau_val, tau_idx_mod, tau_idx_pred in selected_matches:

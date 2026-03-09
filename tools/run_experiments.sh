@@ -32,6 +32,7 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 MIN_STEP=112
 MAX_STEP=113
 STEP_SIZE=1
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
@@ -39,9 +40,10 @@ N_EPOCHS=30
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
-LAMBDA_WFA=1e-2
-LAMBDA_DOPPLER=5e-1
-LAMBDA_TEMP=2
+# Use one value to keep current behavior, or many values to run subexperiments for *_only branches.
+LAMBDA_WFA_VALUES=(1 1e-1 1e-2 1e-3 1e-4 1e-5)
+LAMBDA_DOPPLER_VALUES=(5e-1)
+LAMBDA_TEMP_VALUES=(2)
 
 # Logtau values to map
 LOGTAU_VALUES=(-1.0 -0.8 0.0)
@@ -84,14 +86,14 @@ python3 ./scripts/experiments/ablation_study.py \
     --step_size "${STEP_SIZE}" \
     --n_steps -1 \
     --device cuda \
-    --experiment_name "experiment_${MIN_STEP}_to_${MAX_STEP}" \
+    --experiment_name "${EXPERIMENT_ROOT}" \
     --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
     --learning_rate "${LEARNING_RATE}" \
     --c1-filters "${C1_FILTERS}" \
     --cache-dir "${CACHE_DIR}" \
-    --lambda_wfa "${LAMBDA_WFA}" \
-    --lambda_doppler "${LAMBDA_DOPPLER}" \
-    --lambda_temp "${LAMBDA_TEMP}" \
+    --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
+    --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \
+    --lambda_temp "${LAMBDA_TEMP_VALUES[@]}" \
     --blos_physics_mode "${BLOS_MODE}" \
     --blos_target_logtau "${BLOS_TARGET_LOGTAU}" \
     --vlos_physics_mode "${VLOS_MODE}" \

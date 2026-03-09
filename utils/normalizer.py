@@ -196,7 +196,7 @@ class MhdNormalizer:
             elif param == 'Vz':
                 denormalized_tau = np.clip(denormalized_tau, -20, 20)  # Velocity in km/s
             elif param == 'Bz':
-                denormalized_tau = np.clip(denormalized_tau, -3000, 3000)  # Magnetic field in G
+                denormalized_tau = np.clip(denormalized_tau, -10000, 10000)  # Magnetic field in G
             
             denormalized[:, tau_idx] = denormalized_tau
         
