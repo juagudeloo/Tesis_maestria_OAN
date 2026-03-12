@@ -470,7 +470,8 @@ class MuramDiagnosticPlots:
         self.error_cmap = "RdBu_r"
         
         base_out_dir = Path(output_dir)
-        self.out_dir = base_out_dir / "final" / model_name
+        step_folder = str(step) if step is not None else "snapshot"
+        self.out_dir = base_out_dir / "final" / step_folder / model_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_rows: list[dict[str, float | str | int]] = []
 

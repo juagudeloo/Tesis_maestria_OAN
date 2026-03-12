@@ -46,7 +46,6 @@ Tesis_maestria_OAN/
 │   ├── modest_data.py              # MODEST data loading & processing
 │   ├── normalizer.py               # Data normalization utilities
 │   ├── physics_utils.py            # Physics approximations (WFA, Doppler, Temperature)
-│   ├── grad_norm.py                # GradNorm loss balancing
 │   ├── analysis.py                 # Shared analysis pipelines & diagnostic plot classes
 │   ├── cache_manage.py             # HDF5 cache for processed steps
 │   └── model_prof_tools.py         # Model profiling & performance tools
@@ -138,12 +137,6 @@ Tesis_maestria_OAN/
   - `compute_temperature_blackbody()`: Black-body temperature from continuum
   - Handles Gaussian fitting, line core identification, and error detection
 
-#### `grad_norm.py`
-- **GradNormScheduler**: Automatic multi-task loss balancing
-- Dynamically adjusts weights for MSE, WFA, Doppler, and Temperature losses
-- Based on: Chen et al., "GradNorm: Gradient Normalization for Adaptive Loss Balancing", ICML 2018
-- Includes gradient norm computation per task
-
 #### `analysis.py`
 - **AnalysisModelPipeline**: Centralized loading of trained experiment models/configs
 - Builds runtime `TrainingConfig` from saved experiment metadata
@@ -172,12 +165,11 @@ Tesis_maestria_OAN/
   - `train_epoch()`: Epoch-level training over multiple MURaM steps
   - `train_one_step()`: Single simulation step training
   - `validate()`: Validation on held-out steps
-  - `MetricsLogger`: CSV logging for loss components and GradNorm metrics
+  - `MetricsLogger`: CSV logging for loss components
 - Supports:
   - Interleaved training across simulation steps
-  - GradNorm automatic loss balancing
   - Checkpoint saving/resuming
-  - Learning rate scheduling (ReduceLROnPlateau, CosineAnnealing)
+  - Fixed learning rate training (Adam)
 
 #### `experiments/ablation_study.py`
 - **Physics regularization ablation study**
@@ -306,9 +298,7 @@ pip install torch torchvision astropy scipy tqdm matplotlib
     ↓
 11. Backward pass & optimize
     ↓
-12. (Optional) Update GradNorm weights
-    ↓
-13. Repeat for next batch/step/epoch
+12. Repeat for next batch/step/epoch
 ```
 
 ### Loss Function
@@ -317,11 +307,6 @@ pip install torch torchvision astropy scipy tqdm matplotlib
 Total Loss = MSE_loss + λ_WFA × WFA_loss + λ_Doppler × Doppler_loss + λ_Temp × Temp_loss
 ```
 
-**With GradNorm**:
-- Weights (λ) are learned dynamically
-- Balances gradient magnitudes across tasks
-
-**Without GradNorm** (naive approach):
 - Fixed λ values (e.g., 0.01 for each term)
 
 ---
@@ -381,10 +366,8 @@ Interactive tutorials and analysis notebooks in `notebooks/`:
 - **Purpose**: Physics-Informed Neural Network integration and training
 - **Contents**:
   - Physics loss computation (WFA, Doppler, Temperature)
-  - GradNorm automatic loss balancing mechanics
   - Training loop with physics regularization
   - Loss component analysis and visualization
-  - Gradient norm tracking across tasks
   - Training dynamics and convergence analysis
 
 ---
@@ -404,10 +387,6 @@ gradient_clip = 1.0            # Gradient clipping threshold
 lambda_wfa = 0.01              # WFA B_LOS weight
 lambda_doppler = 0.01          # Doppler V_LOS weight
 lambda_temp = 0.01             # Temperature weight
-
-# GradNorm (optional)
-use_gradnorm = False           # Enable automatic balancing
-gradnorm_alpha = 1.5           # Restoring force parameter
 
 # Physics Modes
 blos_physics_mode = 'tau_averaged'      # or 'single_height'
@@ -454,18 +433,6 @@ python ablation_study.py --lambda_wfa 0.0 --lambda_doppler 0.0 --lambda_temp 0.0
 python ablation_study.py --lambda_wfa 0.0 --lambda_doppler 0.0 --lambda_temp 0.0
 ```
 
-### GradNorm Comparison
-
-```bash
-# Naive approach (fixed lambdas)
-python ablation_study.py --lambda_wfa 0.01 --lambda_doppler 0.01 --lambda_temp 0.01
-
-# GradNorm (automatic balancing)
-python ablation_study.py --use_gradnorm --gradnorm_alpha 1.5
-```
-
----
-
 ## 📊 Outputs
 
 ### Training Outputs
@@ -479,7 +446,6 @@ output/experiments/<experiment_name>/
 │   ├── logs/
 │   │   ├── epoch_log.csv         # Epoch-level metrics
 │   │   ├── batch_log.csv         # Batch-level metrics
-│   │   └── gradnorm_log.csv      # GradNorm weights (if enabled)
 │   ├── all_physics_terms_loss_curves.png
 │   └── experiment_config.json
 ├── wfa_only/
@@ -523,9 +489,8 @@ To add new physics terms or modify the architecture:
 
 ## 📚 Key References
 
-1. **GradNorm**: Chen et al., "GradNorm: Gradient Normalization for Adaptive Loss Balancing", ICML 2018
-2. **Weak-Field Approximation**: Landi Degl'Innocenti & Landolfi, "Polarization in Spectral Lines", 2004
-3. **MURaM**: Vögler et al., "The CO5BOLD/MURaM Code", 2005
+1. **Weak-Field Approximation**: Landi Degl'Innocenti & Landolfi, "Polarization in Spectral Lines", 2004
+2. **MURaM**: Vögler et al., "The CO5BOLD/MURaM Code", 2005
 
 ---
 

@@ -9,14 +9,14 @@ set -euo pipefail
 # Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
 # Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
 MODEL_TYPES="no_physics wfa_only-lambda-1 wfa_only-lambda-0_1 wfa_only-lambda-0_01 wfa_only-lambda-0_001 wfa_only-lambda-0_0001 wfa_only-lambda-1em05"
-EXPERIMENT_ROOT="experiment_112_to_113"
+EXPERIMENT_ROOT="experiment_112_to_113-wfa_from_beginning"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest
 
 # MURaM analysis args
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
-STEP_TO_PLOT="90"
+STEP_TO_PLOT="198"
 
 # MODEST analysis args
 CROPPED_REGION="0"                      # 1 => --cropped-region
@@ -34,6 +34,7 @@ Usage: tools/generate_analysis.sh [options]
 
 Options:
   --run both|muram|modest   Select analyses to run (default: both)
+  --step-to-plot STEP         MURaM: simulation step to plot (default: 198)
   --cropped-region 0|1      MODEST only: enable/disable cropped-region output (default: 0)
   --experiment-root NAME    Experiment folder under output/experiments (default from script variable)
   --modest-cache-dir PATH   MODEST cache directory
@@ -47,6 +48,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --run)
       RUN_TARGET="${2:-}"
+      shift 2
+      ;;
+    --step-to-plot)
+      STEP_TO_PLOT="${2:-}"
       shift 2
       ;;
     --cropped-region)
@@ -89,6 +94,11 @@ case "${RUN_TARGET}" in
     ;;
 esac
 
+if ! [[ "${STEP_TO_PLOT}" =~ ^[0-9]+$ ]]; then
+  echo "Invalid value for --step-to-plot: ${STEP_TO_PLOT} (must be an integer)" >&2
+  exit 1
+fi
+
 if [[ "${CROPPED_REGION}" != "0" && "${CROPPED_REGION}" != "1" ]]; then
   echo "Invalid value for --cropped-region: ${CROPPED_REGION} (use: 0|1)" >&2
   exit 1
@@ -103,6 +113,8 @@ if [[ "${DOWNSAMPLE_PREDICTION_INPUT}" != "0" && "${DOWNSAMPLE_PREDICTION_INPUT}
   echo "Invalid value for --downsample-prediction-input: ${DOWNSAMPLE_PREDICTION_INPUT} (use: 0|1)" >&2
   exit 1
 fi
+
+
 
 CROPPED_REGION_FLAG=""
 if [[ "${CROPPED_REGION}" == "1" ]]; then

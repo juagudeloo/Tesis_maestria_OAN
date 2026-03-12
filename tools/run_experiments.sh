@@ -32,11 +32,11 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 MIN_STEP=112
 MAX_STEP=113
 STEP_SIZE=1
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}"
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-wfa_plateu_gate"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=30
+N_EPOCHS=60
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
@@ -57,6 +57,13 @@ VLOS_TARGET_LOGTAU=-1.0         # Only used if VLOS_MODE='single_height'
 
 TEMP_MODE='single_height'       # 'tau_averaged' or 'single_height'
 TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = photosphere)
+
+# Optional train-time WFA gate
+WFA_GATE_MODE='plateau'         # 'off', 'threshold', or 'plateau'
+WFA_GATE_THRESHOLD=0.0          # Used when WFA_GATE_MODE='threshold'
+WFA_GATE_PATIENCE=5             # Used when WFA_GATE_MODE='plateau'
+WFA_GATE_MIN_DELTA=2e-3         # Used when WFA_GATE_MODE='plateau'
+WFA_GATE_WARMUP_EPOCHS=0
 
 # Shared cache (same path used by normalization script)
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
@@ -100,11 +107,15 @@ python3 ./scripts/experiments/ablation_study.py \
     --vlos_target_logtau "${VLOS_TARGET_LOGTAU}" \
     --temp_physics_mode "${TEMP_MODE}" \
     --temp_target_logtau "${TEMP_TARGET_LOGTAU}" \
+    --wfa-gate-mode "${WFA_GATE_MODE}" \
+    --wfa-gate-threshold "${WFA_GATE_THRESHOLD}" \
+    --wfa-gate-patience "${WFA_GATE_PATIENCE}" \
+    --wfa-gate-min-delta "${WFA_GATE_MIN_DELTA}" \
+    --wfa-gate-warmup-epochs "${WFA_GATE_WARMUP_EPOCHS}" \
     --logtau_values "${LOGTAU_VALUES[@]}" \
     --experiments ${EXPERIMENTS} \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
     --modest-crop-bounds "${MODEST_CROP_BOUNDS[@]}" \
     $( [[ "${ENABLE_MODEST_EPOCH_PLOTS}" == "1" ]] && echo "--modest-epoch-plots" ) \
-    $( [[ "${APPLY_REGION_MASK}" == "1" ]] && echo "--apply-region-mask" || echo "--no-region-mask" ) \
-    --no_scheduler
+    $( [[ "${APPLY_REGION_MASK}" == "1" ]] && echo "--apply-region-mask" || echo "--no-region-mask" )
 

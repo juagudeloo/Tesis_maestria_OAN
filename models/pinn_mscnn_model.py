@@ -550,6 +550,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         self,
         predictions: torch.Tensor,
         spatial_indices: torch.Tensor,
+        enable_wfa: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute physics-based regularization losses using RRMSE in physical units.
@@ -574,7 +575,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Individual loss components for logging
         """
         # Return zero if all physics terms are disabled
-        if self.lambda_wfa == 0 and self.lambda_doppler == 0 and self.lambda_temp == 0:
+        if (not enable_wfa or self.lambda_wfa == 0) and self.lambda_doppler == 0 and self.lambda_temp == 0:
             device = self._get_device()
             return torch.tensor(0.0, device=device), {}
         
@@ -597,7 +598,9 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             loss_components['temp_target_logtau'] = self.temp_target_logtau
         
         # WFA B_LOS loss (if enabled)
-        if self.lambda_wfa > 0:
+        loss_components['wfa_enabled'] = float(enable_wfa and self.lambda_wfa > 0)
+
+        if self.lambda_wfa > 0 and enable_wfa:
             wfa_loss = self._compute_wfa_loss(denorm_pred, spatial_indices)
             loss_components['wfa'] = wfa_loss.item()
             total_loss = total_loss + self.lambda_wfa * wfa_loss
@@ -621,8 +624,8 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         predictions: torch.Tensor,
         targets: torch.Tensor,
         spatial_indices: Optional[torch.Tensor] = None,
-        return_individual: bool = False,
-    ) -> Dict[str, torch.Tensor]:
+        enable_wfa: bool = True,
+    ) -> Dict[str, Any]:
         """
         Compute total loss with optional physics regularization.
         
@@ -634,9 +637,6 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Ground truth targets (batch_size, 63)
         spatial_indices : torch.Tensor, optional
             Spatial coordinates (batch_size, 2) for physics losses
-        return_individual : bool
-            If True, return unweighted individual loss terms for GradNorm
-            
         Returns
         -------
         loss_dict : Dict[str, torch.Tensor]
@@ -647,37 +647,22 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         
         # Physics regularization - check if ANY lambda is non-zero and spatial_indices provided
         use_physics = spatial_indices is not None and any([
-            self.lambda_wfa > 0,
+            enable_wfa and self.lambda_wfa > 0,
             self.lambda_doppler > 0,
             self.lambda_temp > 0
         ])
         
         if use_physics:
             physics_loss_total, physics_components = self.compute_physics_loss(
-                predictions, spatial_indices
+                predictions,
+                spatial_indices,
+                enable_wfa=enable_wfa,
             )
         else:
             device = self._get_device()
             physics_loss_total = torch.tensor(0.0, device=device)
-            physics_components = {}
-        
-        if return_individual:
-            # Return individual unweighted terms for GradNorm
-            individual_losses = {
-                'mse': mse_loss,
-                'wfa': torch.tensor(physics_components.get('wfa', 0.0), device=self._get_device()),
-                'doppler': torch.tensor(physics_components.get('doppler', 0.0), device=self._get_device()),
-                'temperature': torch.tensor(physics_components.get('temperature', 0.0), device=self._get_device()),
-            }
-            return {
-                'individual': individual_losses,
-                'total': mse_loss + physics_loss_total,
-                'mse': mse_loss,
-                'physics': physics_loss_total,
-                **physics_components
-            }
-        
-        # Total loss (with manual lambda weighting if not using GradNorm)
+            physics_components = {'wfa_enabled': float(enable_wfa and self.lambda_wfa > 0)}
+
         total_loss = mse_loss + physics_loss_total
 
         return {

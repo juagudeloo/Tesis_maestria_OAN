@@ -33,15 +33,21 @@ sys.path.insert(0, str(ROOT))
 
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
-from utils.grad_norm import GradNormScheduler
 from utils.cache_manage import MuramDataCache
 from scripts.base_training import (
     TrainingConfig,
     load_and_prepare_step, validate, train_epoch, MetricsLogger,
+    initialize_wfa_gate_state, update_wfa_gate_state,
     generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos,
     prepare_modest_epoch_snapshot, generate_epoch_modest_diagnostic_plots,
     generate_epoch_modest_diagnostic_videos,
 )
+
+
+def _series_for_log_plot(values) -> np.ndarray:
+    """Convert non-positive values to NaN for stable log-scale plotting."""
+    arr = np.asarray(values, dtype=float)
+    return np.where(arr > 0, arr, np.nan)
 
 
 class ExperimentTracker:
@@ -126,7 +132,7 @@ class ExperimentTracker:
             
             # Total loss
             ax1 = axes[0, 0]
-            ax1.plot(epochs, results['train_loss_history'], 'b-o', label='Total Loss', linewidth=2)
+            ax1.plot(epochs, _series_for_log_plot(results['train_loss_history']), 'b-o', label='Total Loss', linewidth=2)
             ax1.set_xlabel('Epoch')
             ax1.set_ylabel('Loss')
             ax1.set_title('Total Training Loss')
@@ -137,7 +143,7 @@ class ExperimentTracker:
             # MSE loss
             ax2 = axes[0, 1]
             if 'mse_loss_history' in results:
-                ax2.plot(epochs, results['mse_loss_history'], 'g-s', label='MSE Loss', linewidth=2)
+                ax2.plot(epochs, _series_for_log_plot(results['mse_loss_history']), 'g-s', label='MSE Loss', linewidth=2)
             ax2.set_xlabel('Epoch')
             ax2.set_ylabel('Loss')
             ax2.set_title('MSE Loss Component')
@@ -148,13 +154,13 @@ class ExperimentTracker:
             # Physics loss breakdown
             ax3 = axes[1, 0]
             if 'physics_loss_history' in results and any(l > 0 for l in results['physics_loss_history']):
-                ax3.plot(epochs, results['physics_loss_history'], 'r-^', label='Total Physics', linewidth=2)
+                ax3.plot(epochs, _series_for_log_plot(results['physics_loss_history']), 'r-^', label='Total Physics', linewidth=2)
             if 'wfa_loss_history' in results and any(l > 0 for l in results['wfa_loss_history']):
-                ax3.plot(epochs, results['wfa_loss_history'], 'm--', label='WFA', linewidth=1.5)
+                ax3.plot(epochs, _series_for_log_plot(results['wfa_loss_history']), 'm--', label='WFA', linewidth=1.5)
             if 'doppler_loss_history' in results and any(l > 0 for l in results['doppler_loss_history']):
-                ax3.plot(epochs, results['doppler_loss_history'], 'c--', label='Doppler', linewidth=1.5)
+                ax3.plot(epochs, _series_for_log_plot(results['doppler_loss_history']), 'c--', label='Doppler', linewidth=1.5)
             if 'temperature_loss_history' in results and any(l > 0 for l in results['temperature_loss_history']):
-                ax3.plot(epochs, results['temperature_loss_history'], 'y--', label='Temperature', linewidth=1.5)
+                ax3.plot(epochs, _series_for_log_plot(results['temperature_loss_history']), 'y--', label='Temperature', linewidth=1.5)
             ax3.set_xlabel('Epoch')
             ax3.set_ylabel('Loss')
             ax3.set_title('Physics Loss Components')
@@ -324,7 +330,7 @@ class ExperimentTracker:
             if 'train_loss_history' in self.results[exp]:
                 loss_history = self.results[exp]['train_loss_history']
                 epochs = range(1, len(loss_history) + 1)
-                ax8.plot(epochs, loss_history, marker='o', label=exp, linewidth=2, markersize=4)
+                ax8.plot(epochs, _series_for_log_plot(loss_history), marker='o', label=exp, linewidth=2, markersize=4)
         ax8.set_xlabel('Epoch')
         ax8.set_ylabel('Total Loss')
         ax8.set_title('Total Loss Convergence (Training)')
@@ -338,7 +344,7 @@ class ExperimentTracker:
             if 'mse_loss_history' in self.results[exp]:
                 loss_history = self.results[exp]['mse_loss_history']
                 epochs = range(1, len(loss_history) + 1)
-                ax9.plot(epochs, loss_history, marker='s', label=exp, linewidth=2, markersize=4)
+                ax9.plot(epochs, _series_for_log_plot(loss_history), marker='s', label=exp, linewidth=2, markersize=4)
         ax9.set_xlabel('Epoch')
         ax9.set_ylabel('MSE Loss')
         ax9.set_title('MSE Loss Component')
@@ -353,7 +359,7 @@ class ExperimentTracker:
                 loss_history = self.results[exp]['physics_loss_history']
                 if len(loss_history) > 0 and any(l > 0 for l in loss_history):
                     epochs = range(1, len(loss_history) + 1)
-                    ax10.plot(epochs, loss_history, marker='^', label=exp, linewidth=2, markersize=4)
+                    ax10.plot(epochs, _series_for_log_plot(loss_history), marker='^', label=exp, linewidth=2, markersize=4)
         ax10.set_xlabel('Epoch')
         ax10.set_ylabel('Physics Loss')
         ax10.set_title('Physics Loss Components')
@@ -586,10 +592,14 @@ def run_single_experiment(
     print(f"Temperature physics mode: {config.temp_physics_mode}")
     if config.temp_physics_mode == 'single_height':
         print(f"Temperature target log(tau): {config.temp_target_logtau}")
-    print(f"Use GradNorm: {config.use_gradnorm}")
-    if config.use_gradnorm:
-        print(f"GradNorm alpha: {config.gradnorm_alpha}")
-        print(f"GradNorm update freq: {config.gradnorm_update_freq}")
+    print(f"WFA gate mode: {config.wfa_gate_mode}")
+    if config.wfa_gate_mode == 'threshold':
+        print(f"WFA gate threshold: {config.wfa_gate_threshold}")
+    elif config.wfa_gate_mode == 'plateau':
+        print(
+            f"WFA gate plateau: patience={config.wfa_gate_patience}, "
+            f"min_delta={config.wfa_gate_min_delta}, warmup={config.wfa_gate_warmup_epochs}"
+        )
     print(f"Learning rate: {config.learning_rate}")
     print(f"Weight decay: {config.weight_decay}")
     print(f"Gradient clip: {config.gradient_clip}")
@@ -604,18 +614,16 @@ def run_single_experiment(
             'learning_rate': config.learning_rate,
             'weight_decay': config.weight_decay,
             'gradient_clip': config.gradient_clip,
-            'use_scheduler': config.use_scheduler,
-            'scheduler_type': config.scheduler_type,
-            'scheduler_factor': config.scheduler_factor,
-            'scheduler_patience': config.scheduler_patience,
         },
         'physics_config': {
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
-            'use_gradnorm': config.use_gradnorm,
-            'gradnorm_alpha': config.gradnorm_alpha,
-            'gradnorm_update_freq': config.gradnorm_update_freq,
+            'wfa_gate_mode': config.wfa_gate_mode,
+            'wfa_gate_threshold': config.wfa_gate_threshold,
+            'wfa_gate_patience': config.wfa_gate_patience,
+            'wfa_gate_min_delta': config.wfa_gate_min_delta,
+            'wfa_gate_warmup_epochs': config.wfa_gate_warmup_epochs,
             'blos_physics_mode': config.blos_physics_mode,
             'blos_target_logtau': config.blos_target_logtau,
             'vlos_physics_mode': config.vlos_physics_mode,
@@ -680,41 +688,6 @@ def run_single_experiment(
         weight_decay=config.weight_decay
     )
     
-    scheduler = None
-    if config.use_scheduler:
-        if config.scheduler_type == 'plateau':
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=config.scheduler_factor,
-                patience=config.scheduler_patience,
-                verbose=True
-            )
-        elif config.scheduler_type == 'cosine':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                optimizer,
-                T_0=10,
-                T_mult=2,
-                eta_min=1e-6
-            )
-        else:
-            raise ValueError(
-                f"Invalid scheduler_type='{config.scheduler_type}'. Use 'plateau' or 'cosine'."
-            )
-
-    # Initialize GradNorm scheduler if enabled
-    gradnorm_scheduler = None
-    if config.use_gradnorm and any([config.lambda_wfa > 0, config.lambda_doppler > 0, config.lambda_temp > 0]):
-        print("\nInitializing GradNorm scheduler for experiment...")
-        initial_weights = [1.0, 1.0, 1.0, 1.0]  # MSE, WFA, Doppler, Temp
-        gradnorm_scheduler = GradNormScheduler(
-            num_tasks=4,
-            alpha=config.gradnorm_alpha,
-            initial_weights=initial_weights,
-            device=config.device
-        )
-        print(f"  ✓ GradNorm initialized with alpha={config.gradnorm_alpha}")
-    
     # Prepare train/val split
     step_size = getattr(config, "step_size", 1)
     all_steps = list(range(min_step, max_step + 1, step_size))
@@ -754,11 +727,18 @@ def run_single_experiment(
     wfa_loss_history = []
     doppler_loss_history = []
     temperature_loss_history = []
+    train_wfa_enabled_history = []
     total_training_pixels = 0
+    wfa_gate_state = initialize_wfa_gate_state(config)
+    wfa_gate_trigger_epoch = None
+    wfa_gate_trigger_reason = None
     
     for epoch in range(config.n_epochs):
         with timer():
             print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
+            train_wfa_enabled = bool(wfa_gate_state.get('enabled', True))
+            train_wfa_enabled_history.append(train_wfa_enabled)
+            print(f"  Train-time WFA enabled: {train_wfa_enabled}")
             
             # Use the shared train_epoch function with cache
             epoch_metrics = train_epoch(
@@ -771,8 +751,8 @@ def run_single_experiment(
                 epoch=epoch,
                 logger=logger,
                 n_steps_per_epoch=n_steps_per_epoch,
-                gradnorm_scheduler=gradnorm_scheduler,
                 cache=cache,
+                enable_wfa=train_wfa_enabled,
             )
             
             # Extract metrics
@@ -791,6 +771,17 @@ def run_single_experiment(
             doppler_loss_history.append(avg_doppler_loss)
             temperature_loss_history.append(avg_temperature_loss)
             total_training_pixels += int(epoch_metrics.get('n_pixels_used', 0))
+
+            wfa_gate_state, wfa_gate_triggered, wfa_gate_reason = update_wfa_gate_state(
+                gate_state=wfa_gate_state,
+                config=config,
+                epoch=epoch,
+                epoch_mse_loss=float(avg_mse_loss),
+            )
+            if wfa_gate_triggered:
+                wfa_gate_trigger_epoch = int(wfa_gate_state.get('trigger_epoch') or (epoch + 1))
+                wfa_gate_trigger_reason = wfa_gate_reason
+                print(f"  WFA gate triggered at epoch {wfa_gate_trigger_epoch}: {wfa_gate_reason}")
             
             # Validation
             avg_val_loss = validate(
@@ -823,11 +814,6 @@ def run_single_experiment(
                 )
 
             val_loss_history.append(avg_val_loss)
-            if scheduler is not None:
-                if config.scheduler_type == 'plateau':
-                    scheduler.step(avg_val_loss)
-                else:
-                    scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             
             print("=" * 100)
@@ -841,13 +827,6 @@ def run_single_experiment(
             print(f"  Validation Loss: {avg_val_loss:.6f}")
             print(f"  Learning Rate:   {current_lr:.2e}")
             print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
-            
-            # Print GradNorm weights if enabled
-            if gradnorm_scheduler is not None:
-                weights = gradnorm_scheduler.task_weights.detach().cpu().numpy()
-                print(f"  GradNorm Weights:")
-                print(f"    MSE: {weights[0]:.4f}, WFA: {weights[1]:.4f}, "
-                    f"Doppler: {weights[2]:.4f}, Temp: {weights[3]:.4f}")
             
             print("=" * 100)
     
@@ -880,20 +859,26 @@ def run_single_experiment(
         model_path = config.checkpoint_dir.parent / "final_model.pth"
         model_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Include GradNorm state if used
         checkpoint_data = {
             'model_state_dict': model.state_dict(),
             'test_metrics': test_metrics,
+            'wfa_gate_state': wfa_gate_state,
+            'wfa_gate_trigger_epoch': wfa_gate_trigger_epoch,
+            'wfa_gate_trigger_reason': wfa_gate_trigger_reason,
+            'train_wfa_enabled_history': train_wfa_enabled_history,
         }
-        
-        if gradnorm_scheduler is not None:
-            checkpoint_data['gradnorm_state'] = gradnorm_scheduler.state_dict()
         
         torch.save(checkpoint_data, model_path)
     
     logger.close()
 
     config_dict['data_config']['total_training_pixels_used'] = int(total_training_pixels)
+    config_dict['runtime'] = {
+        'wfa_gate_state': wfa_gate_state,
+        'wfa_gate_trigger_epoch': wfa_gate_trigger_epoch,
+        'wfa_gate_trigger_reason': wfa_gate_trigger_reason,
+        'train_wfa_enabled_history': train_wfa_enabled_history,
+    }
     with open(config_path, 'w') as f:
         json.dump(config_dict, f, indent=2)
 
@@ -906,6 +891,10 @@ def run_single_experiment(
         'wfa_loss_history': wfa_loss_history,
         'doppler_loss_history': doppler_loss_history,
         'temperature_loss_history': temperature_loss_history,
+        'train_wfa_enabled_history': train_wfa_enabled_history,
+        'wfa_gate_state': wfa_gate_state,
+        'wfa_gate_trigger_epoch': wfa_gate_trigger_epoch,
+        'wfa_gate_trigger_reason': wfa_gate_trigger_reason,
         'training_time_minutes': training_time,
         'total_training_pixels_used': int(total_training_pixels),
         'test_metrics': test_metrics,
@@ -913,9 +902,11 @@ def run_single_experiment(
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
-            'use_gradnorm': config.use_gradnorm,
-            'gradnorm_alpha': config.gradnorm_alpha,
-            "gradnorm_update_freq": config.gradnorm_update_freq,
+            'wfa_gate_mode': config.wfa_gate_mode,
+            'wfa_gate_threshold': config.wfa_gate_threshold,
+            'wfa_gate_patience': config.wfa_gate_patience,
+            'wfa_gate_min_delta': config.wfa_gate_min_delta,
+            'wfa_gate_warmup_epochs': config.wfa_gate_warmup_epochs,
             'blos_physics_mode': config.blos_physics_mode,
             'blos_target_logtau': config.blos_target_logtau,
             'vlos_physics_mode': config.vlos_physics_mode,
@@ -953,13 +944,6 @@ def main():
     parser.add_argument('--c1-filters', '--c1_filter', dest='c1_filters', type=int, default=16,
                        help='Number of filters in first conv layer (default: 16)')
     
-    # Scheduler arguments (missing before)
-    parser.add_argument('--no_scheduler', action='store_true',
-                       help='Disable learning rate scheduler')
-    parser.add_argument('--scheduler_type', type=str, default='plateau',
-                       choices=['plateau', 'cosine', 'none'],
-                       help="Scheduler type: 'plateau', 'cosine', or 'none'")
-    
     # Lambda values for physics terms
     parser.add_argument('--lambda_wfa', type=float, nargs='+', default=[0.01],
                        help='Weight(s) for WFA B_LOS loss. Example: --lambda_wfa 0.1 0.01 0.001')
@@ -984,12 +968,6 @@ def main():
                        help='Temperature physics comparison mode')
     parser.add_argument('--temp_target_logtau', type=float, default=0.0,
                        help='Target log(tau) for temperature single_height mode (default: 0.0 for photosphere)')
-    
-    # GradNorm (optional)
-    parser.add_argument('--use_gradnorm', action='store_true',
-                       help='Enable GradNorm automatic loss balancing')
-    parser.add_argument('--gradnorm_alpha', type=float, default=1.5,
-                       help='GradNorm alpha parameter (default: 1.5)')
     
     # Experiment selection
     parser.add_argument('--experiments', type=str, nargs='+',
@@ -1088,6 +1066,21 @@ def main():
     parser.add_argument('--modest-epoch-plot-scatter-samples', '--modest_epoch_plot_scatter_samples',
                        dest='modest_epoch_plot_scatter_samples', type=int, default=None,
                        help='Max sampled points per MODEST scatter plot')
+    parser.add_argument('--wfa-gate-mode', '--wfa_gate_mode', dest='wfa_gate_mode',
+                       type=str, choices=['off', 'threshold', 'plateau'], default='off',
+                       help='Train-time WFA activation gate mode')
+    parser.add_argument('--wfa-gate-threshold', '--wfa_gate_threshold', dest='wfa_gate_threshold',
+                       type=float, default=0.0,
+                       help='Enable WFA once epoch train MSE is <= this threshold')
+    parser.add_argument('--wfa-gate-patience', '--wfa_gate_patience', dest='wfa_gate_patience',
+                       type=int, default=5,
+                       help='Plateau epochs before enabling WFA')
+    parser.add_argument('--wfa-gate-min-delta', '--wfa_gate_min_delta', dest='wfa_gate_min_delta',
+                       type=float, default=1e-4,
+                       help='Minimum epoch train MSE improvement to reset WFA plateau counter')
+    parser.add_argument('--wfa-gate-warmup-epochs', '--wfa_gate_warmup_epochs', dest='wfa_gate_warmup_epochs',
+                       type=int, default=0,
+                       help='Minimum number of epochs before WFA gate can activate')
 
     args = parser.parse_args()
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
@@ -1117,15 +1110,17 @@ def main():
     print("EXPERIMENT CONFIGURATION".center(80))
     print("=" * 80)
     print(f"Learning rate:      {args.learning_rate:.2e}")
-    print(f"Use scheduler:      {not args.no_scheduler and args.scheduler_type != 'none'}")
-    if not args.no_scheduler and args.scheduler_type != 'none':
-        print(f"Scheduler type:     {args.scheduler_type}")
     print(f"Lambda WFA:         {args.lambda_wfa}")
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
-    print(f"Use GradNorm:       {args.use_gradnorm}")
-    if args.use_gradnorm:
-        print(f"GradNorm alpha:     {args.gradnorm_alpha}")
+    print(f"WFA gate mode:      {args.wfa_gate_mode}")
+    if args.wfa_gate_mode == 'threshold':
+        print(f"WFA gate threshold: {args.wfa_gate_threshold}")
+    elif args.wfa_gate_mode == 'plateau':
+        print(
+            f"WFA gate plateau:   patience={args.wfa_gate_patience}, "
+            f"min_delta={args.wfa_gate_min_delta}, warmup={args.wfa_gate_warmup_epochs}"
+        )
     print(f"Apply region mask:  {args.apply_region_mask}")
     if args.logtau_values is not None:
         print(f"log(tau) values:    {args.logtau_values}")
@@ -1133,9 +1128,6 @@ def main():
         print(f"log(tau) range:     [{args.logtau_min}, {args.logtau_max}] step={args.logtau_step}")
     print("=" * 80 + "\n")
     
-    resolved_use_scheduler = (not args.no_scheduler) and (args.scheduler_type != 'none')
-    resolved_scheduler_type = 'plateau' if args.scheduler_type == 'none' else args.scheduler_type
-
     selected_experiments = set(args.experiments if 'all' not in args.experiments else [
         'all_physics_terms', 'wfa_only', 'doppler_only', 'black_body_only', 'no_physics'
     ])
@@ -1165,9 +1157,14 @@ def main():
         modest_epoch_plot_ods=args.modest_epoch_plot_ods,
         modest_epoch_plot_params=args.modest_epoch_plot_params,
         modest_epoch_plot_scatter_samples=args.modest_epoch_plot_scatter_samples,
+        wfa_gate_mode=args.wfa_gate_mode,
+        wfa_gate_threshold=args.wfa_gate_threshold,
+        wfa_gate_patience=args.wfa_gate_patience,
+        wfa_gate_min_delta=args.wfa_gate_min_delta,
+        wfa_gate_warmup_epochs=args.wfa_gate_warmup_epochs,
     )
 
-    def _build_cfg(folder_name: str, lambda_wfa: float, lambda_doppler: float, lambda_temp: float, use_gradnorm: bool) -> TrainingConfig:
+    def _build_cfg(folder_name: str, lambda_wfa: float, lambda_doppler: float, lambda_temp: float) -> TrainingConfig:
         return TrainingConfig(
             data_path=str(data_path),
             n_epochs=args.n_epochs,
@@ -1175,8 +1172,6 @@ def main():
             lambda_wfa=lambda_wfa,
             lambda_doppler=lambda_doppler,
             lambda_temp=lambda_temp,
-            use_gradnorm=use_gradnorm,
-            gradnorm_alpha=args.gradnorm_alpha,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
@@ -1191,8 +1186,6 @@ def main():
             logtau_min=args.logtau_min,
             logtau_max=args.logtau_max,
             logtau_step=args.logtau_step,
-            use_scheduler=resolved_use_scheduler,
-            scheduler_type=resolved_scheduler_type,
             apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
             **common_epoch_plot_kwargs,
@@ -1205,7 +1198,6 @@ def main():
         lambda_wfa=args.lambda_wfa[0],
         lambda_doppler=args.lambda_doppler[0],
         lambda_temp=args.lambda_temp[0],
-        use_gradnorm=args.use_gradnorm,
     )
 
     all_experiment_configs['no_physics'] = _build_cfg(
@@ -1213,7 +1205,6 @@ def main():
         lambda_wfa=0.0,
         lambda_doppler=0.0,
         lambda_temp=0.0,
-        use_gradnorm=False,
     )
 
     wfa_multi = len(args.lambda_wfa) > 1
@@ -1229,7 +1220,6 @@ def main():
             lambda_wfa=lw,
             lambda_doppler=0.0,
             lambda_temp=0.0,
-            use_gradnorm=False,
         )
 
     doppler_multi = len(args.lambda_doppler) > 1
@@ -1245,7 +1235,6 @@ def main():
             lambda_wfa=0.0,
             lambda_doppler=ld,
             lambda_temp=0.0,
-            use_gradnorm=False,
         )
 
     temp_multi = len(args.lambda_temp) > 1
@@ -1261,7 +1250,6 @@ def main():
             lambda_wfa=0.0,
             lambda_doppler=0.0,
             lambda_temp=lt,
-            use_gradnorm=False,
         )
     
     # Parse experiments to run
@@ -1328,10 +1316,5 @@ def main():
     print("\n✓ Experiment complete!")
     print(f"Results saved to: {output_dir}")
     
-    if args.use_gradnorm:
-        print("\n📊 GradNorm was enabled for physics experiments")
-        print(f"   Alpha parameter: {args.gradnorm_alpha}")
-
-
 if __name__ == "__main__":
     main()

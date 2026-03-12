@@ -17,17 +17,16 @@ import argparse
 import random
 import json
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, fields
+from typing import Any
 import warnings
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 import astropy.units as u
 from tqdm import tqdm
-from utils.grad_norm import GradNormScheduler, log_gradient_norms_by_task
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -96,12 +95,14 @@ class TrainingConfig:
     central_wavelength: float = 6301.5  # Angstroms
     lande_factor: float = 1.67
     wl_range: tuple[int, int] = (15, 60)
-    lambda_wfa: float = 0.01      # WFA term weight (if not using GradNorm)
-    lambda_doppler: float = 0.01  # Doppler term weight (if not using GradNorm)
-    lambda_temp: float = 0.01     # Temperature term weight (if not using GradNorm)
-    use_gradnorm: bool = True  # Enable GradNorm automatic balancing
-    gradnorm_alpha: float = 1.5  # GradNorm alpha parameter
-    gradnorm_update_freq: int = 100  # Update GradNorm weights every N batches
+    lambda_wfa: float = 0.01      # WFA term weight
+    lambda_doppler: float = 0.01  # Doppler term weight
+    lambda_temp: float = 0.01     # Temperature term weight
+    wfa_gate_mode: str = "off"  # 'off', 'threshold', or 'plateau'
+    wfa_gate_threshold: float = 0.0  # Activate WFA when epoch train MSE <= threshold
+    wfa_gate_patience: int = 5  # Plateau epochs before activating WFA
+    wfa_gate_min_delta: float = 1e-4  # Minimum MSE improvement to reset plateau counter
+    wfa_gate_warmup_epochs: int = 0  # Minimum epochs before gate can activate
     blos_physics_mode: str = "tau_averaged"  # 'tau_averaged' or 'single_height'
     blos_target_logtau: float | None = None  # Target log(tau) for B_LOS single_height mode
     vlos_physics_mode: str = "single_height"  # 'tau_averaged' or 'single_height'
@@ -125,12 +126,6 @@ class TrainingConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     num_workers: int = 4
     pin_memory: bool = True
-    
-    # Scheduler
-    use_scheduler: bool = True
-    scheduler_type: str = "plateau"  # 'plateau' or 'cosine'
-    scheduler_patience: int = 5
-    scheduler_factor: float = 0.5
     
     # New: Caching parameters
     use_cache: bool = True
@@ -166,6 +161,15 @@ class TrainingConfig:
             self.scales = [1, 2, 3]
         if self.temp_continuum_indices is None:
             self.temp_continuum_indices = [0, 1, 2, 3]
+        valid_wfa_gate_modes = {"off", "threshold", "plateau"}
+        if self.wfa_gate_mode not in valid_wfa_gate_modes:
+            raise ValueError(
+                f"wfa_gate_mode must be one of {sorted(valid_wfa_gate_modes)}, got {self.wfa_gate_mode!r}"
+            )
+        if self.wfa_gate_patience < 1:
+            raise ValueError("wfa_gate_patience must be >= 1")
+        if self.wfa_gate_warmup_epochs < 0:
+            raise ValueError("wfa_gate_warmup_epochs must be >= 0")
         if self.logtau_values is not None and len(self.logtau_values) == 0:
             self.logtau_values = None
         # Normalize cache dir (allow shared override via env)
@@ -207,7 +211,9 @@ class TrainingConfig:
         """Load configuration from JSON."""
         with open(path, 'r') as f:
             config_dict = json.load(f)
-        return cls(**config_dict)
+        valid_keys = {field.name for field in fields(cls)}
+        filtered_config = {key: value for key, value in config_dict.items() if key in valid_keys}
+        return cls(**filtered_config)
 
     def get_logtau_values(self) -> np.ndarray:
         """Resolve optical-depth grid for MURaM remapping/physics context."""
@@ -249,12 +255,10 @@ class MetricsLogger:
         # File handlers
         self.epoch_log = open(log_dir / "epoch_log.csv", 'w')
         self.batch_log = open(log_dir / "batch_log.csv", 'w')
-        self.gradnorm_log = open(log_dir / "gradnorm_log.csv", 'w')
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
         self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
-        self.gradnorm_log.write("epoch,step,batch,grad_norm_loss,mse_grad,wfa_grad,doppler_grad,temp_grad,mse_weight,wfa_weight,doppler_weight,temp_weight\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: dict[str, float]):
         """Log batch-level metrics."""
@@ -269,22 +273,6 @@ class MetricsLogger:
         )
         self.batch_log.flush()
     
-    def log_gradnorm(self, epoch: int, step: int, batch: int, gradnorm_dict: dict[str, float]):
-        """Log GradNorm metrics."""
-        self.gradnorm_log.write(
-            f"{epoch},{step},{batch},"
-            f"{gradnorm_dict.get('grad_norm_loss', 0.0)},"
-            f"{gradnorm_dict.get('mse_grad_norm', 0.0)},"
-            f"{gradnorm_dict.get('wfa_grad_norm', 0.0)},"
-            f"{gradnorm_dict.get('doppler_grad_norm', 0.0)},"
-            f"{gradnorm_dict.get('temperature_grad_norm', 0.0)},"
-            f"{gradnorm_dict.get('mse_weight', 1.0)},"
-            f"{gradnorm_dict.get('wfa_weight', 1.0)},"
-            f"{gradnorm_dict.get('doppler_weight', 1.0)},"
-            f"{gradnorm_dict.get('temperature_weight', 1.0)}\n"
-        )
-        self.gradnorm_log.flush()
-    
     def log_epoch(self, epoch: int, train_loss: float, val_loss: float, lr: float):
         """Log epoch-level metrics."""
         self.epoch_log.write(f"{epoch},{train_loss},{val_loss},{lr}\n")
@@ -297,7 +285,6 @@ class MetricsLogger:
         """Close file handlers."""
         self.epoch_log.close()
         self.batch_log.close()
-        self.gradnorm_log.close()
     
     def __del__(self):
         self.close()
@@ -314,6 +301,82 @@ def build_cache_config_signature(config: TrainingConfig) -> dict:
         'wl_range': config.wl_range,
         'logtau_values': tuple(float(x) for x in config.get_logtau_values().tolist()),
     }
+
+
+def initialize_wfa_gate_state(config: TrainingConfig) -> dict[str, Any]:
+    """Create runtime state for train-time WFA activation gate."""
+    gate_mode = str(config.wfa_gate_mode).lower()
+    enabled = gate_mode == 'off' or config.lambda_wfa <= 0
+    return {
+        'mode': gate_mode,
+        'enabled': enabled,
+        'best_metric': None,
+        'plateau_epochs': 0,
+        'last_metric': None,
+        'trigger_epoch': None,
+        'trigger_reason': 'always_on' if enabled and gate_mode == 'off' else None,
+    }
+
+
+def update_wfa_gate_state(
+    gate_state: dict[str, Any],
+    config: TrainingConfig,
+    epoch: int,
+    epoch_mse_loss: float,
+) -> tuple[dict[str, Any], bool, str | None]:
+    """Update train-time WFA gate using epoch train MSE and return transition info."""
+    gate_mode = str(gate_state.get('mode', config.wfa_gate_mode)).lower()
+    if gate_mode == 'off' or config.lambda_wfa <= 0:
+        gate_state['enabled'] = True
+        gate_state['last_metric'] = float(epoch_mse_loss)
+        return gate_state, False, None
+
+    if bool(gate_state.get('enabled', False)):
+        gate_state['last_metric'] = float(epoch_mse_loss)
+        best_metric = gate_state.get('best_metric')
+        if best_metric is None or epoch_mse_loss < float(best_metric):
+            gate_state['best_metric'] = float(epoch_mse_loss)
+        return gate_state, False, None
+
+    gate_state['last_metric'] = float(epoch_mse_loss)
+    current_epoch = epoch + 1
+    if current_epoch <= config.wfa_gate_warmup_epochs:
+        best_metric = gate_state.get('best_metric')
+        if best_metric is None or epoch_mse_loss < float(best_metric):
+            gate_state['best_metric'] = float(epoch_mse_loss)
+        return gate_state, False, None
+
+    trigger_reason = None
+    if gate_mode == 'threshold':
+        if epoch_mse_loss <= config.wfa_gate_threshold:
+            trigger_reason = f"threshold(train_mse={epoch_mse_loss:.6f} <= {config.wfa_gate_threshold:.6f})"
+    elif gate_mode == 'plateau':
+        best_metric = gate_state.get('best_metric')
+        if best_metric is None:
+            gate_state['best_metric'] = float(epoch_mse_loss)
+        else:
+            improvement = float(best_metric) - float(epoch_mse_loss)
+            if improvement > config.wfa_gate_min_delta:
+                gate_state['best_metric'] = float(epoch_mse_loss)
+                gate_state['plateau_epochs'] = 0
+            else:
+                gate_state['plateau_epochs'] = int(gate_state.get('plateau_epochs') or 0) + 1
+
+            if int(gate_state.get('plateau_epochs') or 0) >= config.wfa_gate_patience:
+                trigger_reason = (
+                    f"plateau(train_mse={epoch_mse_loss:.6f}, patience={config.wfa_gate_patience}, "
+                    f"min_delta={config.wfa_gate_min_delta:.6f})"
+                )
+    else:
+        raise ValueError(f"Unsupported wfa_gate_mode: {gate_mode}")
+
+    if trigger_reason is not None:
+        gate_state['enabled'] = True
+        gate_state['trigger_epoch'] = current_epoch
+        gate_state['trigger_reason'] = trigger_reason
+        return gate_state, True, trigger_reason
+
+    return gate_state, False, None
 
 def load_and_prepare_step(
     step: int,
@@ -563,8 +626,8 @@ def train_one_step(
     config: TrainingConfig,
     epoch: int,
     step_num: int,
-    logger: MetricsLogger,
-    gradnorm_scheduler: GradNormScheduler | None = None,
+    logger: MetricsLogger | None,
+    enable_wfa: bool = True,
 ) -> dict[str, float]:
     """
     Train on one simulation step (one epoch through that step's data).
@@ -589,9 +652,6 @@ def train_one_step(
         Current simulation step number
     logger : MetricsLogger
         Metrics logger
-    gradnorm_scheduler : Optional[GradNormScheduler]
-        GradNorm scheduler
-        
     Returns
     -------
     step_metrics : Dict[str, float]
@@ -618,22 +678,7 @@ def train_one_step(
         'temperature_loss': 0.0,
     }
     
-    # GradNorm tracking
-    if gradnorm_scheduler is not None:
-        step_metrics.update({
-            'mse_grad_norm': 0.0,
-            'wfa_grad_norm': 0.0,
-            'doppler_grad_norm': 0.0,
-            'temperature_grad_norm': 0.0,
-            'mse_weight': 0.0,
-            'wfa_weight': 0.0,
-            'doppler_weight': 0.0,
-            'temperature_weight': 0.0,
-            'grad_norm_loss': 0.0,
-        })
-    
     n_batches = 0
-    batch_count = 0
     
     for batch_idx, (stokes_batch, mhd_batch, spatial_idx_batch) in enumerate(dataloader):
         # Move to device
@@ -647,69 +692,24 @@ def train_one_step(
         # Forward pass
         predictions = model(stokes_batch)
         
-        if config.use_gradnorm and gradnorm_scheduler is not None:
-            # Compute individual unweighted losses for GradNorm
-            loss_dict = model.compute_loss(
-                predictions=predictions,
-                targets=mhd_batch,
-                spatial_indices=spatial_idx_batch,
-                return_individual=True,
-            )
-            
-            individual_losses = loss_dict['individual']
-            
-            # Compute weighted loss using GradNorm
-            total_loss = gradnorm_scheduler.compute_weighted_loss(individual_losses)
-            
-            # Backward pass
-            total_loss.backward()
-            
-            # Update GradNorm weights every N batches
-            if batch_count % config.gradnorm_update_freq == 0:
-                current_losses = {k: v.item() for k, v in individual_losses.items()}
-                gradnorm_diagnostics = gradnorm_scheduler.step(
-                    individual_losses,
-                    model,
-                    current_losses
-                )
-                
-                # Log GradNorm metrics
-                if logger is not None:
-                    logger.log_gradnorm(epoch, step_num, batch_idx, gradnorm_diagnostics)
-                
-                # Accumulate GradNorm metrics
-                for key, value in gradnorm_diagnostics.items():
-                    metric_key = key
-                    if metric_key in step_metrics:
-                        step_metrics[metric_key] += value
-            
-            # Track individual loss components for logging
-            step_metrics['mse_loss'] += loss_dict['mse'].item()
-            step_metrics['physics_loss'] += loss_dict['physics'].item()
-            step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
-            step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
-            step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
-            
-        else:
-            # Standard training with manual lambda weights
-            loss_dict = model.compute_loss(
-                predictions=predictions,
-                targets=mhd_batch,
-                spatial_indices=spatial_idx_batch,
-                return_individual=False,
-            )
-            
-            total_loss = loss_dict['loss']
-            
-            # Backward pass
-            total_loss.backward()
-            
-            # Accumulate loss components
-            step_metrics['mse_loss'] += loss_dict['mse'].item()
-            step_metrics['physics_loss'] += loss_dict['physics'].item()
-            step_metrics['wfa_loss'] += loss_dict.get('wfa', 0.0)
-            step_metrics['doppler_loss'] += loss_dict.get('doppler', 0.0)
-            step_metrics['temperature_loss'] += loss_dict.get('temperature', 0.0)
+        loss_dict = model.compute_loss(
+            predictions=predictions,
+            targets=mhd_batch,
+            spatial_indices=spatial_idx_batch,
+            enable_wfa=enable_wfa,
+        )
+        
+        total_loss = loss_dict['loss']
+        
+        # Backward pass
+        total_loss.backward()
+        
+        # Accumulate loss components
+        step_metrics['mse_loss'] += loss_dict['mse'].item()
+        step_metrics['physics_loss'] += loss_dict['physics'].item()
+        step_metrics['wfa_loss'] += float(loss_dict.get('wfa', 0.0))
+        step_metrics['doppler_loss'] += float(loss_dict.get('doppler', 0.0))
+        step_metrics['temperature_loss'] += float(loss_dict.get('temperature', 0.0))
         
         # Gradient clipping
         if config.gradient_clip > 0:
@@ -719,7 +719,6 @@ def train_one_step(
         
         step_metrics['total_loss'] += total_loss.item()
         n_batches += 1
-        batch_count += 1
     
     # Average metrics over all batches
     for key in step_metrics.keys():
@@ -805,6 +804,7 @@ def validate(
                         predictions=predictions,
                         targets=mhd_batch,
                         spatial_indices=spatial_idx_batch,
+                        enable_wfa=True,
                     )
                     
                     total_loss = loss_dict['loss']
@@ -820,11 +820,11 @@ def validate(
 def save_checkpoint(
     model: PhysicsInformedMSCNN,
     optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler._LRScheduler | None,
     epoch: int,
     train_loss: float,
     val_loss: float,
     config: TrainingConfig,
+    wfa_gate_state: dict[str, Any] | None = None,
     is_best: bool = False,
 ):
     """Save training checkpoint."""
@@ -835,10 +835,8 @@ def save_checkpoint(
         'train_loss': train_loss,
         'val_loss': val_loss,
         'config': asdict(config),
+        'wfa_gate_state': wfa_gate_state,
     }
-    
-    if scheduler is not None:
-        checkpoint['scheduler_state_dict'] = scheduler.state_dict()
     
     # Save regular checkpoint
     checkpoint_path = config.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pth"
@@ -855,8 +853,7 @@ def load_checkpoint(
     checkpoint_path: Path,
     model: PhysicsInformedMSCNN,
     optimizer: torch.optim.Optimizer | None = None,
-    scheduler: torch.optim.lr_scheduler._LRScheduler | None = None,
-) -> tuple[int, float, float]:
+) -> tuple[int, float, float, dict[str, Any] | None]:
     """
     Load training checkpoint.
     
@@ -874,17 +871,22 @@ def load_checkpoint(
     if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
     
-    if scheduler is not None and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    
     start_epoch = checkpoint['epoch'] + 1
     train_loss = checkpoint.get('train_loss', 0.0)
     val_loss = checkpoint.get('val_loss', float('inf'))
+    wfa_gate_state = checkpoint.get('wfa_gate_state')
     
     print(f"  Resumed from epoch {checkpoint['epoch']}")
     print(f"  Train loss: {train_loss:.6f}, Val loss: {val_loss:.6f}")
+    if isinstance(wfa_gate_state, dict):
+        print(
+            "  WFA gate state: "
+            f"enabled={wfa_gate_state.get('enabled')}, "
+            f"mode={wfa_gate_state.get('mode')}, "
+            f"trigger_epoch={wfa_gate_state.get('trigger_epoch')}"
+        )
     
-    return start_epoch, train_loss, val_loss
+    return start_epoch, train_loss, val_loss, wfa_gate_state
 
 def train_epoch(
     model: PhysicsInformedMSCNN,
@@ -896,8 +898,8 @@ def train_epoch(
     epoch: int,
     logger: MetricsLogger | None = None,
     n_steps_per_epoch: int = -1,
-    gradnorm_scheduler: GradNormScheduler | None = None,
     cache: MuramDataCache | None = None,
+    enable_wfa: bool = True,
 ) -> dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
@@ -922,8 +924,6 @@ def train_epoch(
         Logger for batch-level metrics
     n_steps_per_epoch : int, optional
         Maximum number of steps to use per epoch (-1 for all steps)
-    gradnorm_scheduler : Optional[GradNormScheduler]
-        GradNorm scheduler
     cache : MuramDataCache, optional
         Cache manager for data loading
     
@@ -988,7 +988,7 @@ def train_epoch(
                 epoch=epoch,
                 step_num=step,
                 logger=logger,
-                gradnorm_scheduler=gradnorm_scheduler,
+                enable_wfa=enable_wfa,
             )
             
             # Accumulate step metrics (including temperature)
@@ -1621,10 +1621,16 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
-    print(f"Use GradNorm: {config.use_gradnorm}")
-    if config.use_gradnorm:
-        print(f"GradNorm alpha: {config.gradnorm_alpha}")
-        print(f"GradNorm update frequency: {config.gradnorm_update_freq}")
+    print(f"WFA gate mode: {config.wfa_gate_mode}")
+    if config.wfa_gate_mode == 'threshold':
+        print(f"WFA gate threshold (train MSE): {config.wfa_gate_threshold}")
+    elif config.wfa_gate_mode == 'plateau':
+        print(
+            f"WFA gate plateau patience/min_delta: "
+            f"{config.wfa_gate_patience}/{config.wfa_gate_min_delta}"
+        )
+    if config.wfa_gate_mode != 'off':
+        print(f"WFA gate warmup epochs: {config.wfa_gate_warmup_epochs}")
     print(f"B_LOS physics mode: {config.blos_physics_mode}")
     if config.blos_physics_mode == "single_height":
         print(f"B_LOS target log(tau): {config.blos_target_logtau}")
@@ -1691,55 +1697,22 @@ def train_pinn_model(config: TrainingConfig):
         weight_decay=config.weight_decay
     )
     
-    # GradNorm scheduler
-    gradnorm_scheduler = None
-    if config.use_gradnorm and any([config.lambda_wfa > 0, config.lambda_doppler > 0, config.lambda_temp > 0]):
-        print("\nInitializing GradNorm scheduler...")
-        initial_weights = [1.0, 1.0, 1.0, 1.0]  # MSE, WFA, Doppler, Temp
-        gradnorm_scheduler = GradNormScheduler(
-            num_tasks=4,
-            alpha=config.gradnorm_alpha,
-            initial_weights=initial_weights,
-            device=config.device
-        )
-        print(f"  ✓ GradNorm initialized with alpha={config.gradnorm_alpha}")
-    
-    # Scheduler
-    scheduler = None
-    if config.use_scheduler:
-        if config.scheduler_type == 'plateau':
-            scheduler = ReduceLROnPlateau(
-                optimizer,
-                mode='min',
-                factor=config.scheduler_factor,
-                patience=config.scheduler_patience,
-                verbose=True
-            )
-        elif config.scheduler_type == 'cosine':
-            scheduler = CosineAnnealingWarmRestarts(
-                optimizer,
-                T_0=10,
-                T_mult=2,
-                eta_min=1e-6
-            )
-        else:
-            raise ValueError(
-                f"Invalid scheduler_type='{config.scheduler_type}'. Use 'plateau' or 'cosine'."
-            )
     # Logger
     logger = MetricsLogger(config.log_dir)
     
     # Resume from checkpoint if specified
     start_epoch = 0
     best_val_loss = float('inf')
+    wfa_gate_state = initialize_wfa_gate_state(config)
     
     if config.resume_from is not None:
-        start_epoch, _, best_val_loss = load_checkpoint(
+        start_epoch, _, best_val_loss, loaded_wfa_gate_state = load_checkpoint(
             Path(config.resume_from),
             model=model,
             optimizer=optimizer,
-            scheduler=scheduler
         )
+        if isinstance(loaded_wfa_gate_state, dict):
+            wfa_gate_state.update(loaded_wfa_gate_state)
     
     # Prepare step list
     all_steps = list(range(config.min_step, config.max_step + 1))
@@ -1788,6 +1761,8 @@ def train_pinn_model(config: TrainingConfig):
     for epoch in range(start_epoch, config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         print("-" * 70)
+        train_wfa_enabled = bool(wfa_gate_state.get('enabled', True))
+        print(f"  Train-time WFA enabled: {train_wfa_enabled}")
         
         # Train for one epoch using the extracted function
         epoch_metrics = train_epoch(
@@ -1800,12 +1775,18 @@ def train_pinn_model(config: TrainingConfig):
             epoch=epoch,
             logger=logger,
             n_steps_per_epoch=-1,  # Use all training steps
-            gradnorm_scheduler=gradnorm_scheduler,
             cache=cache,
+            enable_wfa=train_wfa_enabled,
         )
         
         avg_train_loss = epoch_metrics['total_loss']
         total_training_pixels += int(epoch_metrics.get('n_pixels_used', 0))
+        wfa_gate_state, wfa_gate_triggered, wfa_gate_reason = update_wfa_gate_state(
+            gate_state=wfa_gate_state,
+            config=config,
+            epoch=epoch,
+            epoch_mse_loss=float(epoch_metrics['mse_loss']),
+        )
         
         # Validation
         print("\nValidating...")
@@ -1838,13 +1819,6 @@ def train_pinn_model(config: TrainingConfig):
                 modest_snapshot=modest_snapshot,
             )
         
-        # Update scheduler
-        if scheduler is not None:
-            if config.scheduler_type == 'plateau':
-                scheduler.step(avg_val_loss)
-            else:
-                scheduler.step()
-        
         # Get current learning rate
         current_lr = optimizer.param_groups[0]['lr']
         
@@ -1863,14 +1837,18 @@ def train_pinn_model(config: TrainingConfig):
         print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
         print(f"        └─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
+        print(
+            f"  WFA gate state (next epoch): enabled={bool(wfa_gate_state.get('enabled', True))}, "
+            f"mode={wfa_gate_state.get('mode')}"
+        )
+        if wfa_gate_state.get('mode') == 'plateau':
+            print(
+                f"    plateau_epochs={int(wfa_gate_state.get('plateau_epochs', 0))}, "
+                f"best_train_mse={wfa_gate_state.get('best_metric')}"
+            )
+        if wfa_gate_triggered:
+            print(f"  ★ WFA gate activated for subsequent epochs: {wfa_gate_reason}")
         print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
-        
-        # Print GradNorm weights if enabled
-        if gradnorm_scheduler is not None:
-            weights = gradnorm_scheduler.task_weights.detach().cpu().numpy()
-            print(f"  GradNorm Weights:")
-            print(f"    MSE: {weights[0]:.4f}, WFA: {weights[1]:.4f}, "
-                  f"Doppler: {weights[2]:.4f}, Temp: {weights[3]:.4f}")
         
         # Save checkpoint
         is_best = avg_val_loss < best_val_loss
@@ -1882,11 +1860,11 @@ def train_pinn_model(config: TrainingConfig):
             save_checkpoint(
                 model=model,
                 optimizer=optimizer,
-                scheduler=scheduler,
                 epoch=epoch + 1,
                 train_loss=avg_train_loss,
                 val_loss=avg_val_loss,
                 config=config,
+                wfa_gate_state=wfa_gate_state,
                 is_best=is_best,
             )
     
@@ -1901,6 +1879,7 @@ def train_pinn_model(config: TrainingConfig):
         "epochs": int(config.n_epochs),
         "step_size": int(config.step_size),
         "batch_size": int(config.batch_size),
+        "wfa_gate_state": wfa_gate_state,
     }
     metadata_path = config.log_dir / "training_metadata.json"
     with open(metadata_path, "w") as f:
@@ -1928,13 +1907,22 @@ def main():
     parser.add_argument('--lr', type=float, help='Learning rate (overrides config)')
     parser.add_argument('--c1-filters', type=int, default=None,
                        help='Number of filters in first conv layer (overrides config)')
+    parser.add_argument('--wfa-gate-mode', '--wfa_gate_mode', dest='wfa_gate_mode',
+                       type=str, choices=['off', 'threshold', 'plateau'], default=None,
+                       help='Train-time WFA activation gate mode')
+    parser.add_argument('--wfa-gate-threshold', '--wfa_gate_threshold', dest='wfa_gate_threshold',
+                       type=float, default=None,
+                       help='Enable WFA once epoch train MSE is <= this threshold')
+    parser.add_argument('--wfa-gate-patience', '--wfa_gate_patience', dest='wfa_gate_patience',
+                       type=int, default=None,
+                       help='Plateau epochs before enabling WFA')
+    parser.add_argument('--wfa-gate-min-delta', '--wfa_gate_min_delta', dest='wfa_gate_min_delta',
+                       type=float, default=None,
+                       help='Minimum epoch train MSE improvement to reset WFA plateau counter')
+    parser.add_argument('--wfa-gate-warmup-epochs', '--wfa_gate_warmup_epochs', dest='wfa_gate_warmup_epochs',
+                       type=int, default=None,
+                       help='Minimum number of epochs before WFA gate can activate')
 
-    # Scheduler arguments (missing before)
-    parser.add_argument('--no-scheduler', action='store_true',
-                       help='Disable learning rate scheduler (fixed LR)')
-    parser.add_argument('--scheduler-type', type=str, choices=['plateau', 'cosine', 'none'],
-                       help="Scheduler type ('none' disables scheduler)")
-    
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
@@ -2042,16 +2030,16 @@ def main():
         config.learning_rate = args.lr
     if args.c1_filters is not None:
         config.c1_filters = args.c1_filters
-
-    # Apply scheduler CLI overrides
-    if args.scheduler_type:
-        if args.scheduler_type == 'none':
-            config.use_scheduler = False
-        else:
-            config.use_scheduler = True
-            config.scheduler_type = args.scheduler_type
-    if args.no_scheduler:
-        config.use_scheduler = False
+    if args.wfa_gate_mode is not None:
+        config.wfa_gate_mode = args.wfa_gate_mode
+    if args.wfa_gate_threshold is not None:
+        config.wfa_gate_threshold = args.wfa_gate_threshold
+    if args.wfa_gate_patience is not None:
+        config.wfa_gate_patience = args.wfa_gate_patience
+    if args.wfa_gate_min_delta is not None:
+        config.wfa_gate_min_delta = args.wfa_gate_min_delta
+    if args.wfa_gate_warmup_epochs is not None:
+        config.wfa_gate_warmup_epochs = args.wfa_gate_warmup_epochs
 
     # Apply cache CLI overrides
     config.use_cache = not args.no_cache
