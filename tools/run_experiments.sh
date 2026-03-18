@@ -32,16 +32,16 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 MIN_STEP=112
 MAX_STEP=113
 STEP_SIZE=1
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-wfa_plateu_gate"
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-wfa_plateu_gate-global_Ic"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=60
+N_EPOCHS=150
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
 # Use one value to keep current behavior, or many values to run subexperiments for *_only branches.
-LAMBDA_WFA_VALUES=(1 1e-1 1e-2 1e-3 1e-4 1e-5)
+LAMBDA_WFA_VALUES=(1e-1 1e-3)
 LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
 
@@ -62,8 +62,11 @@ TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = 
 WFA_GATE_MODE='plateau'         # 'off', 'threshold', or 'plateau'
 WFA_GATE_THRESHOLD=0.0          # Used when WFA_GATE_MODE='threshold'
 WFA_GATE_PATIENCE=5             # Used when WFA_GATE_MODE='plateau'
-WFA_GATE_MIN_DELTA=2e-3         # Used when WFA_GATE_MODE='plateau'
+WFA_GATE_MIN_DELTA=5e-4         # Used when WFA_GATE_MODE='plateau'
 WFA_GATE_WARMUP_EPOCHS=0
+
+# Stokes continuum normalization mode
+STOKES_IC_MODE='fixed_global'   # 'per_step' or 'fixed_global'
 
 # Shared cache (same path used by normalization script)
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
@@ -97,6 +100,7 @@ python3 ./scripts/experiments/ablation_study.py \
     --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
     --learning_rate "${LEARNING_RATE}" \
     --c1-filters "${C1_FILTERS}" \
+    --stokes_ic_mode "${STOKES_IC_MODE}" \
     --cache-dir "${CACHE_DIR}" \
     --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
     --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \

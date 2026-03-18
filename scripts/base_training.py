@@ -24,6 +24,7 @@ import warnings
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import astropy.units as u
 from tqdm import tqdm
@@ -74,6 +75,11 @@ class TrainingConfig:
     logtau_min: float = -2.0
     logtau_max: float = 0.0
     logtau_step: float = 0.1
+
+    # Stokes continuum normalization policy
+    stokes_cont_indices: list[int] | None = None
+    stokes_ic_mode: str = "fixed_global"  # 'per_step' or 'fixed_global'
+    stokes_fixed_ic: float | None = None
     
     # Training parameters
     n_epochs: int = 20
@@ -155,10 +161,36 @@ class TrainingConfig:
     modest_epoch_plot_ods: list[float] | None = None
     modest_epoch_plot_params: list[str] | None = None
     modest_epoch_plot_scatter_samples: int | None = None
+    modest_temp_calibration_mode: str = "off"  # 'off', 'fit_only', 'apply_only'
+    modest_temp_calibration_file: str | None = None
+    modest_temp_calibration_min_samples: int = 500
+    modest_temp_calibration_clip_quantiles: list[float] | tuple[float, float] | None = None
 
     def __post_init__(self):
         if self.scales is None:
             self.scales = [1, 2, 3]
+        if self.stokes_cont_indices is None:
+            self.stokes_cont_indices = [0, 1, 2, 3]
+
+        if self.stokes_ic_mode == "fixed_global" and self.stokes_fixed_ic is None:
+            ic_stats_path = Path(self.data_path) / "normalization_stats" / "ic_reference_stats.json"
+            if ic_stats_path.exists():
+                with open(ic_stats_path, "r", encoding="utf-8") as f:
+                    ic_payload = json.load(f)
+                fixed_ic = ic_payload.get("fixed_ic")
+                if fixed_ic is not None:
+                    self.stokes_fixed_ic = float(fixed_ic)
+
+        valid_ic_modes = {"per_step", "fixed_global"}
+        if self.stokes_ic_mode not in valid_ic_modes:
+            raise ValueError(
+                f"stokes_ic_mode must be one of {sorted(valid_ic_modes)}, got {self.stokes_ic_mode!r}"
+            )
+        if self.stokes_ic_mode == "fixed_global":
+            if self.stokes_fixed_ic is None:
+                raise ValueError("stokes_fixed_ic is required when stokes_ic_mode='fixed_global'")
+            if not np.isfinite(float(self.stokes_fixed_ic)) or float(self.stokes_fixed_ic) <= 0:
+                raise ValueError(f"stokes_fixed_ic must be finite and > 0, got {self.stokes_fixed_ic}")
         if self.temp_continuum_indices is None:
             self.temp_continuum_indices = [0, 1, 2, 3]
         valid_wfa_gate_modes = {"off", "threshold", "plateau"}
@@ -187,6 +219,29 @@ class TrainingConfig:
             if len(self.modest_crop_bounds) != 4:
                 raise ValueError("modest_crop_bounds must contain exactly 4 integers: [y_start, y_end, x_start, x_end]")
             self.modest_crop_bounds = tuple(int(v) for v in self.modest_crop_bounds)
+
+        valid_cal_modes = {"off", "fit_only", "apply_only"}
+        self.modest_temp_calibration_mode = str(self.modest_temp_calibration_mode).lower()
+        if self.modest_temp_calibration_mode not in valid_cal_modes:
+            raise ValueError(
+                f"modest_temp_calibration_mode must be one of {sorted(valid_cal_modes)}, "
+                f"got {self.modest_temp_calibration_mode!r}"
+            )
+        self.modest_temp_calibration_min_samples = int(max(10, int(self.modest_temp_calibration_min_samples)))
+
+        if self.modest_temp_calibration_clip_quantiles is not None:
+            if len(self.modest_temp_calibration_clip_quantiles) != 2:
+                raise ValueError("modest_temp_calibration_clip_quantiles must contain exactly two values [q_low, q_high]")
+            q_low = float(self.modest_temp_calibration_clip_quantiles[0])
+            q_high = float(self.modest_temp_calibration_clip_quantiles[1])
+            if not (0.0 <= q_low < q_high <= 1.0):
+                raise ValueError(
+                    "modest_temp_calibration_clip_quantiles must satisfy 0 <= q_low < q_high <= 1"
+                )
+            self.modest_temp_calibration_clip_quantiles = [q_low, q_high]
+
+        if self.modest_temp_calibration_file:
+            self.modest_temp_calibration_file = str(Path(self.modest_temp_calibration_file).expanduser().resolve())
 
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
@@ -300,6 +355,9 @@ def build_cache_config_signature(config: TrainingConfig) -> dict:
         'central_wavelength': config.central_wavelength,
         'wl_range': config.wl_range,
         'logtau_values': tuple(float(x) for x in config.get_logtau_values().tolist()),
+        'stokes_cont_indices': tuple(int(x) for x in (config.stokes_cont_indices or [0, 1, 2, 3])),
+        'stokes_ic_mode': str(config.stokes_ic_mode),
+        'stokes_fixed_ic': None if config.stokes_fixed_ic is None else float(config.stokes_fixed_ic),
     }
 
 
@@ -420,10 +478,14 @@ def load_and_prepare_step(
     region_sampling_info = None
 
     # Try to load from cache (strict first, then relaxed hash fallback)
+    allow_relaxed_cache_fallback = (
+        config.stokes_ic_mode == "per_step" and config.stokes_fixed_ic is None
+    )
+
     if cache is not None:
         exact_hit = cache.exists(step, config_hash, logtau_values=new_logtau)
         relaxed_hit = False
-        if not exact_hit:
+        if not exact_hit and allow_relaxed_cache_fallback:
             try:
                 relaxed_hit = cache.exists(step, None, logtau_values=new_logtau)
             except Exception:
@@ -524,7 +586,14 @@ def load_and_prepare_step(
         wavelength_step=0.01
     )
     stokes.load_stokes()
-    stokes.continuum_normalization(cont_indices=[0, 1, 2, 3])
+    stokes_cont_indices = config.stokes_cont_indices or [0, 1, 2, 3]
+    if config.stokes_ic_mode == "fixed_global":
+        if config.stokes_fixed_ic is None:
+            raise ValueError("stokes_fixed_ic must be set for fixed_global mode")
+        fixed_ic = float(config.stokes_fixed_ic)
+    else:
+        fixed_ic = None
+    stokes.continuum_normalization(cont_indices=stokes_cont_indices, fixed_ic=fixed_ic)
     stokes.load_hinode_lsf(config.data_path / config.lsf_path)
     stokes.apply_spectral_convolution()
     stokes.resample_to_hinode()
@@ -1199,6 +1268,128 @@ def generate_epoch_diagnostic_plots(
     if was_training:
         model.train()
 
+
+def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+    if arr2d.shape == target_shape:
+        return arr2d
+    t = torch.from_numpy(np.asarray(arr2d, dtype=np.float32)).float().unsqueeze(0).unsqueeze(0)
+    out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
+    return out.squeeze(0).squeeze(0).cpu().numpy()
+
+
+def _default_modest_temp_calibration_path(config: TrainingConfig) -> Path:
+    if config.modest_temp_calibration_file:
+        return Path(config.modest_temp_calibration_file)
+    return config.log_dir / "epoch_diagnostics_modest" / "temperature_calibration.json"
+
+
+def _fit_temperature_affine_per_tau(
+    config: TrainingConfig,
+    matches: list[tuple[float, int, int]],
+    true_cube: np.ndarray,
+    pred_cube: np.ndarray,
+) -> dict[str, Any]:
+    min_samples = int(config.modest_temp_calibration_min_samples)
+    clip_q = config.modest_temp_calibration_clip_quantiles
+    coefficients: dict[str, dict[str, float | int]] = {}
+
+    for tau_val, i_mod, i_pred in matches:
+        if i_mod >= true_cube.shape[2] or i_pred >= pred_cube.shape[2]:
+            continue
+        true_map = np.asarray(true_cube[:, :, i_mod], dtype=np.float32)
+        pred_map = np.asarray(pred_cube[:, :, i_pred], dtype=np.float32)
+        if true_map.shape != pred_map.shape:
+            true_map = _resize_map_to_shape(true_map, pred_map.shape)
+
+        x = true_map.ravel()
+        y = pred_map.ravel()
+        m = np.isfinite(x) & np.isfinite(y)
+        x = x[m]
+        y = y[m]
+        if x.size < min_samples:
+            continue
+
+        if clip_q is not None:
+            q_low, q_high = float(clip_q[0]), float(clip_q[1])
+            x_lo, x_hi = np.quantile(x, [q_low, q_high])
+            y_lo, y_hi = np.quantile(y, [q_low, q_high])
+            m2 = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
+            if np.count_nonzero(m2) >= min_samples:
+                x = x[m2]
+                y = y[m2]
+
+        if x.size < min_samples:
+            continue
+
+        if np.nanstd(y) < 1e-10:
+            a = 1.0
+            b = float(np.nanmean(x) - np.nanmean(y))
+        else:
+            a, b = np.polyfit(y, x, deg=1)
+            a = float(a)
+            b = float(b)
+
+        rmse_before = float(np.sqrt(np.mean((y - x) ** 2)))
+        y_cal = (a * y) + b
+        rmse_after = float(np.sqrt(np.mean((y_cal - x) ** 2)))
+        coefficients[f"{float(tau_val):.6f}"] = {
+            "tau_value": float(tau_val),
+            "a": float(a),
+            "b": float(b),
+            "n_points": int(x.size),
+            "rmse_before": rmse_before,
+            "rmse_after": rmse_after,
+        }
+
+    return {
+        "mode": "affine_per_tau",
+        "min_samples": int(min_samples),
+        "clip_quantiles": list(clip_q) if clip_q is not None else None,
+        "coefficients": coefficients,
+    }
+
+
+def _load_temperature_calibration(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_temperature_calibration(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def _find_tau_calibration_coeff(coefficients: dict[str, dict[str, Any]], tau_val: float) -> dict[str, Any] | None:
+    for key, coeff in coefficients.items():
+        try:
+            if np.isclose(float(key), float(tau_val), atol=1e-6, rtol=0.0):
+                return coeff
+        except Exception:
+            continue
+    return None
+
+
+def _apply_temperature_affine_per_tau(
+    pred_cube: np.ndarray,
+    matches: list[tuple[float, int, int]],
+    payload: dict[str, Any],
+) -> np.ndarray:
+    coefficients = payload.get("coefficients", {}) if isinstance(payload, dict) else {}
+    out = np.array(pred_cube, copy=True)
+    for tau_val, _i_mod, i_pred in matches:
+        if i_pred >= out.shape[2]:
+            continue
+        coeff = _find_tau_calibration_coeff(coefficients, tau_val)
+        if coeff is None:
+            continue
+        a = float(coeff.get("a", 1.0))
+        b = float(coeff.get("b", 0.0))
+        out[:, :, i_pred] = (a * out[:, :, i_pred]) + b
+    return out
+
 def prepare_modest_epoch_snapshot(
     config: TrainingConfig,
     stokes_normalizer: StokesNormalizer,
@@ -1230,8 +1421,18 @@ def prepare_modest_epoch_snapshot(
         "Bz": np.stack([modest_data["spinor_atm"]["Blos"][t] for t in modest_logtau], axis=-1).astype(np.float32),
     }
 
-    pred_nx, pred_ny = modest_data["smoothed_stokes"]["I"].shape[:2]
-    norm_stokes = stokes_normalizer.transform(modest_data["smoothed_stokes"])
+    prediction_stokes = modest_data["smoothed_stokes"]
+    pred_nx, pred_ny = prediction_stokes["I"].shape[:2]
+    cont_indices = [0, 1, 2, 3]
+    I_c_modest = float(np.nanmean(prediction_stokes["I"][:, :, cont_indices]))
+    if np.isfinite(I_c_modest) and I_c_modest > 10.0:
+        print(f"MODEST continuum appears unnormalized (I_c={I_c_modest:.6e}); applying I/I_c scaling.")
+        stokes_for_norm = {k: v / I_c_modest for k, v in prediction_stokes.items()}
+    else:
+        print(f"MODEST continuum appears already normalized (I_c={I_c_modest:.6e}); skipping extra I/I_c scaling.")
+        stokes_for_norm = prediction_stokes
+
+    norm_stokes = stokes_normalizer.transform(stokes_for_norm)
     I_flat = norm_stokes["I"].reshape(pred_nx * pred_ny, -1)
     V_flat = norm_stokes["V"].reshape(pred_nx * pred_ny, -1)
     stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)
@@ -1322,6 +1523,40 @@ def generate_epoch_modest_diagnostic_plots(
         "Vz": mhd_normalizer.denormalize(pred_norm[:, n_tau_pred:2 * n_tau_pred], param="Vz").reshape(pred_nx, pred_ny, n_tau_pred),
         "Bz": mhd_normalizer.denormalize(pred_norm[:, 2 * n_tau_pred:3 * n_tau_pred], param="Bz").reshape(pred_nx, pred_ny, n_tau_pred),
     }
+
+    cal_mode = str(config.modest_temp_calibration_mode).lower()
+    cal_path = _default_modest_temp_calibration_path(config)
+    if cal_mode == "fit_only":
+        fit_payload = _fit_temperature_affine_per_tau(
+            config=config,
+            matches=selected_matches,
+            true_cube=np.asarray(gt_den["T"], dtype=np.float32),
+            pred_cube=np.asarray(pred_den["T"], dtype=np.float32),
+        )
+        n_coeff = len(fit_payload.get("coefficients", {}))
+        if n_coeff > 0:
+            fit_payload["epoch"] = int(epoch + 1)
+            _save_temperature_calibration(cal_path, fit_payload)
+            print(f"Saved MODEST temperature calibration ({n_coeff} taus) to {cal_path}")
+        else:
+            warnings.warn("MODEST temperature calibration fit produced no coefficients (insufficient finite points).")
+        if was_training:
+            model.train()
+        return
+
+    if cal_mode == "apply_only":
+        payload = _load_temperature_calibration(cal_path)
+        if payload is None:
+            warnings.warn(f"MODEST temperature calibration file not found: {cal_path}. Skipping MODEST epoch diagnostics.")
+            if was_training:
+                model.train()
+            return
+        pred_den["T"] = _apply_temperature_affine_per_tau(
+            pred_cube=np.asarray(pred_den["T"], dtype=np.float32),
+            matches=selected_matches,
+            payload=payload,
+        )
+        print(f"Applied MODEST temperature calibration from {cal_path}")
 
     for tau_val, tau_idx_mod, tau_idx_pred in selected_matches:
         for p in params:
@@ -1654,6 +1889,10 @@ def train_pinn_model(config: TrainingConfig):
         print(f"MODEST crop bounds: {config.modest_crop_bounds}")
         print(f"MODEST epoch ODs: {config.modest_epoch_plot_ods}")
         print(f"MODEST epoch params: {config.modest_epoch_plot_params}")
+        print(f"MODEST temperature calibration mode: {config.modest_temp_calibration_mode}")
+        print(f"MODEST temperature calibration file: {config.modest_temp_calibration_file}")
+        print(f"MODEST temperature calibration min samples: {config.modest_temp_calibration_min_samples}")
+        print(f"MODEST temperature calibration clip quantiles: {config.modest_temp_calibration_clip_quantiles}")
     print("=" * 70)
     
     # Load normalizers
@@ -1907,6 +2146,9 @@ def main():
     parser.add_argument('--lr', type=float, help='Learning rate (overrides config)')
     parser.add_argument('--c1-filters', type=int, default=None,
                        help='Number of filters in first conv layer (overrides config)')
+    parser.add_argument('--stokes-ic-mode', '--stokes_ic_mode', dest='stokes_ic_mode',
+                       type=str, choices=['per_step', 'fixed_global'], default='fixed_global',
+                       help='Continuum normalization mode for Stokes data')
     parser.add_argument('--wfa-gate-mode', '--wfa_gate_mode', dest='wfa_gate_mode',
                        type=str, choices=['off', 'threshold', 'plateau'], default=None,
                        help='Train-time WFA activation gate mode')
@@ -1983,6 +2225,29 @@ def main():
     parser.add_argument('--modest-epoch-plot-scatter-samples', '--modest_epoch_plot_scatter_samples',
                        dest='modest_epoch_plot_scatter_samples', type=int, default=None,
                        help='Max sampled points per MODEST scatter plot')
+    parser.add_argument('--modest-temp-calibration-mode', '--modest_temp_calibration_mode',
+                       dest='modest_temp_calibration_mode',
+                       type=str,
+                       choices=['off', 'fit_only', 'apply_only'],
+                       default=None,
+                       help='MODEST per-epoch temperature calibration mode')
+    parser.add_argument('--modest-temp-calibration-file', '--modest_temp_calibration_file',
+                       dest='modest_temp_calibration_file',
+                       type=str,
+                       default=None,
+                       help='Path to temperature calibration JSON for MODEST diagnostics')
+    parser.add_argument('--modest-temp-calibration-min-samples', '--modest_temp_calibration_min_samples',
+                       dest='modest_temp_calibration_min_samples',
+                       type=int,
+                       default=None,
+                       help='Minimum paired finite samples per log(tau) for calibration fitting')
+    parser.add_argument('--modest-temp-calibration-clip-quantiles', '--modest_temp_calibration_clip_quantiles',
+                       dest='modest_temp_calibration_clip_quantiles',
+                       type=float,
+                       nargs=2,
+                       default=None,
+                       metavar=('Q_LOW', 'Q_HIGH'),
+                       help='Optional quantile clipping for MODEST temperature calibration fitting')
     
     # Optical depth remapping grid (RESTORED)
     parser.add_argument(
@@ -2030,6 +2295,15 @@ def main():
         config.learning_rate = args.lr
     if args.c1_filters is not None:
         config.c1_filters = args.c1_filters
+    config.stokes_ic_mode = args.stokes_ic_mode
+    if config.stokes_ic_mode == 'fixed_global' and config.stokes_fixed_ic is None:
+        ic_stats_path = Path(config.data_path) / "normalization_stats" / "ic_reference_stats.json"
+        if ic_stats_path.exists():
+            with open(ic_stats_path, "r", encoding="utf-8") as f:
+                ic_payload = json.load(f)
+            fixed_ic = ic_payload.get("fixed_ic")
+            if fixed_ic is not None:
+                config.stokes_fixed_ic = float(fixed_ic)
     if args.wfa_gate_mode is not None:
         config.wfa_gate_mode = args.wfa_gate_mode
     if args.wfa_gate_threshold is not None:
@@ -2074,6 +2348,14 @@ def main():
         config.modest_epoch_plot_params = args.modest_epoch_plot_params
     if args.modest_epoch_plot_scatter_samples is not None:
         config.modest_epoch_plot_scatter_samples = args.modest_epoch_plot_scatter_samples
+    if args.modest_temp_calibration_mode is not None:
+        config.modest_temp_calibration_mode = args.modest_temp_calibration_mode
+    if args.modest_temp_calibration_file is not None:
+        config.modest_temp_calibration_file = str(Path(args.modest_temp_calibration_file).expanduser().resolve())
+    if args.modest_temp_calibration_min_samples is not None:
+        config.modest_temp_calibration_min_samples = args.modest_temp_calibration_min_samples
+    if args.modest_temp_calibration_clip_quantiles is not None:
+        config.modest_temp_calibration_clip_quantiles = list(args.modest_temp_calibration_clip_quantiles)
 
     # Handle cache clearing
     if args.clear_cache and config.use_cache:

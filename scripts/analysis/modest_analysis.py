@@ -151,5 +151,36 @@ if __name__ == "__main__":
         action='store_true',
         help='Downsample deconvolved+smoothed Stokes back to native grid before model inference',
     )
+    parser.add_argument(
+        '--temp-calibration-mode', '--temp_calibration_mode',
+        dest='temp_calibration_mode',
+        type=str,
+        choices=['off', 'apply_fit'],
+        default='off',
+        help='Temperature post-calibration mode: off (no calibration) or apply_fit (fit/load per-tau bias b; slope a fixed to 1)',
+    )
+    parser.add_argument(
+        '--temp-calibration-dir', '--temp_calibration_dir',
+        dest='temp_calibration_dir',
+        type=str,
+        default=None,
+        help='Optional base directory for temperature calibration JSON files (default: model output folder)',
+    )
+    parser.add_argument(
+        '--temp-calibration-min-samples', '--temp_calibration_min_samples',
+        dest='temp_calibration_min_samples',
+        type=int,
+        default=500,
+        help='Minimum paired finite pixels required to fit bias calibration per log(tau)',
+    )
+    parser.add_argument(
+        '--temp-calibration-clip-quantiles', '--temp_calibration_clip_quantiles',
+        dest='temp_calibration_clip_quantiles',
+        type=float,
+        nargs=2,
+        default=None,
+        metavar=('Q_LOW', 'Q_HIGH'),
+        help='Optional quantile clipping for calibration fitting, e.g. --temp-calibration-clip-quantiles 0.01 0.99',
+    )
     args = parser.parse_args()
     main(args)

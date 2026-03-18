@@ -980,6 +980,9 @@ def main():
         'MURAM_CACHE_DIR',
         '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache'
     )
+    parser.add_argument('--stokes-ic-mode', '--stokes_ic_mode', dest='stokes_ic_mode',
+                       type=str, choices=['per_step', 'fixed_global'], default='fixed_global',
+                       help='Continuum normalization mode for Stokes data')
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
     parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=default_cache_dir,
@@ -1113,6 +1116,7 @@ def main():
     print(f"Lambda WFA:         {args.lambda_wfa}")
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
+    print(f"Stokes I_c mode:    {args.stokes_ic_mode}")
     print(f"WFA gate mode:      {args.wfa_gate_mode}")
     if args.wfa_gate_mode == 'threshold':
         print(f"WFA gate threshold: {args.wfa_gate_threshold}")
@@ -1188,6 +1192,7 @@ def main():
             logtau_step=args.logtau_step,
             apply_region_mask=args.apply_region_mask,
             c1_filters=args.c1_filters,
+            stokes_ic_mode=args.stokes_ic_mode,
             **common_epoch_plot_kwargs,
         )
 

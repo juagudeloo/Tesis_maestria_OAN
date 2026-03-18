@@ -881,19 +881,37 @@ class StokesData:
         print("  Done.")
         return self.data
 
-    def continuum_normalization(self, cont_indices: Optional[np.ndarray] = None) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    def continuum_normalization(
+        self,
+        cont_indices: Optional[List[int]] = None,
+        fixed_ic: Optional[float] = None,
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
         if not self.data:
             raise ValueError("Stokes data not loaded. Call load_stokes() first.")
         if cont_indices is None:
             cont_indices = [0, 1, 2, 3]
+        cont_indices = np.asarray(cont_indices, dtype=int)
+        if cont_indices.ndim != 1 or cont_indices.size == 0:
+            raise ValueError("cont_indices must be a 1D non-empty array-like of indices")
+
         print("Applying continuum normalization...")
-        I_c = self.data["I"][:, :, cont_indices].mean(axis=2).flatten().mean()
+        if fixed_ic is None:
+            I_c = float(self.data["I"][:, :, cont_indices].mean(axis=2).mean())
+            ic_mode = "per-step"
+        else:
+            I_c = float(fixed_ic)
+            if not np.isfinite(I_c) or I_c <= 0:
+                raise ValueError(f"fixed_ic must be finite and > 0, got {fixed_ic}")
+            ic_mode = "fixed-global"
+
         for key in self.data.keys():
             self.data[key] = self.data[key] / I_c
-        self.mean_continuum = self.data["I"][:, :, cont_indices].mean(axis=2)
-        print(f"  Global continuum: I_c = {I_c:.6e}")
+        mean_continuum = self.data["I"][:, :, cont_indices].mean(axis=2)
+        self.mean_continuum = mean_continuum
+        print(f"  Continuum mode: {ic_mode}")
+        print(f"  Global continuum used: I_c = {I_c:.6e}")
         print("  Done.")
-        return self.data, self.mean_continuum
+        return self.data, mean_continuum
 
     def spectropolarimetry(self, stokes_data: Optional[Dict[str, np.ndarray]] = None) -> np.ndarray:
         if stokes_data is None:

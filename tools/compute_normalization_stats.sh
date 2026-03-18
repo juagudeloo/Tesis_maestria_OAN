@@ -34,6 +34,10 @@ USE_CACHE=true
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
 
+# Start from zero
+CLEAN_START=true
+PURGE_CACHE=true
+
 # Resume (optional)
 USE_RESUME=false
 RESUME_FROM=""
@@ -47,6 +51,12 @@ LOGTAU_VALUES=(-1.0 -0.8 0.0)
 LOGTAU_MIN=-2.0
 LOGTAU_MAX=0.0
 LOGTAU_STEP=0.1
+
+# Stokes continuum normalization policy
+STOKES_IC_MODE="fixed_global"
+IC_START_STEP=70
+IC_END_STEP=80
+IC_CONT_INDICES=(0 1 2 3)
 
 # ==============================================================================
 # RUN
@@ -71,6 +81,21 @@ if [ "${USE_EXPLICIT_LOGTAU}" = true ]; then
     CMD+=(--logtau_values "${LOGTAU_VALUES[@]}")
 else
     CMD+=(--logtau_min "${LOGTAU_MIN}" --logtau_max "${LOGTAU_MAX}" --logtau_step "${LOGTAU_STEP}")
+fi
+
+CMD+=(
+    --stokes_ic_mode "${STOKES_IC_MODE}"
+    --ic_start_step "${IC_START_STEP}"
+    --ic_end_step "${IC_END_STEP}"
+    --ic_cont_indices "${IC_CONT_INDICES[@]}"
+)
+
+if [ "${CLEAN_START}" = true ]; then
+    CMD+=(--clean_start)
+fi
+
+if [ "${PURGE_CACHE}" = true ]; then
+    CMD+=(--purge_cache)
 fi
 
 "${CMD[@]}"

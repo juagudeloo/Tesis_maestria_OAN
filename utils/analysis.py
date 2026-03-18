@@ -3,7 +3,7 @@ import json
 import csv
 import torch
 import torch.nn.functional as F
-from typing import Callable
+from typing import Callable, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -639,6 +639,154 @@ class ModestDiagnosticPlots:
         self.tau_indices = None
         self.metrics_rows: list[dict[str, float | str | int]] = []
 
+    @staticmethod
+    def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+        if arr2d.shape == target_shape:
+            return arr2d
+        t = torch.from_numpy(arr2d).float().unsqueeze(0).unsqueeze(0)
+        out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
+        return out.squeeze(0).squeeze(0).cpu().numpy()
+
+    def _temperature_calibration_mode(self) -> str:
+        mode = str(getattr(self.args, "temp_calibration_mode", "off")).lower()
+        if mode not in {"off", "apply_fit"}:
+            return "off"
+        return mode
+
+    def _temperature_calibration_clip_quantiles(self) -> tuple[float, float] | None:
+        q = getattr(self.args, "temp_calibration_clip_quantiles", None)
+        if q is None:
+            return None
+        if len(q) != 2:
+            return None
+        qlo = float(q[0])
+        qhi = float(q[1])
+        if not (0.0 <= qlo < qhi <= 1.0):
+            return None
+        return (qlo, qhi)
+
+    def _temperature_calibration_min_samples(self) -> int:
+        return int(max(10, int(getattr(self.args, "temp_calibration_min_samples", 500))))
+
+    def _temperature_calibration_path(self, model_type: str, out_root: Path) -> Path:
+        base_dir_raw = getattr(self.args, "temp_calibration_dir", None)
+        if base_dir_raw:
+            return Path(base_dir_raw) / model_type / "temperature_calibration.json"
+        return out_root / "temperature_calibration.json"
+
+    def _fit_temperature_affine_by_tau(
+        self,
+        model_type: str,
+        matches: list[tuple[float, int, int]],
+        true_cube: np.ndarray,
+        pred_cube: np.ndarray,
+    ) -> dict[str, Any]:
+        min_samples = self._temperature_calibration_min_samples()
+        clip_q = self._temperature_calibration_clip_quantiles()
+        coefficients: dict[str, dict[str, float | int]] = {}
+
+        for tau_val, i_mod, i_pred in matches:
+            if i_mod >= true_cube.shape[2] or i_pred >= pred_cube.shape[2]:
+                continue
+            true_map = np.asarray(true_cube[:, :, i_mod], dtype=np.float32)
+            pred_map = np.asarray(pred_cube[:, :, i_pred], dtype=np.float32)
+            if true_map.shape != pred_map.shape:
+                true_map = self._resize_map_to_shape(true_map, pred_map.shape)
+
+            x = true_map.ravel()  # GT
+            y = pred_map.ravel()  # Pred
+            m = np.isfinite(x) & np.isfinite(y)
+            x = x[m]
+            y = y[m]
+
+            if x.size < min_samples:
+                continue
+
+            if clip_q is not None:
+                qlo, qhi = clip_q
+                x_lo, x_hi = np.quantile(x, [qlo, qhi])
+                y_lo, y_hi = np.quantile(y, [qlo, qhi])
+                m2 = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
+                if np.count_nonzero(m2) >= min_samples:
+                    x = x[m2]
+                    y = y[m2]
+
+            if x.size < min_samples:
+                continue
+
+            a = 1.0
+            b = float(np.nanmean(x - y))
+
+            metrics_before = compute_regression_metrics(x, y)
+            metrics_after = compute_regression_metrics(x, y + b)
+            coefficients[f"{float(tau_val):.6f}"] = {
+                "tau_value": float(tau_val),
+                "a": float(a),
+                "b": float(b),
+                "n_points": int(x.size),
+                "corr_before": float(metrics_before["corr"]),
+                "corr_after": float(metrics_after["corr"]),
+                "rrmse_before": float(metrics_before["rrmse"]),
+                "rrmse_after": float(metrics_after["rrmse"]),
+            }
+
+        return {
+            "mode": "bias_per_tau",
+            "model_type": model_type,
+            "min_samples": int(min_samples),
+            "clip_quantiles": list(clip_q) if clip_q is not None else None,
+            "coefficients": coefficients,
+        }
+
+    @staticmethod
+    def _save_temperature_calibration(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+    @staticmethod
+    def _load_temperature_calibration(path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _find_tau_coeff(coefficients: dict[str, dict[str, Any]], tau_val: float) -> dict[str, Any] | None:
+        for key, coeff in coefficients.items():
+            try:
+                if np.isclose(float(key), float(tau_val), atol=1e-6, rtol=0.0):
+                    return coeff
+            except Exception:
+                continue
+        return None
+
+    def _apply_temperature_calibration(
+        self,
+        pred_cube: np.ndarray,
+        matches: list[tuple[float, int, int]],
+        payload: dict[str, Any],
+    ) -> tuple[np.ndarray, dict[int, dict[str, float]]]:
+        coefficients = payload.get("coefficients", {}) if isinstance(payload, dict) else {}
+        calibrated = np.array(pred_cube, copy=True)
+        applied_by_pred_idx: dict[int, dict[str, float]] = {}
+
+        for tau_val, _i_mod, i_pred in matches:
+            if i_pred >= calibrated.shape[2]:
+                continue
+            coeff = self._find_tau_coeff(coefficients, tau_val)
+            if coeff is None:
+                continue
+            b = float(coeff.get("b", 0.0))
+            calibrated[:, :, i_pred] = calibrated[:, :, i_pred] + b
+            applied_by_pred_idx[i_pred] = {
+                "a": 1.0,
+                "b": b,
+                "n_points": int(coeff.get("n_points", 0)),
+            }
+
+        return calibrated, applied_by_pred_idx
+
     def _write_metrics_csv(self, model_type: str, out_root: Path) -> None:
         rows = [r for r in self.metrics_rows if r.get("model") == model_type]
         if not rows:
@@ -648,6 +796,8 @@ class ModestDiagnosticPlots:
             "model", "param", "logtau", "comparison", "n_points", "n_true", "n_pred",
             "corr", "r2", "rmse", "rrmse", "mae", "nmae", "bias",
             "ks", "w1_quantile", "jsd", "overlap",
+            "calibration_mode", "calibration_applied", "calibration_source",
+            "calibration_a", "calibration_b", "calibration_n_fit",
         ]
         with open(metrics_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -691,7 +841,15 @@ class ModestDiagnosticPlots:
         }
         prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
         self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
-        norm_stokes = self.stokes_normalizer.transform(prediction_stokes)
+        cont_indices = [0, 1, 2, 3]
+        I_c_modest = float(np.nanmean(prediction_stokes["I"][:, :, cont_indices]))
+        if np.isfinite(I_c_modest) and I_c_modest > 10.0:
+            print(f"MODEST continuum appears unnormalized (I_c={I_c_modest:.6e}); applying I/I_c scaling.")
+            stokes_for_norm = {k: v / I_c_modest for k, v in prediction_stokes.items()}
+        else:
+            print(f"MODEST continuum appears already normalized (I_c={I_c_modest:.6e}); skipping extra I/I_c scaling.")
+            stokes_for_norm = prediction_stokes
+        norm_stokes = self.stokes_normalizer.transform(stokes_for_norm)
         I_flat = norm_stokes["I"].reshape(self.pred_nx * self.pred_ny, -1)
         V_flat = norm_stokes["V"].reshape(self.pred_nx * self.pred_ny, -1)
         self.modest_stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)
@@ -849,6 +1007,8 @@ class ModestDiagnosticPlots:
         return out_metrics, comparison
 
     def run(self, model_configs, models):
+        calibration_mode = self._temperature_calibration_mode()
+        print(f"Temperature calibration mode: {calibration_mode}")
         for name, model in models.items():
             model_type = model_configs[name]["experiment_key"]
             pred_tau = self.pipeline.get_model_logtau_values(model_configs[name])
@@ -871,6 +1031,37 @@ class ModestDiagnosticPlots:
                 batch_size=self.args.inference_batch_size,
             )
             out_root = self.modest_output_dir / model_type
+            cal_path = self._temperature_calibration_path(model_type=model_type, out_root=out_root)
+
+            applied_by_tau_idx: dict[int, dict[str, float]] = {}
+            calibration_source = ""
+            if calibration_mode == "apply_fit":
+                cal_payload = self._load_temperature_calibration(cal_path)
+                if cal_payload is None:
+                    print(f"[{model_type}] No calibration file found — fitting now.")
+                    cal_payload = self._fit_temperature_affine_by_tau(
+                        model_type=model_type,
+                        matches=matches,
+                        true_cube=self.modest_mhd_data["T"],
+                        pred_cube=pred_mhd["T"],
+                    )
+                    n_coeff = len(cal_payload.get("coefficients", {}))
+                    if n_coeff > 0:
+                        self._save_temperature_calibration(cal_path, cal_payload)
+                        print(f"[{model_type}] Fitted and saved calibration ({n_coeff} taus) to: {cal_path}")
+                    else:
+                        print(f"[{model_type}] No calibration coefficients fitted (insufficient finite points). Proceeding without calibration.")
+                        cal_payload = None
+                else:
+                    print(f"[{model_type}] Loaded existing calibration from: {cal_path}")
+                if cal_payload is not None:
+                    pred_mhd["T"], applied_by_tau_idx = self._apply_temperature_calibration(
+                        pred_cube=pred_mhd["T"],
+                        matches=matches,
+                        payload=cal_payload,
+                    )
+                    calibration_source = str(cal_path)
+
             surface_dir = out_root / "surface"
             joint_dir = out_root / "jointplots"
             surface_dir.mkdir(parents=True, exist_ok=True)
@@ -885,10 +1076,16 @@ class ModestDiagnosticPlots:
                         continue
                     true_map = true_cube[:, :, i_mod]
                     pred_map = pred_cube[:, :, i_pred]
+                    plot_title = f"{model_type} | {param} | matched log(tau)={tau_val:.2f}"
+                    if param == "T" and calibration_mode == "apply_fit":
+                        if applied_by_tau_idx.get(i_pred) is not None:
+                            plot_title += " | post-calibrated (apply_fit)"
+                        else:
+                            plot_title += " | raw prediction (apply_fit requested, no coeff)"
                     self._plot_imshows(
                         true_2d=true_map,
                         pred_2d=pred_map,
-                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        title=plot_title,
                         save_path=surface_dir / f"{param}_tau_{tau_val:+.2f}_imshow.png",
                         param=param,
                         transpose=True,
@@ -897,11 +1094,12 @@ class ModestDiagnosticPlots:
                     metrics_out = self._plot_jointplot(
                         true_2d=true_map,
                         pred_2d=pred_map,
-                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        title=plot_title,
                         save_path=joint_dir / f"{param}_tau_{tau_val:+.2f}_jointplot.png",
                     )
                     if metrics_out is not None:
                         metrics, comparison = metrics_out
+                        cal_info = applied_by_tau_idx.get(i_pred) if param == "T" else None
                         self.metrics_rows.append({
                             "model": model_type,
                             "param": param,
@@ -921,6 +1119,12 @@ class ModestDiagnosticPlots:
                             "w1_quantile": float(metrics["w1_quantile"]),
                             "jsd": float(metrics["jsd"]),
                             "overlap": float(metrics["overlap"]),
+                            "calibration_mode": calibration_mode,
+                            "calibration_applied": bool(cal_info is not None),
+                            "calibration_source": calibration_source,
+                            "calibration_a": float(cal_info["a"]) if cal_info is not None else np.nan,
+                            "calibration_b": float(cal_info["b"]) if cal_info is not None else np.nan,
+                            "calibration_n_fit": int(cal_info["n_points"]) if cal_info is not None else np.nan,
                         })
                     saved_any = True
             if saved_any:
