@@ -23,6 +23,12 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         Weight for Doppler V_LOS loss term (0.0 to disable)
     lambda_temp : float
         Weight for temperature loss term (0.0 to disable)
+    lambda_tail : float
+        Weight for Huber tail-loss term on Bz (0.0 to disable, default: 0.2)
+    alpha : float
+        Tail weight maximum strength (default: 4.0)
+    gamma : float
+        Tail weight sharpness exponent (default: 1.5)
     blos_physics_mode : {'tau_averaged', 'single_height'}, optional
         Mode for computing B_LOS comparison
     blos_target_logtau : float, optional
@@ -43,6 +49,9 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         lambda_wfa: float = 0.01,
         lambda_doppler: float = 0.01,
         lambda_temp: float = 0.01,
+        lambda_tail: float = 0.2,
+        alpha: float = 4.0,
+        gamma: float = 1.5,
         blos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
         blos_target_logtau: Optional[float] = None,
         vlos_physics_mode: Literal['tau_averaged', 'single_height'] = 'tau_averaged',
@@ -65,12 +74,20 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         self.lambda_wfa = float(lambda_wfa)
         self.lambda_doppler = float(lambda_doppler)
         self.lambda_temp = float(lambda_temp)
+        self.lambda_tail = float(lambda_tail)
+        self.alpha = float(alpha)
+        self.gamma = float(gamma)
         self.blos_physics_mode = blos_physics_mode
         self.blos_target_logtau = blos_target_logtau
         self.vlos_physics_mode = vlos_physics_mode
         self.vlos_target_logtau = vlos_target_logtau
         self.temp_physics_mode = temp_physics_mode
         self.temp_target_logtau = temp_target_logtau
+        
+        # Tail-loss parameters (loaded from normalizer)
+        self.B0_weight_start = None  # P90 of |Bz|
+        self.B1_weight_saturation = None  # P99.5 of |Bz|
+        self.huber_delta = None  # Huber threshold
         
         # Physics computation state (set via set_physics_context)
         self.mhd_normalizer = None
@@ -183,6 +200,21 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             else:
                 self._temp_target_logtau_idx = int(np.argmin(np.abs(logtau_values - self.temp_target_logtau)))
                 self.temp_target_logtau = logtau_values[self._temp_target_logtau_idx]
+        
+        # Load tail-loss parameters from normalizer (new names + legacy fallback)
+        B0_weight_start = getattr(mhd_normalizer, 'B0_weight_start', None)
+        B1_weight_saturation = getattr(mhd_normalizer, 'B1_weight_saturation', None)
+        huber_delta = getattr(mhd_normalizer, 'huber_delta', None)
+
+        if B0_weight_start is None:
+            B0_weight_start = getattr(mhd_normalizer, 'bz_B0_w', None)
+            B1_weight_saturation = getattr(mhd_normalizer, 'bz_B1_w', None)
+            huber_delta = getattr(mhd_normalizer, 'bz_delta', None)
+
+        if B0_weight_start is not None and B1_weight_saturation is not None and huber_delta is not None:
+            self.B0_weight_start = float(B0_weight_start)
+            self.B1_weight_saturation = float(B1_weight_saturation)
+            self.huber_delta = float(huber_delta)
         
         # Move approximations to device
         device = self._get_device()
@@ -619,6 +651,64 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         
         return total_loss, loss_components
 
+    def _compute_bz_tail_loss(self, predictions: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute tail-weighted Huber loss on Bz predictions in physical units.
+        
+        $$
+        L_{tail} = \\frac{1}{N} \\sum_i w_i \\cdot \\mathrm{Huber}_\\delta(B^{pred}_{z,i} - B^{true}_{z,i})
+        $$
+        
+        where
+        
+        $$
+        w_i = 1 + \\alpha \\left[\\max\\left(0, \\frac{|B_{z,i}^{true}|-B_0^{(w)}}{B_1^{(w)}-B_0^{(w)}}\\right)\\right]^\\gamma
+        $$
+        
+        Parameters
+        ----------
+        predictions : torch.Tensor
+            Normalized predictions (batch, 63) in block order [T, Vz, Bz]
+        targets : torch.Tensor
+            Normalized targets (batch, 63) in block order [T, Vz, Bz]
+            
+        Returns
+        -------
+        tail_loss : torch.Tensor
+            Scalar weighted Huber loss term
+        """
+        device = self._get_device()
+        
+        # Denormalize Bz predictions and targets to physical units
+        denorm_pred = self._denormalize_predictions(predictions)
+        denorm_targets = self._denormalize_predictions(targets)
+        
+        bz_pred = denorm_pred['Bz']  # (batch, n_tau)
+        bz_true = denorm_targets['Bz']  # (batch, n_tau)
+        
+        # Compute residuals
+        residuals = bz_pred - bz_true  # (batch, n_tau)
+        
+        # Compute weight mask based on true field strength
+        abs_bz_true = torch.abs(bz_true)
+        ratio = (abs_bz_true - self.B0_weight_start) / (self.B1_weight_saturation - self.B0_weight_start + 1e-8)
+        tail_mask = torch.clamp(ratio, min=0.0, max=1.0)
+        weights = 1.0 + self.alpha * torch.pow(tail_mask, self.gamma)  # (batch, n_tau)
+        
+        # Compute Huber loss (smooth_l1_loss is equivalent to Huber)
+        # Note: beta parameter in PyTorch = delta in standard definition
+        per_element = F.smooth_l1_loss(
+            residuals,
+            torch.zeros_like(residuals),
+            reduction='none',
+            beta=self.huber_delta,
+        )  # (batch, n_tau)
+        
+        # Apply weights and average
+        weighted_loss = (weights * per_element).mean()
+        
+        return weighted_loss
+
     def compute_loss(
         self,
         predictions: torch.Tensor,
@@ -627,7 +717,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         enable_wfa: bool = True,
     ) -> Dict[str, Any]:
         """
-        Compute total loss with optional physics regularization.
+        Compute total loss with optional physics regularization and tail-weighted Huber term.
         
         Parameters
         ----------
@@ -637,13 +727,21 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Ground truth targets (batch_size, 63)
         spatial_indices : torch.Tensor, optional
             Spatial coordinates (batch_size, 2) for physics losses
+        enable_wfa : bool
+            Enable WFA physics term
+            
         Returns
         -------
         loss_dict : Dict[str, torch.Tensor]
             Dictionary containing loss terms
         """
-        # Supervised MSE loss
+        # Base supervised MSE loss in normalized space
         mse_loss = F.mse_loss(predictions, targets)
+        
+        # Weighted Huber tail loss on Bz (in physical units)
+        tail_loss = torch.tensor(0.0, device=self._get_device())
+        if self.lambda_tail > 0 and self.B0_weight_start is not None and self.mhd_normalizer is not None:
+            tail_loss = self._compute_bz_tail_loss(predictions, targets)
         
         # Physics regularization - check if ANY lambda is non-zero and spatial_indices provided
         use_physics = spatial_indices is not None and any([
@@ -663,11 +761,12 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             physics_loss_total = torch.tensor(0.0, device=device)
             physics_components = {'wfa_enabled': float(enable_wfa and self.lambda_wfa > 0)}
 
-        total_loss = mse_loss + physics_loss_total
+        total_loss = mse_loss + self.lambda_tail * tail_loss + physics_loss_total
 
         return {
             "loss": total_loss,
             "mse": mse_loss,
+            "tail": tail_loss,
             "physics": physics_loss_total,
             **physics_components
         }

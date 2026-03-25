@@ -29,10 +29,10 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # ==============================================================================
 
 # Data range
-MIN_STEP=112
-MAX_STEP=113
+MIN_STEP=150
+MAX_STEP=151
 STEP_SIZE=1
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-wfa_plateu_gate-global_Ic"
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-tail_loss_2"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
@@ -44,6 +44,11 @@ C1_FILTERS=16
 LAMBDA_WFA_VALUES=(1e-1 1e-3)
 LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
+
+# Tail-weighted Huber loss on Bz (regression-to-mean mitigation)
+LAMBDA_TAIL=0.05
+TAIL_ALPHA=2.0
+TAIL_GAMMA=1.2
 
 # Logtau values to map
 LOGTAU_VALUES=(-1.0 -0.8 0.0)
@@ -62,7 +67,7 @@ TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = 
 WFA_GATE_MODE='plateau'         # 'off', 'threshold', or 'plateau'
 WFA_GATE_THRESHOLD=0.0          # Used when WFA_GATE_MODE='threshold'
 WFA_GATE_PATIENCE=5             # Used when WFA_GATE_MODE='plateau'
-WFA_GATE_MIN_DELTA=5e-4         # Used when WFA_GATE_MODE='plateau'
+WFA_GATE_MIN_DELTA=5e-3         # Used when WFA_GATE_MODE='plateau'
 WFA_GATE_WARMUP_EPOCHS=0
 
 # Stokes continuum normalization mode
@@ -76,6 +81,9 @@ export MURAM_CACHE_DIR="${CACHE_DIR}"
 ENABLE_MODEST_EPOCH_PLOTS=1
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
 MODEST_CROP_BOUNDS=(0 100 400 600)   # default plage crop from scripts/analysis/modest_analysis.py
+# MODEST pred input mode for per-epoch diagnostics:
+# 1 = downsampled (pixel-by-pixel), 0 = upsampled
+MODEST_DOWNSAMPLE_PREDICTION_INPUT=1
 
 # Experiments to run
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
@@ -84,6 +92,12 @@ EXPERIMENTS="no_physics wfa_only"
 # Region-mask balancing during training (ablation study)
 # 1 = apply balanced region mask, 0 = disable mask
 APPLY_REGION_MASK=1
+
+# Training dataset histogram diagnostics (range-of-applicability)
+# 1 = generate train-split histograms for T, Vz, Bz; 0 = disable
+ENABLE_TRAINING_DATA_HISTOGRAMS=1
+TRAINING_HIST_BINS=120
+TRAINING_HIST_MAX_SAMPLES=400000
 
 # ==============================================================================
 # RUN EXPERIMENT
@@ -105,6 +119,11 @@ python3 ./scripts/experiments/ablation_study.py \
     --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
     --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \
     --lambda_temp "${LAMBDA_TEMP_VALUES[@]}" \
+    --lambda_tail "${LAMBDA_TAIL}" \
+    --tail_alpha "${TAIL_ALPHA}" \
+    --tail_gamma "${TAIL_GAMMA}" \
+    --training-hist-bins "${TRAINING_HIST_BINS}" \
+    --training-hist-max-samples "${TRAINING_HIST_MAX_SAMPLES}" \
     --blos_physics_mode "${BLOS_MODE}" \
     --blos_target_logtau "${BLOS_TARGET_LOGTAU}" \
     --vlos_physics_mode "${VLOS_MODE}" \
@@ -120,6 +139,8 @@ python3 ./scripts/experiments/ablation_study.py \
     --experiments ${EXPERIMENTS} \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
     --modest-crop-bounds "${MODEST_CROP_BOUNDS[@]}" \
+    $( [[ "${MODEST_DOWNSAMPLE_PREDICTION_INPUT}" == "1" ]] && echo "--modest-downsample-prediction-input" || echo "--modest-upsample-prediction-input" ) \
     $( [[ "${ENABLE_MODEST_EPOCH_PLOTS}" == "1" ]] && echo "--modest-epoch-plots" ) \
+    $( [[ "${ENABLE_TRAINING_DATA_HISTOGRAMS}" == "1" ]] || echo "--no-training-data-histograms" ) \
     $( [[ "${APPLY_REGION_MASK}" == "1" ]] && echo "--apply-region-mask" || echo "--no-region-mask" )
 

@@ -281,6 +281,9 @@ class AnalysisModelPipeline:
                 "lambda_wfa": float(phys_cfg.get("lambda_wfa", model_cfg["lambda_wfa"])),
                 "lambda_doppler": float(phys_cfg.get("lambda_doppler", model_cfg["lambda_doppler"])),
                 "lambda_temp": float(phys_cfg.get("lambda_temp", model_cfg["lambda_temp"])),
+                "lambda_tail": float(phys_cfg.get("lambda_tail", 0.2)),
+                "tail_alpha": float(phys_cfg.get("tail_alpha", 4.0)),
+                "tail_gamma": float(phys_cfg.get("tail_gamma", 1.5)),
                 "blos_physics_mode": phys_cfg.get("blos_physics_mode", "tau_averaged"),
                 "blos_target_logtau": phys_cfg.get("blos_target_logtau", None),
                 "vlos_physics_mode": phys_cfg.get("vlos_physics_mode", "single_height"),
@@ -315,6 +318,9 @@ class AnalysisModelPipeline:
             lambda_wfa=config["lambda_wfa"],
             lambda_doppler=config["lambda_doppler"],
             lambda_temp=config["lambda_temp"],
+            lambda_tail=config.get("lambda_tail", 0.2),
+            alpha=config.get("tail_alpha", 4.0),
+            gamma=config.get("tail_gamma", 1.5),
         ).to(self.device)
 
         model.load_state_dict(checkpoint["model_state_dict"])
@@ -887,10 +893,11 @@ class ModestDiagnosticPlots:
             if (np.isfinite(gt).any() and np.isfinite(pr).any())
             else np.array([0.0, 1.0])
         )
-        vmin, vmax = np.quantile(vals, [0.01, 0.99])
-        if np.nanmin(vals) < 0 < np.nanmax(vals):
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
+        if param in ("Vz", "Bz"):
+            vmax = np.quantile(np.abs(vals), 0.99)
+            vmin = -vmax
+        else:
+            vmin, vmax = np.quantile(vals, [0.01, 0.99])
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 5))
         im0 = axes[0].imshow(gt, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax)
@@ -1089,7 +1096,6 @@ class ModestDiagnosticPlots:
                         save_path=surface_dir / f"{param}_tau_{tau_val:+.2f}_imshow.png",
                         param=param,
                         transpose=True,
-                        transpose_pred=not self.args.cropped_region,
                     )
                     metrics_out = self._plot_jointplot(
                         true_2d=true_map,

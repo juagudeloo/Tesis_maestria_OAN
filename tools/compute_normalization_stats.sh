@@ -36,7 +36,7 @@ export MURAM_CACHE_DIR="${CACHE_DIR}"
 
 # Start from zero
 CLEAN_START=true
-PURGE_CACHE=true
+PURGE_CACHE=false
 
 # Resume (optional)
 USE_RESUME=false

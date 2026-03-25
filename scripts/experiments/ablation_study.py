@@ -50,6 +50,239 @@ def _series_for_log_plot(values) -> np.ndarray:
     return np.where(arr > 0, arr, np.nan)
 
 
+def _get_active_range(values) -> int:
+    """
+    Find the first index where a loss value becomes non-zero.
+    Used to avoid plotting zero values as a continuous line on log scale.
+    
+    Returns the first index where value > 0, or None if all values are <= 0.
+    """
+    arr = np.asarray(values, dtype=float)
+    nonzero_indices = np.where(arr > 0)[0]
+    return nonzero_indices[0] if len(nonzero_indices) > 0 else None
+
+
+def _denormalize_targets_from_stats(
+    normalized_targets: np.ndarray,
+    param: str,
+    mhd_normalizer: MhdNormalizer,
+) -> np.ndarray:
+    """Denormalize normalized targets using stored stats without clipping."""
+    if param not in {'T', 'Vz', 'Bz'}:
+        raise ValueError(f"Unsupported parameter: {param}")
+
+    if not mhd_normalizer.finalized or mhd_normalizer.final_stats is None:
+        raise RuntimeError("MHD normalizer must be finalized before denormalization")
+
+    denorm = np.zeros_like(normalized_targets, dtype=np.float32)
+    param_stats = mhd_normalizer.final_stats[param]
+
+    for tau_idx in range(normalized_targets.shape[1]):
+        stats_tau = param_stats[tau_idx]
+        std = float(stats_tau['std'])
+        mean = float(stats_tau['mean'])
+
+        if stats_tau.get('type') == 'centered':
+            values_tau = normalized_targets[:, tau_idx] * std
+        else:
+            values_tau = (normalized_targets[:, tau_idx] * std) + mean
+
+        if param == 'Bz':
+            B0_tau = float(mhd_normalizer.B0_transform_per_tau[tau_idx])
+            values_tau = B0_tau * np.sinh(values_tau)
+
+        denorm[:, tau_idx] = values_tau.astype(np.float32, copy=False)
+
+    return denorm
+
+
+def generate_training_data_histograms(
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    train_steps: list[int],
+    output_dir: Path,
+    cache: MuramDataCache | None = None,
+    bins: int = 120,
+    max_samples_per_param: int = 400000,
+    force_recompute: bool = False,
+) -> tuple[Path, Path]:
+    """Generate per-τ histograms and summary stats for training-target value ranges."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    hist_index_path = output_dir / "training_data_histograms_train_split_per_tau_index.json"
+    stats_path = output_dir / "training_data_histograms_train_split_stats.json"
+    hist_paths = {
+        'T': output_dir / "training_data_histograms_train_split_per_tau_T.png",
+        'Vz': output_dir / "training_data_histograms_train_split_per_tau_Vz.png",
+        'Bz': output_dir / "training_data_histograms_train_split_per_tau_Bz.png",
+    }
+
+    if all(p.exists() for p in hist_paths.values()) and stats_path.exists() and hist_index_path.exists() and not force_recompute:
+        print(f"Training-data per-τ histograms already exist, reusing: {hist_index_path}")
+        return hist_index_path, stats_path
+
+    rng = np.random.default_rng(42)
+    sample_per_step = max(2_000, min(max_samples_per_param, 20_000))
+    n_tau = config.get_n_logtau()
+    logtau_vals = np.asarray(config.get_logtau_values(), dtype=float)
+
+    buckets = {param: [[] for _ in range(n_tau)] for param in ['T', 'Vz', 'Bz']}
+    totals = {param: np.zeros(n_tau, dtype=np.int64) for param in ['T', 'Vz', 'Bz']}
+    mins = {param: np.full(n_tau, np.inf, dtype=np.float64) for param in ['T', 'Vz', 'Bz']}
+    maxs = {param: np.full(n_tau, -np.inf, dtype=np.float64) for param in ['T', 'Vz', 'Bz']}
+
+    print("\nCollecting training-value samples for histogram diagnostics...")
+    for step in tqdm(train_steps, desc="Histogram data (train split)"):
+        dataset, _ = load_and_prepare_step(
+            step=step,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            cache=cache,
+            apply_balanced_masks=config.apply_region_mask,
+            log_region_stats=False,
+        )
+
+        targets = dataset.mhd_targets
+        T_norm = targets[:, :n_tau]
+        Vz_norm = targets[:, n_tau:2 * n_tau]
+        Bz_norm = targets[:, 2 * n_tau:3 * n_tau]
+
+        recovered = {
+            'T': _denormalize_targets_from_stats(T_norm, 'T', mhd_normalizer),
+            'Vz': _denormalize_targets_from_stats(Vz_norm, 'Vz', mhd_normalizer),
+            'Bz': _denormalize_targets_from_stats(Bz_norm, 'Bz', mhd_normalizer),
+        }
+
+        for param, values in recovered.items():
+            values = np.asarray(values, dtype=np.float32)
+            for tau_idx in range(n_tau):
+                values_tau = values[:, tau_idx]
+                totals[param][tau_idx] += int(values_tau.size)
+                mins[param][tau_idx] = min(mins[param][tau_idx], float(np.min(values_tau)))
+                maxs[param][tau_idx] = max(maxs[param][tau_idx], float(np.max(values_tau)))
+
+                if values_tau.size > sample_per_step:
+                    idx = rng.choice(values_tau.size, size=sample_per_step, replace=False)
+                    sampled_tau = values_tau[idx]
+                else:
+                    sampled_tau = values_tau
+                buckets[param][tau_idx].append(sampled_tau)
+
+    sampled_values = {param: [] for param in ['T', 'Vz', 'Bz']}
+    for param in ['T', 'Vz', 'Bz']:
+        for tau_idx in range(n_tau):
+            parts = buckets[param][tau_idx]
+            if len(parts) == 0:
+                sampled_values[param].append(np.empty((0,), dtype=np.float32))
+                continue
+            merged = np.concatenate(parts)
+            if merged.size > max_samples_per_param:
+                idx = rng.choice(merged.size, size=max_samples_per_param, replace=False)
+                merged = merged[idx]
+            sampled_values[param].append(merged)
+
+    labels = {
+        'T': 'Temperature T [K]',
+        'Vz': 'Velocity Vz [km/s]',
+        'Bz': 'Magnetic field Bz [G]',
+    }
+    colors = {'T': 'tab:red', 'Vz': 'tab:blue', 'Bz': 'tab:green'}
+
+    n_cols = int(min(7, n_tau))
+    n_rows = int(np.ceil(n_tau / n_cols))
+
+    stats_payload = {
+        'train_steps': [int(s) for s in train_steps],
+        'apply_region_mask': bool(config.apply_region_mask),
+        'n_logtau': int(n_tau),
+        'logtau_values': [float(v) for v in logtau_vals.tolist()],
+        'max_samples_per_param': int(max_samples_per_param),
+        'sample_per_step': int(sample_per_step),
+        'parameters': {},
+    }
+
+    for param in ['T', 'Vz', 'Bz']:
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 3.2, n_rows * 2.6), squeeze=False)
+        fig.suptitle(
+            f"Training Dataset Distribution per optical depth - {labels[param]} (train split)",
+            fontsize=13,
+            fontweight='bold',
+        )
+
+        per_tau_stats = []
+        for tau_idx in range(n_tau):
+            row = tau_idx // n_cols
+            col = tau_idx % n_cols
+            ax = axes[row, col]
+            values = sampled_values[param][tau_idx]
+            tau_label = f"logτ={logtau_vals[tau_idx]:.2f}"
+
+            if values.size == 0:
+                ax.set_title(f"{tau_label}\n(no samples)", fontsize=9)
+                ax.axis('off')
+                per_tau_stats.append({
+                    'tau_idx': int(tau_idx),
+                    'logtau': float(logtau_vals[tau_idx]),
+                    'n_values_total': 0,
+                    'n_values_sampled': 0,
+                })
+                continue
+
+            p01, p05, p50, p95, p99 = np.percentile(values, [1, 5, 50, 95, 99])
+            ax.hist(values, bins=bins, color=colors[param], alpha=0.75, edgecolor='black', linewidth=0.2)
+            ax.axvline(p01, color='k', linestyle='--', linewidth=0.8, alpha=0.75)
+            ax.axvline(p99, color='k', linestyle='--', linewidth=0.8, alpha=0.75)
+            ax.axvline(p50, color='goldenrod', linestyle='-', linewidth=0.9, alpha=0.9)
+            ax.set_title(tau_label, fontsize=9)
+            ax.grid(True, alpha=0.2)
+            if row == n_rows - 1:
+                ax.set_xlabel('Value', fontsize=8)
+            if col == 0:
+                ax.set_ylabel('Count', fontsize=8)
+            ax.tick_params(axis='both', labelsize=7)
+
+            per_tau_stats.append({
+                'tau_idx': int(tau_idx),
+                'logtau': float(logtau_vals[tau_idx]),
+                'n_values_total': int(totals[param][tau_idx]),
+                'n_values_sampled': int(values.size),
+                'min': float(mins[param][tau_idx]),
+                'max': float(maxs[param][tau_idx]),
+                'p1_sampled': float(p01),
+                'p5_sampled': float(p05),
+                'p50_sampled': float(p50),
+                'p95_sampled': float(p95),
+                'p99_sampled': float(p99),
+            })
+
+        for k in range(n_tau, n_rows * n_cols):
+            row = k // n_cols
+            col = k % n_cols
+            axes[row, col].axis('off')
+
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.savefig(hist_paths[param], dpi=170, bbox_inches='tight')
+        plt.close(fig)
+
+        stats_payload['parameters'][param] = {
+            'plot_file': str(hist_paths[param]),
+            'per_tau': per_tau_stats,
+        }
+
+    with open(stats_path, 'w') as f:
+        json.dump(stats_payload, f, indent=2)
+
+    with open(hist_index_path, 'w') as f:
+        json.dump({k: str(v) for k, v in hist_paths.items()}, f, indent=2)
+
+    print(f"Saved per-τ histogram index:      {hist_index_path}")
+    for param in ['T', 'Vz', 'Bz']:
+        print(f"Saved per-τ histogram ({param}):   {hist_paths[param]}")
+    print(f"Saved histogram stats:           {stats_path}")
+    return hist_index_path, stats_path
+
+
 class ExperimentTracker:
     """Tracks metrics across different experimental conditions."""
     
@@ -125,7 +358,7 @@ class ExperimentTracker:
     def plot_individual_loss_curves(self):
         """Generate individual plots for each experiment showing all loss components."""
         for exp_name, results in self.results.items():
-            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
             fig.suptitle(f'Loss Components - {exp_name}', fontsize=14, fontweight='bold')
             
             epochs = range(1, len(results['train_loss_history']) + 1)
@@ -133,6 +366,9 @@ class ExperimentTracker:
             # Total loss
             ax1 = axes[0, 0]
             ax1.plot(epochs, _series_for_log_plot(results['train_loss_history']), 'b-o', label='Total Loss', linewidth=2)
+            _activation_idx = _get_active_range(results.get('wfa_loss_history') or results.get('physics_loss_history') or [])
+            if _activation_idx is not None:
+                ax1.axvline(x=list(epochs)[_activation_idx], color='gray', linestyle='--', alpha=0.7, linewidth=1.5, label='Physics on')
             ax1.set_xlabel('Epoch')
             ax1.set_ylabel('Loss')
             ax1.set_title('Total Training Loss')
@@ -156,26 +392,48 @@ class ExperimentTracker:
             if 'physics_loss_history' in results and any(l > 0 for l in results['physics_loss_history']):
                 ax3.plot(epochs, _series_for_log_plot(results['physics_loss_history']), 'r-^', label='Total Physics', linewidth=2)
             if 'wfa_loss_history' in results and any(l > 0 for l in results['wfa_loss_history']):
-                ax3.plot(epochs, _series_for_log_plot(results['wfa_loss_history']), 'm--', label='WFA', linewidth=1.5)
+                wfa_start = _get_active_range(results['wfa_loss_history'])
+                if wfa_start is not None:
+                    ax3.plot(epochs[wfa_start:], _series_for_log_plot(results['wfa_loss_history'][wfa_start:]), 'm--', label='WFA', linewidth=1.5)
             if 'doppler_loss_history' in results and any(l > 0 for l in results['doppler_loss_history']):
-                ax3.plot(epochs, _series_for_log_plot(results['doppler_loss_history']), 'c--', label='Doppler', linewidth=1.5)
+                doppler_start = _get_active_range(results['doppler_loss_history'])
+                if doppler_start is not None:
+                    ax3.plot(epochs[doppler_start:], _series_for_log_plot(results['doppler_loss_history'][doppler_start:]), 'c--', label='Doppler', linewidth=1.5)
             if 'temperature_loss_history' in results and any(l > 0 for l in results['temperature_loss_history']):
-                ax3.plot(epochs, _series_for_log_plot(results['temperature_loss_history']), 'y--', label='Temperature', linewidth=1.5)
+                temp_start = _get_active_range(results['temperature_loss_history'])
+                if temp_start is not None:
+                    ax3.plot(epochs[temp_start:], _series_for_log_plot(results['temperature_loss_history'][temp_start:]), 'y--', label='Temperature', linewidth=1.5)
             ax3.set_xlabel('Epoch')
             ax3.set_ylabel('Loss')
             ax3.set_title('Physics Loss Components')
             ax3.legend()
             ax3.grid(True, alpha=0.3)
             ax3.set_yscale('log')
+            ax3.set_xlim(min(epochs), max(epochs))
             
             # Validation loss
             ax4 = axes[1, 1]
-            ax4.plot(epochs, results['val_loss_history'], 'orange', marker='o', label='Validation Loss', linewidth=2)
+            ax4.plot(epochs, _series_for_log_plot(results['val_loss_history']), 'orange', marker='o', label='Validation Loss', linewidth=2)
             ax4.set_xlabel('Epoch')
             ax4.set_ylabel('Loss')
             ax4.set_title('Validation Loss')
             ax4.legend()
             ax4.grid(True, alpha=0.3)
+            ax4.set_yscale('log')
+
+            # Tail loss component (raw, unweighted)
+            ax5 = axes[0, 2]
+            if 'tail_loss_history' in results and any(l > 0 for l in results['tail_loss_history']):
+                ax5.plot(epochs, _series_for_log_plot(results['tail_loss_history']), 'k-d', label='Tail Loss', linewidth=2)
+            ax5.set_xlabel('Epoch')
+            ax5.set_ylabel('Loss')
+            ax5.set_title('Tail Loss Component (Raw)')
+            ax5.legend()
+            ax5.grid(True, alpha=0.3)
+            ax5.set_yscale('log')
+
+            # Empty panel (kept for layout symmetry)
+            axes[1, 2].axis('off')
             
             plt.tight_layout()
             
@@ -281,12 +539,13 @@ class ExperimentTracker:
         for exp in experiments:
             val_history = self.results[exp]['val_loss_history']
             epochs = range(1, len(val_history) + 1)
-            ax6.plot(epochs, val_history, marker='o', label=exp, linewidth=2)
+            ax6.plot(epochs, _series_for_log_plot(val_history), marker='o', label=exp, linewidth=2)
         ax6.set_xlabel('Epoch')
         ax6.set_ylabel('Validation Loss')
         ax6.set_title('Validation Loss Convergence')
         ax6.legend()
         ax6.grid(True, alpha=0.3)
+        ax6.set_yscale('log')
         
         # 7. Relative improvement matrix
         ax7 = plt.subplot(4, 3, 7)
@@ -385,6 +644,21 @@ class ExperimentTracker:
         ax11.legend()
         ax11.grid(True, alpha=0.3)
         ax11.set_ylim([0, 1])
+
+        # 12. Tail Loss Component (raw, unweighted)
+        ax12 = plt.subplot(4, 3, 12)
+        for exp in experiments:
+            if 'tail_loss_history' in self.results[exp]:
+                loss_history = self.results[exp]['tail_loss_history']
+                if len(loss_history) > 0 and any(l > 0 for l in loss_history):
+                    epochs = range(1, len(loss_history) + 1)
+                    ax12.plot(epochs, _series_for_log_plot(loss_history), marker='d', label=exp, linewidth=2, markersize=4)
+        ax12.set_xlabel('Epoch')
+        ax12.set_ylabel('Tail Loss')
+        ax12.set_title('Tail Loss Component (Raw)')
+        ax12.legend(fontsize=8)
+        ax12.grid(True, alpha=0.3)
+        ax12.set_yscale('log')
         
         plt.suptitle('Physics Regularization Ablation Study', fontsize=16, y=0.997)
         plt.tight_layout()
@@ -572,6 +846,9 @@ def run_single_experiment(
     max_step: int = 200,
     step_size: int = 1,
     cache: MuramDataCache | None = None,
+    plot_training_data_histograms: bool = True,
+    training_hist_bins: int = 120,
+    training_hist_max_samples: int = 400000,
 ) -> dict:
     """Run a single training experiment."""
     print("\n" + "=" * 100)
@@ -674,6 +951,9 @@ def run_single_experiment(
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
+        lambda_tail=config.lambda_tail,
+        alpha=config.tail_alpha,
+        gamma=config.tail_gamma,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -698,6 +978,22 @@ def run_single_experiment(
     n_val = max(1, len(train_steps) // 10)
     val_steps = random.sample(train_steps, n_val)
     train_steps = [s for s in train_steps if s not in val_steps]
+
+    if plot_training_data_histograms:
+        hist_output_dir = config.checkpoint_dir.parent.parent
+        try:
+            generate_training_data_histograms(
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                train_steps=train_steps,
+                output_dir=hist_output_dir,
+                cache=cache,
+                bins=training_hist_bins,
+                max_samples_per_param=training_hist_max_samples,
+            )
+        except Exception as e:
+            print(f"⚠ Failed to generate training-data histograms: {e}")
     
     # Initialize logger
     logger = MetricsLogger(config.log_dir)
@@ -723,6 +1019,7 @@ def run_single_experiment(
     val_loss_history = []
     train_loss_history = []
     mse_loss_history = []
+    tail_loss_history = []
     physics_loss_history = []
     wfa_loss_history = []
     doppler_loss_history = []
@@ -758,6 +1055,7 @@ def run_single_experiment(
             # Extract metrics
             avg_train_loss = epoch_metrics['total_loss']
             avg_mse_loss = epoch_metrics['mse_loss']
+            avg_tail_loss = epoch_metrics['tail_loss']
             avg_physics_loss = epoch_metrics['physics_loss']
             avg_wfa_loss = epoch_metrics['wfa_loss']
             avg_doppler_loss = epoch_metrics['doppler_loss']
@@ -766,6 +1064,7 @@ def run_single_experiment(
             # Store histories
             train_loss_history.append(avg_train_loss)
             mse_loss_history.append(avg_mse_loss)
+            tail_loss_history.append(avg_tail_loss)
             physics_loss_history.append(avg_physics_loss)
             wfa_loss_history.append(avg_wfa_loss)
             doppler_loss_history.append(avg_doppler_loss)
@@ -820,6 +1119,7 @@ def run_single_experiment(
             print(f"Epoch {epoch + 1} Summary:")
             print(f"  Total Loss:      {avg_train_loss:.6f}")
             print(f"  MSE Loss:        {avg_mse_loss:.6f}")
+            print(f"  Tail Loss:       {avg_tail_loss:.6f}")
             print(f"  Physics Loss:    {avg_physics_loss:.6f}")
             print(f"    ├─ WFA Loss:         {avg_wfa_loss:.6f}")
             print(f"    ├─ Doppler Loss:     {avg_doppler_loss:.6f}")
@@ -887,6 +1187,7 @@ def run_single_experiment(
         'val_loss_history': val_loss_history,
         'train_loss_history': train_loss_history,
         'mse_loss_history': mse_loss_history,
+        'tail_loss_history': tail_loss_history,
         'physics_loss_history': physics_loss_history,
         'wfa_loss_history': wfa_loss_history,
         'doppler_loss_history': doppler_loss_history,
@@ -902,6 +1203,9 @@ def run_single_experiment(
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
+            'lambda_tail': config.lambda_tail,
+            'tail_alpha': config.tail_alpha,
+            'tail_gamma': config.tail_gamma,
             'wfa_gate_mode': config.wfa_gate_mode,
             'wfa_gate_threshold': config.wfa_gate_threshold,
             'wfa_gate_patience': config.wfa_gate_patience,
@@ -951,6 +1255,21 @@ def main():
                        help='Weight(s) for Doppler V_LOS loss. Example: --lambda_doppler 0.1 0.01')
     parser.add_argument('--lambda_temp', type=float, nargs='+', default=[0.01],
                        help='Weight(s) for temperature loss. Example: --lambda_temp 2.0 1.0 0.5')
+    parser.add_argument('--lambda_tail', type=float, default=0.05,
+                       help='Weight for Bz tail-weighted Huber term (default: 0.05)')
+    parser.add_argument('--tail_alpha', type=float, default=2.0,
+                       help='Tail weighting alpha (default: 2.0)')
+    parser.add_argument('--tail_gamma', type=float, default=1.2,
+                       help='Tail weighting gamma (default: 1.2)')
+    parser.add_argument('--no-training-data-histograms', '--no_training_data_histograms',
+                       dest='no_training_data_histograms', action='store_true',
+                       help='Disable train-split histogram diagnostics (T, Vz, Bz)')
+    parser.add_argument('--training-hist-bins', '--training_hist_bins', dest='training_hist_bins',
+                       type=int, default=120,
+                       help='Number of bins for train-split histograms (default: 120)')
+    parser.add_argument('--training-hist-max-samples', '--training_hist_max_samples',
+                       dest='training_hist_max_samples', type=int, default=400000,
+                       help='Max sampled values per parameter for histogram diagnostics (default: 400000)')
     
     # Physics modes
     parser.add_argument('--blos_physics_mode', type=str, default='tau_averaged',
@@ -1050,6 +1369,14 @@ def main():
                        help='Disable MODEST cache usage for per-epoch diagnostics')
     parser.add_argument('--clear-modest-cache', '--clear_modest_cache', dest='clear_modest_cache', action='store_true',
                        help='Clear MODEST cache before preparing per-epoch snapshot')
+    modest_input_group = parser.add_mutually_exclusive_group()
+    modest_input_group.add_argument('--modest-downsample-prediction-input', '--modest_downsample_prediction_input',
+                       dest='modest_downsample_prediction_input', action='store_true',
+                       help='Use downsampled MODEST prediction input for per-epoch diagnostics (pixel-by-pixel)')
+    modest_input_group.add_argument('--modest-upsample-prediction-input', '--modest_upsample_prediction_input',
+                       dest='modest_downsample_prediction_input', action='store_false',
+                       help='Use upsampled MODEST prediction input for per-epoch diagnostics')
+    parser.set_defaults(modest_downsample_prediction_input=True)
     parser.add_argument('--modest-polarization-mask', '--modest_polarization_mask', dest='modest_polarization_mask',
                        action='store_true',
                        help='Apply circular polarization mask to MODEST snapshot for diagnostics')
@@ -1116,7 +1443,10 @@ def main():
     print(f"Lambda WFA:         {args.lambda_wfa}")
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
+    print(f"Lambda Tail (Bz):   {args.lambda_tail}")
+    print(f"Tail alpha/gamma:   {args.tail_alpha} / {args.tail_gamma}")
     print(f"Stokes I_c mode:    {args.stokes_ic_mode}")
+    print(f"MODEST pred input:  {'downsampled' if args.modest_downsample_prediction_input else 'upsampled'}")
     print(f"WFA gate mode:      {args.wfa_gate_mode}")
     if args.wfa_gate_mode == 'threshold':
         print(f"WFA gate threshold: {args.wfa_gate_threshold}")
@@ -1155,6 +1485,7 @@ def main():
         modest_cache_dir=args.modest_cache_dir,
         no_modest_cache=args.no_modest_cache,
         clear_modest_cache=args.clear_modest_cache,
+        modest_downsample_prediction_input=args.modest_downsample_prediction_input,
         modest_polarization_mask=args.modest_polarization_mask,
         modest_polarization_threshold=args.modest_polarization_threshold,
         modest_crop_bounds=args.modest_crop_bounds,
@@ -1176,6 +1507,9 @@ def main():
             lambda_wfa=lambda_wfa,
             lambda_doppler=lambda_doppler,
             lambda_temp=lambda_temp,
+            lambda_tail=args.lambda_tail,
+            tail_alpha=args.tail_alpha,
+            tail_gamma=args.tail_gamma,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,
@@ -1309,6 +1643,9 @@ def main():
             max_step=args.max_step,
             step_size=args.step_size,
             cache=cache,  # Share cache across experiments
+            plot_training_data_histograms=not args.no_training_data_histograms,
+            training_hist_bins=args.training_hist_bins,
+            training_hist_max_samples=args.training_hist_max_samples,
         )
         
         tracker.add_experiment(name, results)

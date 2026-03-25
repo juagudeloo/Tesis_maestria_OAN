@@ -104,6 +104,9 @@ class TrainingConfig:
     lambda_wfa: float = 0.01      # WFA term weight
     lambda_doppler: float = 0.01  # Doppler term weight
     lambda_temp: float = 0.01     # Temperature term weight
+    lambda_tail: float = 0.2      # Tail-weighted Huber loss weight (Bz only)
+    tail_alpha: float = 4.0       # Tail weight strength
+    tail_gamma: float = 1.5       # Tail weight sharpness
     wfa_gate_mode: str = "off"  # 'off', 'threshold', or 'plateau'
     wfa_gate_threshold: float = 0.0  # Activate WFA when epoch train MSE <= threshold
     wfa_gate_patience: int = 5  # Plateau epochs before activating WFA
@@ -155,6 +158,7 @@ class TrainingConfig:
     modest_cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
     no_modest_cache: bool = False
     clear_modest_cache: bool = False
+    modest_downsample_prediction_input: bool = True
     modest_polarization_mask: bool = False
     modest_polarization_threshold: float = 1e-2
     modest_crop_bounds: list[int] | tuple[int, int, int, int] | None = None
@@ -313,18 +317,19 @@ class MetricsLogger:
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
-        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
+        self.batch_log.write("epoch,step,batch,loss,mse_loss,tail_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: dict[str, float]):
         """Log batch-level metrics."""
         self.batch_log.write(
             f"{epoch},{step},{batch},"
-            f"{loss_dict.get('total', 0.0)},"
-            f"{loss_dict.get('mse', 0.0)},"
-            f"{loss_dict.get('physics', 0.0)},"
-            f"{loss_dict.get('wfa', 0.0)},"
-            f"{loss_dict.get('doppler', 0.0)},"
-            f"{loss_dict.get('temperature', 0.0)}\n"
+            f"{loss_dict.get('total_loss', 0.0)},"
+            f"{loss_dict.get('mse_loss', 0.0)},"
+            f"{loss_dict.get('tail_loss', 0.0)},"
+            f"{loss_dict.get('physics_loss', 0.0)},"
+            f"{loss_dict.get('wfa_loss', 0.0)},"
+            f"{loss_dict.get('doppler_loss', 0.0)},"
+            f"{loss_dict.get('temperature_loss', 0.0)}\n"
         )
         self.batch_log.flush()
     
@@ -741,6 +746,7 @@ def train_one_step(
     step_metrics = {
         'total_loss': 0.0,
         'mse_loss': 0.0,
+        'tail_loss': 0.0,
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
@@ -775,6 +781,7 @@ def train_one_step(
         
         # Accumulate loss components
         step_metrics['mse_loss'] += loss_dict['mse'].item()
+        step_metrics['tail_loss'] += float(loss_dict.get('tail', 0.0))
         step_metrics['physics_loss'] += loss_dict['physics'].item()
         step_metrics['wfa_loss'] += float(loss_dict.get('wfa', 0.0))
         step_metrics['doppler_loss'] += float(loss_dict.get('doppler', 0.0))
@@ -792,7 +799,13 @@ def train_one_step(
     # Average metrics over all batches
     for key in step_metrics.keys():
         step_metrics[key] /= n_batches
-    
+
+    # Mark physics fields as NaN when WFA gate is closed so the CSV reflects
+    # that no physics constraint was active (rather than a misleading 0.0).
+    if not enable_wfa:
+        for key in ('physics_loss', 'wfa_loss', 'doppler_loss', 'temperature_loss'):
+            step_metrics[key] = float('nan')
+
     # Log metrics
     if logger is not None:
         logger.log_batch(epoch=epoch, step=step_num, batch=0, loss_dict=step_metrics)
@@ -1013,6 +1026,7 @@ def train_epoch(
     epoch_metrics = {
         'total_loss': 0.0,
         'mse_loss': 0.0,
+        'tail_loss': 0.0,
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
@@ -1063,6 +1077,7 @@ def train_epoch(
             # Accumulate step metrics (including temperature)
             epoch_metrics['total_loss'] += step_metrics['total_loss']
             epoch_metrics['mse_loss'] += step_metrics['mse_loss']
+            epoch_metrics['tail_loss'] += step_metrics['tail_loss']
             epoch_metrics['physics_loss'] += step_metrics['physics_loss']
             epoch_metrics['wfa_loss'] += step_metrics['wfa_loss']
             epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
@@ -1071,7 +1086,10 @@ def train_epoch(
             epoch_metrics['n_pixels_used'] += int(len(dataset))
             
             # Update progress bar
-            step_pbar.set_postfix({'loss': f'{step_metrics["total_loss"]:.6f}'})
+            step_pbar.set_postfix({
+                'loss': f'{step_metrics["total_loss"]:.6f}',
+                'tail': f'{step_metrics["tail_loss"]:.6f}',
+            })
             
             # Clean up
             del dataset, dataloader
@@ -1404,12 +1422,15 @@ def prepare_modest_epoch_snapshot(
     modest_cache.print_cache_info()
 
     region_bounds = tuple(config.modest_crop_bounds) if config.modest_crop_bounds is not None else None
+    prediction_input_mode = "downsampled" if config.modest_downsample_prediction_input else "upsampled"
     modest_data = modest.load_all(
         region_bounds=region_bounds,
         apply_mask=config.modest_polarization_mask,
         cache=modest_cache,
         use_cache=not config.no_modest_cache,
+        prediction_input_mode=prediction_input_mode,
     )
+    print(f"MODEST prediction input mode: {prediction_input_mode}")
 
     modest_logtau = list(
         modest_data.get("tau_values", sorted(modest_data["spinor_atm"]["T"].keys()))
@@ -1421,7 +1442,7 @@ def prepare_modest_epoch_snapshot(
         "Bz": np.stack([modest_data["spinor_atm"]["Blos"][t] for t in modest_logtau], axis=-1).astype(np.float32),
     }
 
-    prediction_stokes = modest_data["smoothed_stokes"]
+    prediction_stokes = modest_data.get("prediction_stokes", modest_data["smoothed_stokes"])
     pred_nx, pred_ny = prediction_stokes["I"].shape[:2]
     cont_indices = [0, 1, 2, 3]
     I_c_modest = float(np.nanmean(prediction_stokes["I"][:, :, cont_indices]))
@@ -1613,15 +1634,17 @@ def generate_epoch_modest_diagnostic_plots(
             )
             plt.close(fig)
 
-            x = true_map[np.isfinite(true_map)].ravel()
-            y = pred_map[np.isfinite(pred_map)].ravel()
-            if x.size == 0 or y.size == 0:
+            x = true_map.ravel()
+            y = pred_map.ravel()
+            m = np.isfinite(x) & np.isfinite(y)
+            x, y = x[m], y[m]
+            if x.size == 0:
                 continue
 
-            n = min(n_sample, x.size, y.size) if n_sample > 0 else min(x.size, y.size)
-            q = np.linspace(0.0, 1.0, n, endpoint=False) + 0.5 / n
-            x = np.quantile(x, q)
-            y = np.quantile(y, q)
+            if x.size > n_sample > 0:
+                rng = np.random.default_rng(seed=epoch + tau_idx_pred + 13)
+                idx = rng.choice(x.size, size=n_sample, replace=False)
+                x, y = x[idx], y[idx]
 
             rmse = np.sqrt(np.mean((y - x) ** 2))
             rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
@@ -1885,6 +1908,7 @@ def train_pinn_model(config: TrainingConfig):
     print(f"MODEST epoch plots: {config.enable_modest_epoch_plots}")
     if config.enable_modest_epoch_plots:
         print(f"MODEST cache dir: {config.modest_cache_dir} (enabled={not config.no_modest_cache})")
+        print(f"MODEST prediction input mode: {'downsampled' if config.modest_downsample_prediction_input else 'upsampled'}")
         print(f"MODEST polarization mask: {config.modest_polarization_mask} (thr={config.modest_polarization_threshold})")
         print(f"MODEST crop bounds: {config.modest_crop_bounds}")
         print(f"MODEST epoch ODs: {config.modest_epoch_plot_ods}")
@@ -1918,6 +1942,9 @@ def train_pinn_model(config: TrainingConfig):
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
+        lambda_tail=config.lambda_tail,
+        alpha=config.tail_alpha,
+        gamma=config.tail_gamma,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -2072,6 +2099,7 @@ def train_pinn_model(config: TrainingConfig):
         # Print detailed loss breakdown
         print(f"  Loss Components:")
         print(f"    ├─ MSE Loss:         {epoch_metrics['mse_loss']:.6f}")
+        print(f"    ├─ Tail Loss:        {epoch_metrics['tail_loss']:.6f}")
         print(f"    └─ Physics Loss:     {epoch_metrics['physics_loss']:.6f}")
         print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
@@ -2164,6 +2192,17 @@ def main():
     parser.add_argument('--wfa-gate-warmup-epochs', '--wfa_gate_warmup_epochs', dest='wfa_gate_warmup_epochs',
                        type=int, default=None,
                        help='Minimum number of epochs before WFA gate can activate')
+    
+    # Tail-loss parameters for Bz regression-to-mean mitigation
+    parser.add_argument('--lambda-tail', '--lambda_tail', dest='lambda_tail',
+                       type=float, default=None,
+                       help='Weight for Huber tail-loss term on Bz (default: 0.2)')
+    parser.add_argument('--tail-alpha', '--tail_alpha', dest='tail_alpha',
+                       type=float, default=None,
+                       help='Tail weight strength parameter (default: 4.0)')
+    parser.add_argument('--tail-gamma', '--tail_gamma', dest='tail_gamma',
+                       type=float, default=None,
+                       help='Tail weight sharpness exponent (default: 1.5)')
 
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
@@ -2206,6 +2245,14 @@ def main():
                        help='Disable MODEST cache usage for per-epoch diagnostics')
     parser.add_argument('--clear-modest-cache', '--clear_modest_cache', dest='clear_modest_cache', action='store_true',
                        help='Clear MODEST cache before preparing per-epoch snapshot')
+    modest_input_group = parser.add_mutually_exclusive_group()
+    modest_input_group.add_argument('--modest-downsample-prediction-input', '--modest_downsample_prediction_input',
+                       dest='modest_downsample_prediction_input', action='store_true',
+                       help='Use downsampled MODEST prediction input for per-epoch diagnostics')
+    modest_input_group.add_argument('--modest-upsample-prediction-input', '--modest_upsample_prediction_input',
+                       dest='modest_downsample_prediction_input', action='store_false',
+                       help='Use upsampled MODEST prediction input for per-epoch diagnostics')
+    parser.set_defaults(modest_downsample_prediction_input=None)
     parser.add_argument('--modest-polarization-mask', '--modest_polarization_mask', dest='modest_polarization_mask',
                        action='store_true',
                        help='Apply circular polarization mask to MODEST snapshot for diagnostics')
@@ -2314,6 +2361,14 @@ def main():
         config.wfa_gate_min_delta = args.wfa_gate_min_delta
     if args.wfa_gate_warmup_epochs is not None:
         config.wfa_gate_warmup_epochs = args.wfa_gate_warmup_epochs
+    
+    # Apply tail-loss CLI overrides
+    if args.lambda_tail is not None:
+        config.lambda_tail = args.lambda_tail
+    if args.tail_alpha is not None:
+        config.tail_alpha = args.tail_alpha
+    if args.tail_gamma is not None:
+        config.tail_gamma = args.tail_gamma
 
     # Apply cache CLI overrides
     config.use_cache = not args.no_cache
@@ -2337,6 +2392,8 @@ def main():
     config.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
     config.no_modest_cache = args.no_modest_cache
     config.clear_modest_cache = args.clear_modest_cache
+    if args.modest_downsample_prediction_input is not None:
+        config.modest_downsample_prediction_input = args.modest_downsample_prediction_input
     config.modest_polarization_mask = args.modest_polarization_mask
     if args.modest_polarization_threshold is not None:
         config.modest_polarization_threshold = args.modest_polarization_threshold

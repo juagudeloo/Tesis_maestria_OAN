@@ -8,8 +8,8 @@ set -euo pipefail
 # Shared model selection (space-separated list)
 # Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
 # Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
-MODEL_TYPES="no_physics wfa_only-lambda-1 wfa_only-lambda-0_1 wfa_only-lambda-0_01 wfa_only-lambda-0_001 wfa_only-lambda-0_0001 wfa_only-lambda-1em05"
-EXPERIMENT_ROOT="experiment_112_to_113-wfa_plateu_gate-global_Ic"
+MODEL_TYPES="no_physics wfa_only"
+EXPERIMENT_ROOT="experiment_112_to_113-tail_loss"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest
