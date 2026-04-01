@@ -1283,6 +1283,9 @@ class MuramStepDataset(Dataset):
         self.nx, self.ny = stokes_data['I'].shape[:2]
         self.n_pixels_full = self.nx * self.ny
         self.region_sampling_info = region_sampling_info
+        self.hinode_wl = None
+        if "hinode_wl" in stokes_data:
+            self.hinode_wl = np.asarray(stokes_data["hinode_wl"], dtype=np.float32)
         
         # Normalize data
         norm_stokes = stokes_normalizer.transform(stokes_data)

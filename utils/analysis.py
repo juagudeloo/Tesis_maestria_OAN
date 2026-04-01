@@ -462,6 +462,7 @@ class MuramDiagnosticPlots:
         label: str | None = None,
         step: int | None = None,
         output_dir: str | Path | None = Path('./images'),
+        stokes_normalizer=None,
     ):
         self.config = config
         self.model_name = model_name
@@ -474,12 +475,77 @@ class MuramDiagnosticPlots:
 
         self.param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
         self.error_cmap = "RdBu_r"
+        self.stokes_normalizer = stokes_normalizer
         
         base_out_dir = Path(output_dir)
         step_folder = str(step) if step is not None else "snapshot"
         self.out_dir = base_out_dir / "final" / step_folder / model_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_rows: list[dict[str, float | str | int]] = []
+
+    @staticmethod
+    def _default_hinode_wavelength() -> np.ndarray:
+        return 6302.0 + (np.arange(1, 112 + 1) - 57) * 0.0215
+
+    def plot_stokes_mean_std(
+        self,
+        stokes_input: np.ndarray,
+        wavelengths: np.ndarray | None = None,
+    ) -> None:
+        """Plot denormalized mean ± std Stokes I/V profiles from final model inputs."""
+        arr = np.asarray(stokes_input, dtype=np.float32)
+        if arr.ndim != 3 or arr.shape[1] != 2:
+            return
+
+        if wavelengths is not None:
+            wl = np.asarray(wavelengths, dtype=np.float64)
+        else:
+            wl = self._default_hinode_wavelength()
+        if wl.ndim != 1 or wl.size != arr.shape[2]:
+            wl = self._default_hinode_wavelength() if arr.shape[2] == 112 else np.arange(arr.shape[2], dtype=np.float64)
+
+        I_norm = arr[:, 0, :]
+        V_norm = arr[:, 1, :]
+        I_mean_norm = np.mean(I_norm, axis=0)
+        I_std_norm = np.std(I_norm, axis=0)
+        V_mean_norm = np.mean(V_norm, axis=0)
+        V_std_norm = np.std(V_norm, axis=0)
+
+        I_mean = I_mean_norm
+        I_std = I_std_norm
+        V_mean = V_mean_norm
+        V_std = V_std_norm
+        if self.stokes_normalizer is not None and getattr(self.stokes_normalizer, "final_stats", None) is not None:
+            stats_i = self.stokes_normalizer.final_stats.get("I", {})
+            stats_v = self.stokes_normalizer.final_stats.get("V", {})
+            mu_i = float(stats_i.get("mean", 0.0))
+            sd_i = float(stats_i.get("std", 1.0))
+            mu_v = float(stats_v.get("mean", 0.0))
+            sd_v = float(stats_v.get("std", 1.0))
+            I_mean = I_mean_norm * sd_i + mu_i
+            I_std = I_std_norm * abs(sd_i)
+            V_mean = V_mean_norm * sd_v + mu_v
+            V_std = V_std_norm * abs(sd_v)
+
+        fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        fig.suptitle(f"{self.model_name} | Final Stokes Profiles: mean ± 1σ", fontsize=13, fontweight="bold")
+
+        axes[0].plot(wl, I_mean, color="tab:orange", linewidth=1.8, label="Mean I")
+        axes[0].fill_between(wl, I_mean - I_std, I_mean + I_std, color="tab:orange", alpha=0.25, label="±1σ")
+        axes[0].set_ylabel("Stokes I")
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(loc="best", fontsize=9)
+
+        axes[1].plot(wl, V_mean, color="tab:purple", linewidth=1.8, label="Mean V")
+        axes[1].fill_between(wl, V_mean - V_std, V_mean + V_std, color="tab:purple", alpha=0.25, label="±1σ")
+        axes[1].set_xlabel("Wavelength [Angstrom]")
+        axes[1].set_ylabel("Stokes V")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc="best", fontsize=9)
+
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(self.out_dir / "stokes_mean_std_profiles.png", dpi=170, bbox_inches="tight")
+        plt.close(fig)
 
     def _write_metrics_csv(self) -> None:
         if not self.metrics_rows:
@@ -574,6 +640,8 @@ class MuramDiagnosticPlots:
         self,
         pred_den: dict[str, np.ndarray],
         gt_den: dict[str, np.ndarray],
+        stokes_input: np.ndarray | None = None,
+        wavelengths: np.ndarray | None = None,
     ) -> None:
         for od in self.ods:
             tau_idx = int(np.argmin(np.abs(self.logtau - od)))
@@ -605,6 +673,9 @@ class MuramDiagnosticPlots:
                         "nmae": float(metrics["nmae"]),
                         "bias": float(metrics["bias"]),
                     })
+
+        if stokes_input is not None:
+            self.plot_stokes_mean_std(stokes_input=stokes_input, wavelengths=wavelengths)
 
         self._write_metrics_csv()
 
@@ -644,6 +715,7 @@ class ModestDiagnosticPlots:
         self.n_tau_eff = None
         self.tau_indices = None
         self.metrics_rows: list[dict[str, float | str | int]] = []
+        self.modest_wavelength: np.ndarray | None = None
 
     @staticmethod
     def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
@@ -846,6 +918,10 @@ class ModestDiagnosticPlots:
             ).astype(np.float32),
         }
         prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
+        self.modest_wavelength = np.asarray(
+            self.modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1])),
+            dtype=np.float64,
+        )
         self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
         cont_indices = [0, 1, 2, 3]
         I_c_modest = float(np.nanmean(prediction_stokes["I"][:, :, cont_indices]))
@@ -1013,6 +1089,64 @@ class ModestDiagnosticPlots:
         }
         return out_metrics, comparison
 
+    def _plot_stokes_mean_std(self, model_type: str, out_root: Path) -> None:
+        """Plot denormalized mean ± std Stokes I/V profiles from MODEST model-input stokes."""
+        if self.modest_stokes_input is None:
+            return
+
+        arr = np.asarray(self.modest_stokes_input, dtype=np.float32)
+        if arr.ndim != 3 or arr.shape[1] != 2:
+            return
+
+        wl = np.asarray(self.modest_wavelength, dtype=np.float64) if self.modest_wavelength is not None else np.arange(arr.shape[2], dtype=np.float64)
+        if wl.ndim != 1 or wl.size != arr.shape[2]:
+            wl = np.arange(arr.shape[2], dtype=np.float64)
+
+        I_norm = arr[:, 0, :]
+        V_norm = arr[:, 1, :]
+        I_mean_norm = np.mean(I_norm, axis=0)
+        I_std_norm = np.std(I_norm, axis=0)
+        V_mean_norm = np.mean(V_norm, axis=0)
+        V_std_norm = np.std(V_norm, axis=0)
+
+        I_mean = I_mean_norm
+        I_std = I_std_norm
+        V_mean = V_mean_norm
+        V_std = V_std_norm
+        stats = getattr(self.stokes_normalizer, "final_stats", None)
+        if isinstance(stats, dict):
+            stats_i = stats.get("I", {})
+            stats_v = stats.get("V", {})
+            mu_i = float(stats_i.get("mean", 0.0))
+            sd_i = float(stats_i.get("std", 1.0))
+            mu_v = float(stats_v.get("mean", 0.0))
+            sd_v = float(stats_v.get("std", 1.0))
+            I_mean = I_mean_norm * sd_i + mu_i
+            I_std = I_std_norm * abs(sd_i)
+            V_mean = V_mean_norm * sd_v + mu_v
+            V_std = V_std_norm * abs(sd_v)
+
+        fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        fig.suptitle(f"{model_type} | MODEST Stokes Profiles: mean ± 1σ", fontsize=13, fontweight="bold")
+
+        axes[0].plot(wl, I_mean, color="tab:orange", linewidth=1.8, label="Mean I")
+        axes[0].fill_between(wl, I_mean - I_std, I_mean + I_std, color="tab:orange", alpha=0.25, label="±1σ")
+        axes[0].set_ylabel("Stokes I")
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(loc="best", fontsize=9)
+
+        axes[1].plot(wl, V_mean, color="tab:purple", linewidth=1.8, label="Mean V")
+        axes[1].fill_between(wl, V_mean - V_std, V_mean + V_std, color="tab:purple", alpha=0.25, label="±1σ")
+        axes[1].set_xlabel("Wavelength [Angstrom]")
+        axes[1].set_ylabel("Stokes V")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc="best", fontsize=9)
+
+        out_root.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(out_root / "stokes_mean_std_profiles.png", dpi=170, bbox_inches="tight")
+        plt.close(fig)
+
     def run(self, model_configs, models):
         calibration_mode = self._temperature_calibration_mode()
         print(f"Temperature calibration mode: {calibration_mode}")
@@ -1038,6 +1172,7 @@ class ModestDiagnosticPlots:
                 batch_size=self.args.inference_batch_size,
             )
             out_root = self.modest_output_dir / model_type
+            self._plot_stokes_mean_std(model_type=model_type, out_root=out_root)
             cal_path = self._temperature_calibration_path(model_type=model_type, out_root=out_root)
 
             applied_by_tau_idx: dict[int, dict[str, float]] = {}

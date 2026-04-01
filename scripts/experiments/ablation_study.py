@@ -111,13 +111,20 @@ def generate_training_data_histograms(
     output_dir.mkdir(parents=True, exist_ok=True)
     hist_index_path = output_dir / "training_data_histograms_train_split_per_tau_index.json"
     stats_path = output_dir / "training_data_histograms_train_split_stats.json"
+    stokes_plot_path = output_dir / "training_data_histograms_train_split_stokes_mean_std_profiles.png"
     hist_paths = {
         'T': output_dir / "training_data_histograms_train_split_per_tau_T.png",
         'Vz': output_dir / "training_data_histograms_train_split_per_tau_Vz.png",
         'Bz': output_dir / "training_data_histograms_train_split_per_tau_Bz.png",
     }
 
-    if all(p.exists() for p in hist_paths.values()) and stats_path.exists() and hist_index_path.exists() and not force_recompute:
+    if (
+        all(p.exists() for p in hist_paths.values())
+        and stokes_plot_path.exists()
+        and stats_path.exists()
+        and hist_index_path.exists()
+        and not force_recompute
+    ):
         print(f"Training-data per-τ histograms already exist, reusing: {hist_index_path}")
         return hist_index_path, stats_path
 
@@ -125,11 +132,14 @@ def generate_training_data_histograms(
     sample_per_step = max(2_000, min(max_samples_per_param, 20_000))
     n_tau = config.get_n_logtau()
     logtau_vals = np.asarray(config.get_logtau_values(), dtype=float)
+    hinode_wl = None
 
     buckets = {param: [[] for _ in range(n_tau)] for param in ['T', 'Vz', 'Bz']}
     totals = {param: np.zeros(n_tau, dtype=np.int64) for param in ['T', 'Vz', 'Bz']}
     mins = {param: np.full(n_tau, np.inf, dtype=np.float64) for param in ['T', 'Vz', 'Bz']}
     maxs = {param: np.full(n_tau, -np.inf, dtype=np.float64) for param in ['T', 'Vz', 'Bz']}
+    stokes_buckets = {'I': [], 'V': []}
+    stokes_totals = {'I': 0, 'V': 0}
 
     print("\nCollecting training-value samples for histogram diagnostics...")
     for step in tqdm(train_steps, desc="Histogram data (train split)"):
@@ -142,6 +152,8 @@ def generate_training_data_histograms(
             apply_balanced_masks=config.apply_region_mask,
             log_region_stats=False,
         )
+        if hinode_wl is None and getattr(dataset, "hinode_wl", None) is not None:
+            hinode_wl = np.asarray(dataset.hinode_wl, dtype=np.float64)
 
         targets = dataset.mhd_targets
         T_norm = targets[:, :n_tau]
@@ -153,6 +165,21 @@ def generate_training_data_histograms(
             'Vz': _denormalize_targets_from_stats(Vz_norm, 'Vz', mhd_normalizer),
             'Bz': _denormalize_targets_from_stats(Bz_norm, 'Bz', mhd_normalizer),
         }
+
+        stokes_input = np.asarray(dataset.stokes_input, dtype=np.float32)
+        if stokes_input.ndim == 3 and stokes_input.shape[1] == 2 and stokes_input.shape[2] == 112:
+            stokes_step = {
+                'I': stokes_input[:, 0, :],
+                'V': stokes_input[:, 1, :],
+            }
+            for key in ('I', 'V'):
+                values = stokes_step[key]
+                stokes_totals[key] += int(values.shape[0])
+                if values.shape[0] > sample_per_step:
+                    idx = rng.choice(values.shape[0], size=sample_per_step, replace=False)
+                    stokes_buckets[key].append(values[idx])
+                else:
+                    stokes_buckets[key].append(values)
 
         for param, values in recovered.items():
             values = np.asarray(values, dtype=np.float32)
@@ -181,6 +208,18 @@ def generate_training_data_histograms(
                 idx = rng.choice(merged.size, size=max_samples_per_param, replace=False)
                 merged = merged[idx]
             sampled_values[param].append(merged)
+
+    sampled_stokes = {}
+    for key in ('I', 'V'):
+        parts = stokes_buckets[key]
+        if len(parts) == 0:
+            sampled_stokes[key] = np.empty((0, 112), dtype=np.float32)
+            continue
+        merged = np.concatenate(parts, axis=0)
+        if merged.shape[0] > max_samples_per_param:
+            idx = rng.choice(merged.shape[0], size=max_samples_per_param, replace=False)
+            merged = merged[idx]
+        sampled_stokes[key] = merged.astype(np.float32, copy=False)
 
     labels = {
         'T': 'Temperature T [K]',
@@ -261,7 +300,7 @@ def generate_training_data_histograms(
             col = k % n_cols
             axes[row, col].axis('off')
 
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
         fig.savefig(hist_paths[param], dpi=170, bbox_inches='tight')
         plt.close(fig)
 
@@ -270,15 +309,115 @@ def generate_training_data_histograms(
             'per_tau': per_tau_stats,
         }
 
+    stokes_stats = stokes_normalizer.final_stats if stokes_normalizer.final_stats is not None else {}
+    mean_i = float(stokes_stats.get('I', {}).get('mean', 0.0))
+    std_i = float(stokes_stats.get('I', {}).get('std', 1.0))
+    mean_v = float(stokes_stats.get('V', {}).get('mean', 0.0))
+    std_v = float(stokes_stats.get('V', {}).get('std', 1.0))
+
+    I_norm = sampled_stokes['I']
+    V_norm = sampled_stokes['V']
+    if hinode_wl is None:
+        raise RuntimeError(
+            "Hinode wavelength grid is unavailable in dataset payload. "
+            "Clear stale cache and rerun to populate stokes_data['hinode_wl']."
+        )
+    if I_norm.shape[0] > 0 and V_norm.shape[0] > 0:
+        I_mean_norm = np.mean(I_norm, axis=0)
+        I_std_norm = np.std(I_norm, axis=0)
+        V_mean_norm = np.mean(V_norm, axis=0)
+        V_std_norm = np.std(V_norm, axis=0)
+
+        I_mean_den = I_mean_norm * std_i + mean_i
+        I_std_den = I_std_norm * abs(std_i)
+        V_mean_den = V_mean_norm * std_v + mean_v
+        V_std_den = V_std_norm * abs(std_v)
+
+        fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        fig.suptitle(
+            "Training Stokes Profiles (final preprocessing stage): mean ± 1σ",
+            fontsize=13,
+            fontweight='bold',
+        )
+
+        axes[0].plot(hinode_wl, I_mean_den, color='tab:orange', linewidth=1.8, label='Mean I')
+        axes[0].fill_between(
+            hinode_wl,
+            I_mean_den - I_std_den,
+            I_mean_den + I_std_den,
+            color='tab:orange',
+            alpha=0.25,
+            label='±1σ',
+        )
+        axes[0].set_ylabel('Stokes I')
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(loc='best', fontsize=9)
+
+        axes[1].plot(hinode_wl, V_mean_den, color='tab:purple', linewidth=1.8, label='Mean V')
+        axes[1].fill_between(
+            hinode_wl,
+            V_mean_den - V_std_den,
+            V_mean_den + V_std_den,
+            color='tab:purple',
+            alpha=0.25,
+            label='±1σ',
+        )
+        axes[1].set_xlabel('Wavelength [Angstrom]')
+        axes[1].set_ylabel('Stokes V')
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc='best', fontsize=9)
+
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(stokes_plot_path, dpi=170, bbox_inches='tight')
+        plt.close(fig)
+
+        stats_payload['stokes_profiles'] = {
+            'plot_file': str(stokes_plot_path),
+            'wavelength_angstrom': [float(v) for v in hinode_wl.tolist()],
+            'n_values_total': {
+                'I': int(stokes_totals['I']),
+                'V': int(stokes_totals['V']),
+            },
+            'n_values_sampled': {
+                'I': int(I_norm.shape[0]),
+                'V': int(V_norm.shape[0]),
+            },
+            'mean_denormalized': {
+                'I': [float(v) for v in I_mean_den.tolist()],
+                'V': [float(v) for v in V_mean_den.tolist()],
+            },
+            'std_denormalized': {
+                'I': [float(v) for v in I_std_den.tolist()],
+                'V': [float(v) for v in V_std_den.tolist()],
+            },
+        }
+    else:
+        stats_payload['stokes_profiles'] = {
+            'plot_file': str(stokes_plot_path),
+            'wavelength_angstrom': [float(v) for v in hinode_wl.tolist()],
+            'n_values_total': {
+                'I': int(stokes_totals['I']),
+                'V': int(stokes_totals['V']),
+            },
+            'n_values_sampled': {
+                'I': int(I_norm.shape[0]),
+                'V': int(V_norm.shape[0]),
+            },
+            'warning': 'No Stokes samples were available to build mean±std profiles.',
+        }
+
     with open(stats_path, 'w') as f:
         json.dump(stats_payload, f, indent=2)
 
     with open(hist_index_path, 'w') as f:
-        json.dump({k: str(v) for k, v in hist_paths.items()}, f, indent=2)
+        index_payload = {k: str(v) for k, v in hist_paths.items()}
+        index_payload['stokes_mean_std'] = str(stokes_plot_path)
+        json.dump(index_payload, f, indent=2)
 
     print(f"Saved per-τ histogram index:      {hist_index_path}")
     for param in ['T', 'Vz', 'Bz']:
         print(f"Saved per-τ histogram ({param}):   {hist_paths[param]}")
+    print(f"Saved Stokes mean±std profile:      {stokes_plot_path}")
     print(f"Saved histogram stats:           {stats_path}")
     return hist_index_path, stats_path
 
@@ -911,6 +1050,7 @@ def run_single_experiment(
         'data_config': {
             'min_step': min_step,
             'max_step': max_step,
+            'step_size': step_size,
             'test_steps': test_steps,
             'n_steps_per_epoch': n_steps_per_epoch,
             'logtau_values': [float(x) for x in config.get_logtau_values().tolist()],
@@ -972,7 +1112,7 @@ def run_single_experiment(
     step_size = getattr(config, "step_size", 1)
     all_steps = list(range(min_step, max_step + 1, step_size))
     train_steps = [s for s in all_steps if s not in test_steps]
-    
+
     import random
     random.seed(42)
     n_val = max(1, len(train_steps) // 10)
@@ -1418,7 +1558,7 @@ def main():
     args.lambda_wfa = _normalize_lambda_values(args.lambda_wfa)
     args.lambda_doppler = _normalize_lambda_values(args.lambda_doppler)
     args.lambda_temp = _normalize_lambda_values(args.lambda_temp)
-    
+
     # Base configuration
     data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
     output_dir = Path(args.output_dir) / args.experiment_name
@@ -1456,6 +1596,7 @@ def main():
             f"min_delta={args.wfa_gate_min_delta}, warmup={args.wfa_gate_warmup_epochs}"
         )
     print(f"Apply region mask:  {args.apply_region_mask}")
+    print(f"Train steps mode:  range [{args.min_step}, {args.max_step}] step={args.step_size}")
     if args.logtau_values is not None:
         print(f"log(tau) values:    {args.logtau_values}")
     else:

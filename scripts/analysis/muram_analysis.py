@@ -5,7 +5,6 @@ import argparse
 from pathlib import Path
 
 import torch
-import numpy as np
 from utils.cache_manage import MuramDataCache
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.analysis import AnalysisModelPipeline, MuramDiagnosticPlots
@@ -51,6 +50,7 @@ def main(args):
             stokes_normalizer=stokes_normalizer,
             cache=cache,
         )
+        hinode_wl = getattr(dataset, "hinode_wl", None)
 
         # Denormalize predictions using the pipeline
         pred_den = pipeline.predict_and_denormalize(
@@ -78,10 +78,13 @@ def main(args):
             model_name=model_type,
             step=args.step_to_plot,
             output_dir=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram"),
+            stokes_normalizer=stokes_normalizer,
         )
         plotter.generate(
             pred_den=pred_den,
             gt_den=gt_den,
+            stokes_input=dataset.stokes_input,
+            wavelengths=hinode_wl,
         )
 
 if __name__ == "__main__":

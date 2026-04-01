@@ -515,6 +515,11 @@ def load_and_prepare_step(
                         f"Cache step {step} missing 'circular_polarization'. "
                         "Reprocessing with updated pipeline."
                     )
+                if "hinode_wl" not in stokes_cached:
+                    raise KeyError(
+                        f"Cache step {step} missing 'hinode_wl'. "
+                        "Reprocessing with updated pipeline."
+                    )
 
                 selected_indices = None
                 if apply_balanced_masks:
@@ -607,6 +612,7 @@ def load_and_prepare_step(
     # Keep derived 2D maps in stokes payload for cache/users that need region masking.
     stokes.data["mean_continuum"] = np.asarray(stokes.mean_continuum, dtype=np.float32)
     stokes.data["circular_polarization"] = np.asarray(stokes.circular_polarization, dtype=np.float32)
+    stokes.data["hinode_wl"] = np.asarray(stokes.hinode_wl, dtype=np.float32)
 
     selected_indices = None
     if apply_balanced_masks:

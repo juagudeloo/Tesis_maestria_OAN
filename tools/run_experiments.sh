@@ -2,7 +2,7 @@
 ## "%j" es el JobID, un numero asignado por el sistema a su proceso
 #SBATCH --job-name=experiment         #Nombre del Trabajo
 #SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
-#SBATCH -wmaxwell               #Nombre del nodo a usar (opcional)
+#SBATCH -wmaxwell               #Nombre del nodo a usar (configurable via CLUSTER_NODE variable)
 #SBATCH --partition=gpu.cecc            #Particion a usar(puede ser: cpu.cecc o gpu.cecc)
 ##SBATCH --time=15-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
 #SBATCH --nodes=1                       #Numberode nodos a usar
@@ -29,9 +29,9 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # ==============================================================================
 
 # Data range
-MIN_STEP=150
-MAX_STEP=151
-STEP_SIZE=1
+MIN_STEP=81
+MAX_STEP=181
+STEP_SIZE=25
 EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-tail_loss_2"
 
 # Training hyperparameters
@@ -41,12 +41,12 @@ C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
 # Use one value to keep current behavior, or many values to run subexperiments for *_only branches.
-LAMBDA_WFA_VALUES=(1e-1 1e-3)
+LAMBDA_WFA_VALUES=(10)
 LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
 
 # Tail-weighted Huber loss on Bz (regression-to-mean mitigation)
-LAMBDA_TAIL=0.05
+LAMBDA_TAIL=0.1
 TAIL_ALPHA=2.0
 TAIL_GAMMA=1.2
 
