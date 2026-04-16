@@ -29,14 +29,14 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # ==============================================================================
 
 # Data range
-MIN_STEP=81
-MAX_STEP=181
-STEP_SIZE=25
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-tail_loss_2"
+MIN_STEP=60
+MAX_STEP=190
+STEP_SIZE=10
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-bz_balance_${APPLY_BZ_BIN_BALANCE}_region_mask_${APPLY_REGION_MASK}-all_steps"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
-N_EPOCHS=150
+N_EPOCHS=1000
 C1_FILTERS=16
 
 # Physics regularization weights (set to 0.0 to disable)
@@ -67,11 +67,14 @@ TEMP_TARGET_LOGTAU=0.0          # Only used if TEMP_MODE='single_height' (0.0 = 
 WFA_GATE_MODE='plateau'         # 'off', 'threshold', or 'plateau'
 WFA_GATE_THRESHOLD=0.0          # Used when WFA_GATE_MODE='threshold'
 WFA_GATE_PATIENCE=5             # Used when WFA_GATE_MODE='plateau'
-WFA_GATE_MIN_DELTA=5e-3         # Used when WFA_GATE_MODE='plateau'
+WFA_GATE_MIN_DELTA=5e-4         # Used when WFA_GATE_MODE='plateau'
 WFA_GATE_WARMUP_EPOCHS=0
 
 # Stokes continuum normalization mode
 STOKES_IC_MODE='fixed_global'   # 'per_step' or 'fixed_global'
+
+# Scalar multiplier applied after continuum normalization
+STOKES_MULT_FACTOR=0.25
 
 # Shared cache (same path used by normalization script)
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
@@ -91,7 +94,22 @@ EXPERIMENTS="no_physics wfa_only"
 
 # Region-mask balancing during training (ablation study)
 # 1 = apply balanced region mask, 0 = disable mask
-APPLY_REGION_MASK=1
+APPLY_REGION_MASK=0
+
+# Bz-bin balancing during training (ablation study)
+# 1 = enable Bz balancing, 0 = disable
+APPLY_BZ_BIN_BALANCE=1
+# Scope: global (recommended) or per_step
+BZ_BALANCE_SCOPE='global'
+# Mode: mean_abs, max_abs, tau_index
+BZ_BALANCE_MODE='tau_index'
+# Number of Bz bins used for balancing
+BZ_BALANCE_BINS=12
+# log(tau) value used when mode=tau_index.
+# Example: 0.0 selects the photospheric node if present in LOGTAU_VALUES.
+BZ_BALANCE_LOGTAU=0.0
+# Random seed for deterministic balanced pixel selection
+BZ_BALANCE_SEED=42
 
 # Training dataset histogram diagnostics (range-of-applicability)
 # 1 = generate train-split histograms for T, Vz, Bz; 0 = disable
@@ -115,6 +133,7 @@ python3 ./scripts/experiments/ablation_study.py \
     --learning_rate "${LEARNING_RATE}" \
     --c1-filters "${C1_FILTERS}" \
     --stokes_ic_mode "${STOKES_IC_MODE}" \
+    --stokes-mult-factor "${STOKES_MULT_FACTOR}" \
     --cache-dir "${CACHE_DIR}" \
     --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
     --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \
@@ -124,6 +143,11 @@ python3 ./scripts/experiments/ablation_study.py \
     --tail_gamma "${TAIL_GAMMA}" \
     --training-hist-bins "${TRAINING_HIST_BINS}" \
     --training-hist-max-samples "${TRAINING_HIST_MAX_SAMPLES}" \
+    --bz-balance-scope "${BZ_BALANCE_SCOPE}" \
+    --bz-balance-mode "${BZ_BALANCE_MODE}" \
+    --bz-balance-bins "${BZ_BALANCE_BINS}" \
+    --bz-balance-logtau "${BZ_BALANCE_LOGTAU}" \
+    --bz-balance-seed "${BZ_BALANCE_SEED}" \
     --blos_physics_mode "${BLOS_MODE}" \
     --blos_target_logtau "${BLOS_TARGET_LOGTAU}" \
     --vlos_physics_mode "${VLOS_MODE}" \
@@ -142,5 +166,6 @@ python3 ./scripts/experiments/ablation_study.py \
     $( [[ "${MODEST_DOWNSAMPLE_PREDICTION_INPUT}" == "1" ]] && echo "--modest-downsample-prediction-input" || echo "--modest-upsample-prediction-input" ) \
     $( [[ "${ENABLE_MODEST_EPOCH_PLOTS}" == "1" ]] && echo "--modest-epoch-plots" ) \
     $( [[ "${ENABLE_TRAINING_DATA_HISTOGRAMS}" == "1" ]] || echo "--no-training-data-histograms" ) \
+    $( [[ "${APPLY_BZ_BIN_BALANCE}" == "1" ]] && echo "--apply-bz-bin-balance" || echo "--no-bz-bin-balance" ) \
     $( [[ "${APPLY_REGION_MASK}" == "1" ]] && echo "--apply-region-mask" || echo "--no-region-mask" )
 

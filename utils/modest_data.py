@@ -28,10 +28,14 @@ class ModestData:
 		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/INV_560_AR11967/",
 		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
 		circular_polarization_threshold: float = 1e-2,
+		stokes_v_multiplier: float = -1.0,
 	) -> None:
 		self.modest_dir = Path(modest_dir)
 		self.psf_path = Path(psf_path)
 		self.circular_polarization_threshold = circular_polarization_threshold
+		self.stokes_v_multiplier = float(stokes_v_multiplier)
+		if not np.isfinite(self.stokes_v_multiplier) or self.stokes_v_multiplier == 0.0:
+			raise ValueError("stokes_v_multiplier must be finite and non-zero")
 
 		# Data containers
 		self.continuum: Optional[np.ndarray] = None
@@ -69,7 +73,7 @@ class ModestData:
 		# Keep only I (0) and V (1) channels
 		self.obs_stokes = {
 			"I": cube[:, :, 0, :].astype(np.float32),
-			"V": cube[:, :, 1, :].astype(np.float32),
+			"V": (cube[:, :, 1, :].astype(np.float32) * self.stokes_v_multiplier),
 		}
 		return self.obs_stokes
 
@@ -79,9 +83,34 @@ class ModestData:
 			cube = hdul[0].data  # (ny, nx, 4, nwl_inv)
 		self.inverted_profs = {
 			"I": cube[:, :, 0, :].astype(np.float32),
-			"V": cube[:, :, 1, :].astype(np.float32),
+			"V": (cube[:, :, 1, :].astype(np.float32) * self.stokes_v_multiplier),
 		}
 		return self.inverted_profs
+
+	def _read_wavelength_metadata_from_inverted_profs(
+		self,
+		filename: str = "inverted_profs.1.fits",
+	) -> Optional[Tuple[float, float, float]]:
+		"""Return (wl_min_abs, wl_max_abs, wl_ref) in Angstrom from FITS header if present."""
+		path = self.modest_dir / filename
+		if not path.exists():
+			return None
+		try:
+			with fits.open(path) as hdul:
+				hdr = hdul[0].header
+			wl_ref = float(hdr["WLREF"])
+			wl_min = float(hdr["WLMIN"])
+			wl_max = float(hdr["WLMAX"])
+		except Exception:
+			return None
+
+		if not (np.isfinite(wl_ref) and np.isfinite(wl_min) and np.isfinite(wl_max)):
+			return None
+		wl_min_abs = wl_ref + wl_min
+		wl_max_abs = wl_ref + wl_max
+		if not (np.isfinite(wl_min_abs) and np.isfinite(wl_max_abs) and wl_max_abs > wl_min_abs):
+			return None
+		return wl_min_abs, wl_max_abs, wl_ref
 
 	def load_inverted_atmos(self, filename: str = "inverted_atmos.fits") -> np.ndarray:
 		path = self.modest_dir / filename
@@ -97,20 +126,31 @@ class ModestData:
 		return psf
 
 	def compute_wavelength_arrays(self) -> Tuple[u.Quantity, u.Quantity]:
-		# Observed Stokes: 112 points
-		naxis1 = 112
-		crval1 = 6302.0
-		cdelt1 = 0.0215
-		crpix1 = 57
-		wl_obs = crval1 + (np.arange(1, naxis1 + 1) - crpix1) * cdelt1
-		self.wl = wl_obs * u.Angstrom
+		obs_nwl = 112
+		inv_nwl = 250
+		# Use MODEST FITS metadata when available to avoid wavelength-offset bias.
+		meta = self._read_wavelength_metadata_from_inverted_profs()
+		if meta is not None:
+			wl_min_abs, wl_max_abs, wl_ref = meta
+			wl_obs = np.linspace(wl_min_abs, wl_max_abs, obs_nwl, dtype=np.float64)
+			wl_inv = np.linspace(wl_min_abs, wl_max_abs, inv_nwl, dtype=np.float64)
+			print(
+				f"MODEST wavelength axis from FITS header: [{wl_min_abs:.4f}, {wl_max_abs:.4f}] Å (WLREF={wl_ref:.4f})"
+			)
+		else:
+			crval1 = 6302.0
+			cdelt1 = 0.0215
+			crpix1 = 57
+			wl_obs = crval1 + (np.arange(1, obs_nwl + 1) - crpix1) * cdelt1
+			spectral_range = wl_obs[-1] - wl_obs[0]
+			cdelt1_inv = spectral_range / (inv_nwl - 1)
+			crpix1_inv = 125
+			wl_inv = crval1 + (np.arange(1, inv_nwl + 1) - crpix1_inv) * cdelt1_inv
+			print(
+				"MODEST wavelength metadata missing; using fallback Hinode grid assumptions."
+			)
 
-		# Inverted profiles: 250 points spanning observed range
-		naxis1_inv = 250
-		spectral_range = (self.wl[-1] - self.wl[0]).value
-		cdelt1_inv = spectral_range / (naxis1_inv - 1)
-		crpix1_inv = 125
-		wl_inv = crval1 + (np.arange(1, naxis1_inv + 1) - crpix1_inv) * cdelt1_inv
+		self.wl = wl_obs * u.Angstrom
 		self.wl_inv = wl_inv * u.Angstrom
 		return self.wl, self.wl_inv
 
@@ -699,6 +739,8 @@ class ModestData:
 			"modest_dir": str(self.modest_dir.resolve()),
 			"psf_path": str(self.psf_path.resolve()),
 			"upsampling_factor": int(upsampling_factor),
+			"stokes_v_multiplier": float(self.stokes_v_multiplier),
+			"wavelength_axis_source": "inverted_profs_header_or_hinode_fallback",
 		}
 
 		cache_hash = None

@@ -9,7 +9,7 @@ set -euo pipefail
 # Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
 # Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
 MODEL_TYPES="no_physics wfa_only"
-EXPERIMENT_ROOT="experiment_112_to_113-tail_loss"
+EXPERIMENT_ROOT="experiment_81_to_181-bz_balance__region_mask_"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest

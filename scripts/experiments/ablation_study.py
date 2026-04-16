@@ -38,6 +38,7 @@ from scripts.base_training import (
     TrainingConfig,
     load_and_prepare_step, validate, train_epoch, MetricsLogger,
     initialize_wfa_gate_state, update_wfa_gate_state,
+    compute_global_bz_balancing_indices,
     generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos,
     prepare_modest_epoch_snapshot, generate_epoch_modest_diagnostic_plots,
     generate_epoch_modest_diagnostic_videos,
@@ -103,6 +104,8 @@ def generate_training_data_histograms(
     train_steps: list[int],
     output_dir: Path,
     cache: MuramDataCache | None = None,
+    global_bz_selection_indices: dict[int, np.ndarray] | None = None,
+    global_bz_balance_metadata: dict | None = None,
     bins: int = 120,
     max_samples_per_param: int = 400000,
     force_recompute: bool = False,
@@ -143,7 +146,7 @@ def generate_training_data_histograms(
 
     print("\nCollecting training-value samples for histogram diagnostics...")
     for step in tqdm(train_steps, desc="Histogram data (train split)"):
-        dataset, _ = load_and_prepare_step(
+        result = load_and_prepare_step(
             step=step,
             config=config,
             mhd_normalizer=mhd_normalizer,
@@ -151,7 +154,15 @@ def generate_training_data_histograms(
             cache=cache,
             apply_balanced_masks=config.apply_region_mask,
             log_region_stats=False,
+            apply_bz_balance=(config.apply_bz_bin_balance and config.bz_balance_scope == "per_step"),
+            global_bz_selection_indices=global_bz_selection_indices,
+            global_bz_balance_metadata=global_bz_balance_metadata,
+            ignore_missing_files=True,
         )
+        if result is None:
+            continue
+
+        dataset, _ = result
         if hinode_wl is None and getattr(dataset, "hinode_wl", None) is not None:
             hinode_wl = np.asarray(dataset.hinode_wl, dtype=np.float64)
 
@@ -234,6 +245,20 @@ def generate_training_data_histograms(
     stats_payload = {
         'train_steps': [int(s) for s in train_steps],
         'apply_region_mask': bool(config.apply_region_mask),
+        'ready_for_training_data': True,
+        'preprocessing_stage': (
+            'histograms computed from load_and_prepare_step outputs after normalization '
+            'and final pixel selection used by training'
+        ),
+        'apply_bz_bin_balance': bool(config.apply_bz_bin_balance),
+        'bz_balance_scope': str(config.bz_balance_scope),
+        'bz_balance_mode': str(config.bz_balance_mode),
+        'bz_balance_bins': int(config.bz_balance_bins),
+        'bz_balance_tau_idx': None if config.bz_balance_tau_idx is None else int(config.bz_balance_tau_idx),
+        'bz_balance_global_reference_logtau': (
+            None if not isinstance(global_bz_balance_metadata, dict)
+            else global_bz_balance_metadata.get('reference_logtau')
+        ),
         'n_logtau': int(n_tau),
         'logtau_values': [float(v) for v in logtau_vals.tolist()],
         'max_samples_per_param': int(max_samples_per_param),
@@ -428,16 +453,24 @@ class ExperimentTracker:
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
         self.results = {}
-        
     def add_experiment(self, name: str, metrics: dict):
         """Add results from one experimental condition."""
         self.results[name] = metrics
-        
     def save_results(self):
         """Save all results to JSON."""
         results_path = self.output_dir / "experiment_results.json"
+        training_pixels_by_experiment = {
+            name: int(metrics.get('total_training_pixels_used', 0))
+            for name, metrics in self.results.items()
+        }
+        payload = dict(self.results)
+        payload['__metadata__'] = {
+            'total_training_pixels_used': int(sum(training_pixels_by_experiment.values())),
+            'training_pixels_used_by_experiment': training_pixels_by_experiment,
+            'n_experiments': int(len(self.results)),
+        }
         with open(results_path, 'w') as f:
-            json.dump(self.results, f, indent=2)
+            json.dump(payload, f, indent=2)
         print(f"Results saved to {results_path}")
     
     def print_summary_table(self):
@@ -582,6 +615,215 @@ class ExperimentTracker:
             plt.close()
             
         print(f"Individual loss curve plots saved to {self.output_dir}")
+
+    def plot_testset_correlation_and_rrmse(self):
+        """Generate per-experiment test-set correlation/RRMSE evolution plots and persist CSV metrics."""
+        labels = ['B_LOS', 'V_LOS', 'Temp']
+
+        for exp_name, results in self.results.items():
+            test_metrics = results.get('test_metrics', {})
+            if not test_metrics:
+                continue
+
+            corr_history = results.get('test_correlation_history', {})
+            rrmse_history = results.get('test_rrmse_history', {})
+            epochs_history = np.asarray(results.get('test_metrics_epochs', []), dtype=int)
+
+            modest_corr_history = results.get('modest_test_correlation_history', {})
+            modest_rrmse_history = results.get('modest_test_rrmse_history', {})
+            modest_epochs_history = np.asarray(results.get('modest_test_metrics_epochs', []), dtype=int)
+
+            has_history = (
+                epochs_history.size > 0
+                and isinstance(corr_history, dict)
+                and isinstance(rrmse_history, dict)
+                and all(k in corr_history for k in ('blos', 'vlos', 'temp'))
+                and all(k in rrmse_history for k in ('blos', 'vlos', 'temp'))
+            )
+
+            corr_values = [
+                float(test_metrics.get('blos_correlation', np.nan)),
+                float(test_metrics.get('vlos_correlation', np.nan)),
+                float(test_metrics.get('temp_correlation', np.nan)),
+            ]
+            rrmse_values = [
+                float(test_metrics.get('blos_rrmse_tau_avg', np.nan)),
+                float(test_metrics.get('vlos_rrmse_tau_avg', np.nan)),
+                float(test_metrics.get('temp_rrmse_tau_avg', np.nan)),
+            ]
+
+            exp_dir = Path(results.get('experiment_dir', self.output_dir / exp_name))
+            logs_dir = Path(results.get('log_dir', exp_dir / 'logs'))
+            logs_dir.mkdir(parents=True, exist_ok=True)
+
+            csv_path = logs_dir / 'test_set_metrics.csv'
+            with open(csv_path, 'w') as f:
+                f.write('experiment,metric,blos,vlos,temp\n')
+                f.write(
+                    f"{exp_name},correlation,{corr_values[0]:.10f},{corr_values[1]:.10f},{corr_values[2]:.10f}\n"
+                )
+                f.write(
+                    f"{exp_name},rrmse_tau_avg,{rrmse_values[0]:.10f},{rrmse_values[1]:.10f},{rrmse_values[2]:.10f}\n"
+                )
+
+            if has_history:
+                epoch_csv_path = logs_dir / 'test_set_epoch_log.csv'
+                with open(epoch_csv_path, 'w') as f:
+                    f.write(
+                        'epoch,blos_correlation,vlos_correlation,temp_correlation,'
+                        'blos_rrmse_tau_avg,vlos_rrmse_tau_avg,temp_rrmse_tau_avg\n'
+                    )
+                    for i, ep in enumerate(epochs_history.tolist()):
+                        f.write(
+                            f"{ep},"
+                            f"{float(corr_history['blos'][i]):.10f},"
+                            f"{float(corr_history['vlos'][i]):.10f},"
+                            f"{float(corr_history['temp'][i]):.10f},"
+                            f"{float(rrmse_history['blos'][i]):.10f},"
+                            f"{float(rrmse_history['vlos'][i]):.10f},"
+                            f"{float(rrmse_history['temp'][i]):.10f}\n"
+                        )
+
+            has_modest_history = (
+                modest_epochs_history.size > 0
+                and isinstance(modest_corr_history, dict)
+                and isinstance(modest_rrmse_history, dict)
+                and all(k in modest_corr_history for k in ('blos', 'vlos', 'temp'))
+                and all(k in modest_rrmse_history for k in ('blos', 'vlos', 'temp'))
+            )
+
+            if has_modest_history:
+                modest_epoch_csv_path = logs_dir / 'modest_test_set_epoch_log.csv'
+                with open(modest_epoch_csv_path, 'w') as f:
+                    f.write(
+                        'epoch,blos_correlation,vlos_correlation,temp_correlation,'
+                        'blos_rrmse_tau_avg,vlos_rrmse_tau_avg,temp_rrmse_tau_avg\n'
+                    )
+                    for i, ep in enumerate(modest_epochs_history.tolist()):
+                        f.write(
+                            f"{ep},"
+                            f"{float(modest_corr_history['blos'][i]):.10f},"
+                            f"{float(modest_corr_history['vlos'][i]):.10f},"
+                            f"{float(modest_corr_history['temp'][i]):.10f},"
+                            f"{float(modest_rrmse_history['blos'][i]):.10f},"
+                            f"{float(modest_rrmse_history['vlos'][i]):.10f},"
+                            f"{float(modest_rrmse_history['temp'][i]):.10f}\n"
+                        )
+
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+            fig.suptitle(f'Test Set Metric Evolution - {exp_name}', fontsize=13, fontweight='bold')
+
+            ax1 = axes[0]
+            if has_history:
+                ax1.plot(epochs_history, np.asarray(corr_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                ax1.plot(epochs_history, np.asarray(corr_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                ax1.plot(epochs_history, np.asarray(corr_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                ax1.set_xlabel('Epoch')
+            else:
+                bars_corr = ax1.bar(labels, corr_values, color=['#1f77b4', '#2ca02c', '#ff7f0e'], alpha=0.85)
+                for bar, val in zip(bars_corr, corr_values):
+                    ax1.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        val + (0.03 if np.isfinite(val) and val >= 0 else -0.05),
+                        f'{val:.4f}',
+                        ha='center',
+                        va='bottom' if np.isfinite(val) and val >= 0 else 'top',
+                        fontsize=9,
+                    )
+            ax1.set_title('Correlation (Pearson)')
+            ax1.set_ylabel('Correlation')
+            ax1.set_ylim(-1.0, 1.0)
+            ax1.grid(True, axis='y', alpha=0.3)
+            if has_history:
+                ax1.legend()
+
+            ax2 = axes[1]
+            if has_history:
+                ax2.plot(epochs_history, np.asarray(rrmse_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                ax2.plot(epochs_history, np.asarray(rrmse_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                ax2.plot(epochs_history, np.asarray(rrmse_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                ax2.set_xlabel('Epoch')
+                ax2.legend()
+            else:
+                bars_rrmse = ax2.bar(labels, rrmse_values, color=['#9467bd', '#8c564b', '#17becf'], alpha=0.85)
+                for bar, val in zip(bars_rrmse, rrmse_values):
+                    y = val if np.isfinite(val) else 0.0
+                    ax2.text(
+                        bar.get_x() + bar.get_width() / 2,
+                        y + 0.02 * (abs(y) + 1.0),
+                        f'{val:.4f}',
+                        ha='center',
+                        va='bottom',
+                        fontsize=9,
+                    )
+            ax2.set_title('RRMSE (Tau-Averaged)')
+            ax2.set_ylabel('RRMSE')
+            ax2.grid(True, axis='y', alpha=0.3)
+
+            plt.tight_layout(rect=(0, 0, 1, 0.95))
+
+            plot_path = self.output_dir / f"{exp_name}-correlation_and_rrmse-test_set.png"
+            plt.savefig(plot_path, dpi=200, bbox_inches='tight')
+            plt.close()
+
+            if has_modest_history:
+                fig_m, axes_m = plt.subplots(1, 2, figsize=(12, 5))
+                fig_m.suptitle(f'MODEST Test Metric Evolution - {exp_name}', fontsize=13, fontweight='bold')
+
+                axes_m[0].plot(modest_epochs_history, np.asarray(modest_corr_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                axes_m[0].plot(modest_epochs_history, np.asarray(modest_corr_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                axes_m[0].plot(modest_epochs_history, np.asarray(modest_corr_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                axes_m[0].set_title('Correlation (Pearson)')
+                axes_m[0].set_xlabel('Epoch')
+                axes_m[0].set_ylabel('Correlation')
+                axes_m[0].set_ylim(-1.0, 1.0)
+                axes_m[0].grid(True, axis='y', alpha=0.3)
+                axes_m[0].legend()
+
+                axes_m[1].plot(modest_epochs_history, np.asarray(modest_rrmse_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                axes_m[1].plot(modest_epochs_history, np.asarray(modest_rrmse_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                axes_m[1].plot(modest_epochs_history, np.asarray(modest_rrmse_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                axes_m[1].set_title('RRMSE (Tau-Averaged)')
+                axes_m[1].set_xlabel('Epoch')
+                axes_m[1].set_ylabel('RRMSE')
+                axes_m[1].grid(True, axis='y', alpha=0.3)
+                axes_m[1].legend()
+
+                plt.tight_layout(rect=(0, 0, 1, 0.95))
+                modest_plot_path = self.output_dir / f"{exp_name}-correlation_and_rrmse-modest_test_set.png"
+                plt.savefig(modest_plot_path, dpi=200, bbox_inches='tight')
+                plt.close(fig_m)
+
+            if exp_name == 'no_physics':
+                alias_plot = self.output_dir / 'non_physics-correlation_and_rrmse-test_set.png'
+                fig_alias, axes_alias = plt.subplots(1, 2, figsize=(12, 5))
+                fig_alias.suptitle('Test Set Metric Evolution - non_physics', fontsize=13, fontweight='bold')
+                if has_history:
+                    axes_alias[0].plot(epochs_history, np.asarray(corr_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                    axes_alias[0].plot(epochs_history, np.asarray(corr_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                    axes_alias[0].plot(epochs_history, np.asarray(corr_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                    axes_alias[0].legend()
+                    axes_alias[0].set_xlabel('Epoch')
+                    axes_alias[1].plot(epochs_history, np.asarray(rrmse_history['blos'], dtype=float), marker='o', linewidth=1.8, label='B_LOS')
+                    axes_alias[1].plot(epochs_history, np.asarray(rrmse_history['vlos'], dtype=float), marker='s', linewidth=1.8, label='V_LOS')
+                    axes_alias[1].plot(epochs_history, np.asarray(rrmse_history['temp'], dtype=float), marker='^', linewidth=1.8, label='Temp')
+                    axes_alias[1].legend()
+                    axes_alias[1].set_xlabel('Epoch')
+                else:
+                    axes_alias[0].bar(labels, corr_values, color=['#1f77b4', '#2ca02c', '#ff7f0e'], alpha=0.85)
+                    axes_alias[1].bar(labels, rrmse_values, color=['#9467bd', '#8c564b', '#17becf'], alpha=0.85)
+                axes_alias[0].set_title('Correlation (Pearson)')
+                axes_alias[0].set_ylabel('Correlation')
+                axes_alias[0].set_ylim(-1.0, 1.0)
+                axes_alias[0].grid(True, axis='y', alpha=0.3)
+                axes_alias[1].set_title('RRMSE (Tau-Averaged)')
+                axes_alias[1].set_ylabel('RRMSE')
+                axes_alias[1].grid(True, axis='y', alpha=0.3)
+                plt.tight_layout(rect=(0, 0, 1, 0.95))
+                plt.savefig(alias_plot, dpi=200, bbox_inches='tight')
+                plt.close(fig_alias)
+
+        print(f"Per-experiment MURaM/MODEST test-set correlation/RRMSE evolution plots saved to {self.output_dir}")
         
     def generate_comparison_plots(self):
         """Generate comparison visualizations."""
@@ -860,13 +1102,19 @@ def compute_tau_averaged_metrics(
 
     with torch.no_grad():
         for step in tqdm(test_steps, desc="Evaluating test steps"):
-            dataset, approx_data = load_and_prepare_step(
+            result = load_and_prepare_step(
                 step=step,
                 config=config,
                 mhd_normalizer=mhd_normalizer,
                 stokes_normalizer=stokes_normalizer,
                 cache=cache,
+                ignore_missing_files=True,
             )
+
+            if result is None:
+                continue
+
+            dataset, approx_data = result
 
             # Strictly require ApproxInversions outputs
             required_keys = {"blos", "vlos", "temp"}
@@ -931,7 +1179,21 @@ def compute_tau_averaged_metrics(
             all_true_vlos.append(true_vlos)
             all_pred_temp.append(np.concatenate(step_pred_temp))
             all_true_temp.append(true_temp)
-                
+
+    if len(all_pred_blos) == 0:
+        print("  Warning: no usable test steps were found; returning NaN metrics.")
+        return {
+            'blos_rrmse_tau_avg': np.nan,
+            'vlos_rrmse_tau_avg': np.nan,
+            'temp_rrmse_tau_avg': np.nan,
+            'blos_correlation': np.nan,
+            'vlos_correlation': np.nan,
+            'temp_correlation': np.nan,
+            'blos_rmse': np.nan,
+            'vlos_rmse': np.nan,
+            'temp_rmse': np.nan,
+        }
+
     all_pred_blos = np.concatenate(all_pred_blos)
     all_true_blos = np.concatenate(all_true_blos)
     all_pred_vlos = np.concatenate(all_pred_vlos)
@@ -963,6 +1225,91 @@ def compute_tau_averaged_metrics(
         'vlos_rmse': float(rmse_vlos),
         'temp_rmse': float(rmse_temp),
     }
+
+
+def compute_modest_tau_averaged_metrics(
+    model: PhysicsInformedMSCNN,
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    modest_snapshot: dict[str, object],
+) -> dict[str, float]:
+    """Evaluate model on MODEST snapshot using tau-averaged metrics over common optical-depth nodes."""
+    pred_logtau = config.get_logtau_values()
+    modest_logtau = np.asarray(modest_snapshot["modest_logtau"], dtype=np.float32)
+
+    matches: list[tuple[int, int]] = []
+    for i_mod, tau_mod in enumerate(modest_logtau):
+        pred_idx = np.where(np.isclose(pred_logtau, float(tau_mod), atol=1e-6, rtol=0.0))[0]
+        if pred_idx.size > 0:
+            matches.append((i_mod, int(pred_idx[0])))
+
+    if not matches:
+        return {
+            'blos_rrmse_tau_avg': np.nan,
+            'vlos_rrmse_tau_avg': np.nan,
+            'temp_rrmse_tau_avg': np.nan,
+            'blos_correlation': np.nan,
+            'vlos_correlation': np.nan,
+            'temp_correlation': np.nan,
+            'blos_rmse': np.nan,
+            'vlos_rmse': np.nan,
+            'temp_rmse': np.nan,
+        }
+
+    stokes_input = np.asarray(modest_snapshot["stokes_input"], dtype=np.float32)
+    pred_nx = int(modest_snapshot["pred_nx"])
+    pred_ny = int(modest_snapshot["pred_ny"])
+    gt_den = modest_snapshot["gt_den"]
+
+    n_pixels = stokes_input.shape[0]
+    n_tau_pred = int(len(pred_logtau))
+
+    all_pred = []
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        for i in range(0, n_pixels, config.batch_size):
+            x = torch.from_numpy(stokes_input[i:i + config.batch_size]).float().to(config.device)
+            y = model(x).detach().cpu().numpy()
+            all_pred.append(y)
+    if was_training:
+        model.train()
+
+    pred_norm = np.concatenate(all_pred, axis=0)
+    pred_den = {
+        "T": mhd_normalizer.denormalize(pred_norm[:, :n_tau_pred], param="T").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Vz": mhd_normalizer.denormalize(pred_norm[:, n_tau_pred:2 * n_tau_pred], param="Vz").reshape(pred_nx, pred_ny, n_tau_pred),
+        "Bz": mhd_normalizer.denormalize(pred_norm[:, 2 * n_tau_pred:3 * n_tau_pred], param="Bz").reshape(pred_nx, pred_ny, n_tau_pred),
+    }
+
+    def _metric_pair(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float, float]:
+        m = np.isfinite(y_true) & np.isfinite(y_pred)
+        yt = y_true[m]
+        yp = y_pred[m]
+        if yt.size == 0:
+            return np.nan, np.nan, np.nan
+        rmse = float(np.sqrt(np.mean((yp - yt) ** 2)))
+        rrmse = float(rmse / (np.mean(np.abs(yt)) + 1e-10))
+        corr = float(np.corrcoef(yp, yt)[0, 1]) if yt.size > 1 else np.nan
+        return rmse, rrmse, corr
+
+    metrics = {}
+    for p, key in (("Bz", "blos"), ("Vz", "vlos"), ("T", "temp")):
+        true_cube = np.asarray(gt_den[p], dtype=np.float32)
+        pred_cube = np.asarray(pred_den[p], dtype=np.float32)
+
+        true_stack = np.stack([true_cube[:, :, i_mod] for i_mod, _ in matches], axis=-1)
+        pred_stack = np.stack([pred_cube[:, :, i_pred] for _, i_pred in matches], axis=-1)
+
+        true_tau_avg = np.mean(true_stack, axis=-1).ravel()
+        pred_tau_avg = np.mean(pred_stack, axis=-1).ravel()
+
+        rmse, rrmse, corr = _metric_pair(true_tau_avg, pred_tau_avg)
+        metrics[f"{key}_rmse"] = rmse
+        metrics[f"{key}_rrmse_tau_avg"] = rrmse
+        metrics[f"{key}_correlation"] = corr
+
+    return metrics
 
 @contextlib.contextmanager
 def timer():
@@ -1035,6 +1382,7 @@ def run_single_experiment(
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
+            'stokes_mult_factor': config.stokes_mult_factor,
             'wfa_gate_mode': config.wfa_gate_mode,
             'wfa_gate_threshold': config.wfa_gate_threshold,
             'wfa_gate_patience': config.wfa_gate_patience,
@@ -1055,6 +1403,11 @@ def run_single_experiment(
             'n_steps_per_epoch': n_steps_per_epoch,
             'logtau_values': [float(x) for x in config.get_logtau_values().tolist()],
             'balanced_region_training': bool(config.apply_region_mask),
+            'balanced_bz_training': bool(config.apply_bz_bin_balance),
+            'bz_balance_scope': str(config.bz_balance_scope),
+            'bz_balance_mode': str(config.bz_balance_mode),
+            'bz_balance_bins': int(config.bz_balance_bins),
+            'bz_balance_tau_idx': None if config.bz_balance_tau_idx is None else int(config.bz_balance_tau_idx),
         },
         'model_config': {
             'scales': [1, 2, 3],
@@ -1119,6 +1472,21 @@ def run_single_experiment(
     val_steps = random.sample(train_steps, n_val)
     train_steps = [s for s in train_steps if s not in val_steps]
 
+    global_bz_selection_indices = None
+    global_bz_balance_metadata = None
+    if config.apply_bz_bin_balance and config.bz_balance_scope == "global":
+        global_bz_selection_indices, global_bz_balance_metadata = compute_global_bz_balancing_indices(
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            cache=cache,
+        )
+        global_meta_path = config.checkpoint_dir.parent / "global_bz_balance_metadata.json"
+        with open(global_meta_path, "w") as f:
+            json.dump(global_bz_balance_metadata, f, indent=2)
+        print(f"Global Bz balance metadata saved to: {global_meta_path}")
+
     if plot_training_data_histograms:
         hist_output_dir = config.checkpoint_dir.parent.parent
         try:
@@ -1129,6 +1497,8 @@ def run_single_experiment(
                 train_steps=train_steps,
                 output_dir=hist_output_dir,
                 cache=cache,
+                global_bz_selection_indices=global_bz_selection_indices,
+                global_bz_balance_metadata=global_bz_balance_metadata,
                 bins=training_hist_bins,
                 max_samples_per_param=training_hist_max_samples,
             )
@@ -1142,17 +1512,16 @@ def run_single_experiment(
     )
 
     modest_snapshot = None
-    if config.enable_modest_epoch_plots:
-        print("\nPreparing MODEST snapshot for per-epoch diagnostics...")
-        try:
-            modest_snapshot = prepare_modest_epoch_snapshot(
-                config=config,
-                stokes_normalizer=stokes_normalizer,
-            )
-            print("  ✓ MODEST snapshot prepared")
-        except Exception as e:
-            print(f"  ⚠ Failed to prepare MODEST snapshot diagnostics: {e}")
-            modest_snapshot = None
+    print("\nPreparing MODEST test snapshot...")
+    try:
+        modest_snapshot = prepare_modest_epoch_snapshot(
+            config=config,
+            stokes_normalizer=stokes_normalizer,
+        )
+        print("  ✓ MODEST test snapshot prepared")
+    except Exception as e:
+        print(f"  ⚠ Failed to prepare MODEST test snapshot: {e}")
+        modest_snapshot = None
 
     # Training loop
     start_time = time.time()
@@ -1164,11 +1533,30 @@ def run_single_experiment(
     wfa_loss_history = []
     doppler_loss_history = []
     temperature_loss_history = []
+    test_metrics_epochs = []
+    test_correlation_history = {'blos': [], 'vlos': [], 'temp': []}
+    test_rrmse_history = {'blos': [], 'vlos': [], 'temp': []}
+    modest_test_metrics_epochs = []
+    modest_test_correlation_history = {'blos': [], 'vlos': [], 'temp': []}
+    modest_test_rrmse_history = {'blos': [], 'vlos': [], 'temp': []}
     train_wfa_enabled_history = []
     total_training_pixels = 0
     wfa_gate_state = initialize_wfa_gate_state(config)
     wfa_gate_trigger_epoch = None
     wfa_gate_trigger_reason = None
+
+    epoch_test_log_path = Path(config.log_dir) / "test_set_epoch_log.csv"
+    with open(epoch_test_log_path, 'w') as f:
+        f.write(
+            'epoch,blos_correlation,vlos_correlation,temp_correlation,'
+            'blos_rrmse_tau_avg,vlos_rrmse_tau_avg,temp_rrmse_tau_avg\n'
+        )
+    modest_epoch_test_log_path = Path(config.log_dir) / "modest_test_set_epoch_log.csv"
+    with open(modest_epoch_test_log_path, 'w') as f:
+        f.write(
+            'epoch,blos_correlation,vlos_correlation,temp_correlation,'
+            'blos_rrmse_tau_avg,vlos_rrmse_tau_avg,temp_rrmse_tau_avg\n'
+        )
     
     for epoch in range(config.n_epochs):
         with timer():
@@ -1190,6 +1578,8 @@ def run_single_experiment(
                 n_steps_per_epoch=n_steps_per_epoch,
                 cache=cache,
                 enable_wfa=train_wfa_enabled,
+                global_bz_selection_indices=global_bz_selection_indices,
+                global_bz_balance_metadata=global_bz_balance_metadata,
             )
             
             # Extract metrics
@@ -1254,6 +1644,62 @@ def run_single_experiment(
 
             val_loss_history.append(avg_val_loss)
             current_lr = optimizer.param_groups[0]['lr']
+
+            epoch_test_metrics = compute_tau_averaged_metrics(
+                model=model,
+                test_steps=test_steps,
+                config=config,
+                mhd_normalizer=mhd_normalizer,
+                stokes_normalizer=stokes_normalizer,
+                logtau_values=config.get_logtau_values(),
+                cache=cache,
+            )
+
+            test_metrics_epochs.append(epoch + 1)
+            test_correlation_history['blos'].append(float(epoch_test_metrics['blos_correlation']))
+            test_correlation_history['vlos'].append(float(epoch_test_metrics['vlos_correlation']))
+            test_correlation_history['temp'].append(float(epoch_test_metrics['temp_correlation']))
+            test_rrmse_history['blos'].append(float(epoch_test_metrics['blos_rrmse_tau_avg']))
+            test_rrmse_history['vlos'].append(float(epoch_test_metrics['vlos_rrmse_tau_avg']))
+            test_rrmse_history['temp'].append(float(epoch_test_metrics['temp_rrmse_tau_avg']))
+
+            with open(epoch_test_log_path, 'a') as f:
+                f.write(
+                    f"{epoch + 1},"
+                    f"{float(epoch_test_metrics['blos_correlation']):.10f},"
+                    f"{float(epoch_test_metrics['vlos_correlation']):.10f},"
+                    f"{float(epoch_test_metrics['temp_correlation']):.10f},"
+                    f"{float(epoch_test_metrics['blos_rrmse_tau_avg']):.10f},"
+                    f"{float(epoch_test_metrics['vlos_rrmse_tau_avg']):.10f},"
+                    f"{float(epoch_test_metrics['temp_rrmse_tau_avg']):.10f}\n"
+                )
+
+            epoch_modest_metrics = None
+            if modest_snapshot is not None:
+                epoch_modest_metrics = compute_modest_tau_averaged_metrics(
+                    model=model,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    modest_snapshot=modest_snapshot,
+                )
+                modest_test_metrics_epochs.append(epoch + 1)
+                modest_test_correlation_history['blos'].append(float(epoch_modest_metrics['blos_correlation']))
+                modest_test_correlation_history['vlos'].append(float(epoch_modest_metrics['vlos_correlation']))
+                modest_test_correlation_history['temp'].append(float(epoch_modest_metrics['temp_correlation']))
+                modest_test_rrmse_history['blos'].append(float(epoch_modest_metrics['blos_rrmse_tau_avg']))
+                modest_test_rrmse_history['vlos'].append(float(epoch_modest_metrics['vlos_rrmse_tau_avg']))
+                modest_test_rrmse_history['temp'].append(float(epoch_modest_metrics['temp_rrmse_tau_avg']))
+
+                with open(modest_epoch_test_log_path, 'a') as f:
+                    f.write(
+                        f"{epoch + 1},"
+                        f"{float(epoch_modest_metrics['blos_correlation']):.10f},"
+                        f"{float(epoch_modest_metrics['vlos_correlation']):.10f},"
+                        f"{float(epoch_modest_metrics['temp_correlation']):.10f},"
+                        f"{float(epoch_modest_metrics['blos_rrmse_tau_avg']):.10f},"
+                        f"{float(epoch_modest_metrics['vlos_rrmse_tau_avg']):.10f},"
+                        f"{float(epoch_modest_metrics['temp_rrmse_tau_avg']):.10f}\n"
+                    )
             
             print("=" * 100)
             print(f"Epoch {epoch + 1} Summary:")
@@ -1266,6 +1712,31 @@ def run_single_experiment(
             print(f"    └─ Temperature Loss: {avg_temperature_loss:.6f}")
             print(f"  Validation Loss: {avg_val_loss:.6f}")
             print(f"  Learning Rate:   {current_lr:.2e}")
+            print(
+                "  Test Corr (B,V,T): "
+                f"{epoch_test_metrics['blos_correlation']:.4f}, "
+                f"{epoch_test_metrics['vlos_correlation']:.4f}, "
+                f"{epoch_test_metrics['temp_correlation']:.4f}"
+            )
+            print(
+                "  Test RRMSE (B,V,T): "
+                f"{epoch_test_metrics['blos_rrmse_tau_avg']:.4f}, "
+                f"{epoch_test_metrics['vlos_rrmse_tau_avg']:.4f}, "
+                f"{epoch_test_metrics['temp_rrmse_tau_avg']:.4f}"
+            )
+            if epoch_modest_metrics is not None:
+                print(
+                    "  MODEST Corr (B,V,T): "
+                    f"{epoch_modest_metrics['blos_correlation']:.4f}, "
+                    f"{epoch_modest_metrics['vlos_correlation']:.4f}, "
+                    f"{epoch_modest_metrics['temp_correlation']:.4f}"
+                )
+                print(
+                    "  MODEST RRMSE (B,V,T): "
+                    f"{epoch_modest_metrics['blos_rrmse_tau_avg']:.4f}, "
+                    f"{epoch_modest_metrics['vlos_rrmse_tau_avg']:.4f}, "
+                    f"{epoch_modest_metrics['temp_rrmse_tau_avg']:.4f}"
+                )
             print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
             
             print("=" * 100)
@@ -1283,16 +1754,29 @@ def run_single_experiment(
         print("\nBuilding MODEST epoch diagnostic videos...")
         generate_epoch_modest_diagnostic_videos(config=config)
 
-    print("\nEvaluating on test set...")
-    test_metrics = compute_tau_averaged_metrics(
-        model=model,
-        test_steps=test_steps,
-        config=config,
-        mhd_normalizer=mhd_normalizer,
-        stokes_normalizer=stokes_normalizer,
-        logtau_values=config.get_logtau_values(),
-        cache=cache,
-    )
+    if test_metrics_epochs:
+        test_metrics = {
+            'blos_rrmse_tau_avg': float(test_rrmse_history['blos'][-1]),
+            'vlos_rrmse_tau_avg': float(test_rrmse_history['vlos'][-1]),
+            'temp_rrmse_tau_avg': float(test_rrmse_history['temp'][-1]),
+            'blos_correlation': float(test_correlation_history['blos'][-1]),
+            'vlos_correlation': float(test_correlation_history['vlos'][-1]),
+            'temp_correlation': float(test_correlation_history['temp'][-1]),
+            'blos_rmse': np.nan,
+            'vlos_rmse': np.nan,
+            'temp_rmse': np.nan,
+        }
+    else:
+        print("\nEvaluating on test set...")
+        test_metrics = compute_tau_averaged_metrics(
+            model=model,
+            test_steps=test_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            logtau_values=config.get_logtau_values(),
+            cache=cache,
+        )
     
     # Save model
     if config.checkpoint_dir:
@@ -1302,6 +1786,12 @@ def run_single_experiment(
         checkpoint_data = {
             'model_state_dict': model.state_dict(),
             'test_metrics': test_metrics,
+            'test_metrics_epochs': test_metrics_epochs,
+            'test_correlation_history': test_correlation_history,
+            'test_rrmse_history': test_rrmse_history,
+            'modest_test_metrics_epochs': modest_test_metrics_epochs,
+            'modest_test_correlation_history': modest_test_correlation_history,
+            'modest_test_rrmse_history': modest_test_rrmse_history,
             'wfa_gate_state': wfa_gate_state,
             'wfa_gate_trigger_epoch': wfa_gate_trigger_epoch,
             'wfa_gate_trigger_reason': wfa_gate_trigger_reason,
@@ -1323,6 +1813,8 @@ def run_single_experiment(
         json.dump(config_dict, f, indent=2)
 
     return {
+        'experiment_dir': str(config.checkpoint_dir.parent),
+        'log_dir': str(config.log_dir),
         'final_val_loss': val_loss_history[-1],
         'val_loss_history': val_loss_history,
         'train_loss_history': train_loss_history,
@@ -1339,10 +1831,25 @@ def run_single_experiment(
         'training_time_minutes': training_time,
         'total_training_pixels_used': int(total_training_pixels),
         'test_metrics': test_metrics,
+        'test_metrics_epochs': test_metrics_epochs,
+        'test_correlation_history': test_correlation_history,
+        'test_rrmse_history': test_rrmse_history,
+        'modest_test_metrics': {
+            'blos_rrmse_tau_avg': float(modest_test_rrmse_history['blos'][-1]) if modest_test_rrmse_history['blos'] else np.nan,
+            'vlos_rrmse_tau_avg': float(modest_test_rrmse_history['vlos'][-1]) if modest_test_rrmse_history['vlos'] else np.nan,
+            'temp_rrmse_tau_avg': float(modest_test_rrmse_history['temp'][-1]) if modest_test_rrmse_history['temp'] else np.nan,
+            'blos_correlation': float(modest_test_correlation_history['blos'][-1]) if modest_test_correlation_history['blos'] else np.nan,
+            'vlos_correlation': float(modest_test_correlation_history['vlos'][-1]) if modest_test_correlation_history['vlos'] else np.nan,
+            'temp_correlation': float(modest_test_correlation_history['temp'][-1]) if modest_test_correlation_history['temp'] else np.nan,
+        },
+        'modest_test_metrics_epochs': modest_test_metrics_epochs,
+        'modest_test_correlation_history': modest_test_correlation_history,
+        'modest_test_rrmse_history': modest_test_rrmse_history,
         'config': {
             'lambda_wfa': config.lambda_wfa,
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
+            'stokes_mult_factor': config.stokes_mult_factor,
             'lambda_tail': config.lambda_tail,
             'tail_alpha': config.tail_alpha,
             'tail_gamma': config.tail_gamma,
@@ -1387,6 +1894,9 @@ def main():
     # Model architecture
     parser.add_argument('--c1-filters', '--c1_filter', dest='c1_filters', type=int, default=16,
                        help='Number of filters in first conv layer (default: 16)')
+    parser.add_argument('--stokes-mult-factor', '--stokes_mult_factor', dest='stokes_mult_factor',
+                       type=float, default=1.0,
+                       help='Scalar multiplier applied to normalized Stokes I and V before training')
     
     # Lambda values for physics terms
     parser.add_argument('--lambda_wfa', type=float, nargs='+', default=[0.01],
@@ -1462,6 +1972,66 @@ def main():
         help='Disable region masking and train with all available pixels.'
     )
     parser.set_defaults(apply_region_mask=True)
+
+    bz_group = parser.add_mutually_exclusive_group()
+    bz_group.add_argument(
+        '--apply-bz-bin-balance', '--apply_bz_bin_balance',
+        dest='apply_bz_bin_balance',
+        action='store_true',
+        help='Balance training pixels across Bz-strength bins by downsampling dense bins.'
+    )
+    bz_group.add_argument(
+        '--no-bz-bin-balance', '--no_bz_bin_balance',
+        dest='apply_bz_bin_balance',
+        action='store_false',
+        help='Disable Bz-strength balancing and keep the selected pixel set unchanged.'
+    )
+    parser.set_defaults(apply_bz_bin_balance=False)
+
+    parser.add_argument(
+        '--bz-balance-mode', '--bz_balance_mode',
+        dest='bz_balance_mode',
+        type=str,
+        choices=['mean_abs', 'max_abs', 'tau_index'],
+        default='mean_abs',
+        help='Summary statistic used to compute the per-pixel Bz balancing score.'
+    )
+    parser.add_argument(
+        '--bz-balance-bins', '--bz_balance_bins',
+        dest='bz_balance_bins',
+        type=int,
+        default=12,
+        help='Number of uniform Bz-strength bins used for balancing.'
+    )
+    parser.add_argument(
+        '--bz-balance-scope', '--bz_balance_scope',
+        dest='bz_balance_scope',
+        type=str,
+        choices=['global', 'per_step'],
+        default='global',
+        help='Apply Bz balancing globally across train steps or independently per step.'
+    )
+    parser.add_argument(
+        '--bz-balance-seed', '--bz_balance_seed',
+        dest='bz_balance_seed',
+        type=int,
+        default=42,
+        help='Random seed used when selecting balanced Bz pixels.'
+    )
+    parser.add_argument(
+        '--bz-balance-tau-idx', '--bz_balance_tau_idx',
+        dest='bz_balance_tau_idx',
+        type=int,
+        default=None,
+        help='Optical-depth index used when --bz-balance-mode=tau_index.'
+    )
+    parser.add_argument(
+        '--bz-balance-logtau', '--bz_balance_logtau',
+        dest='bz_balance_logtau',
+        type=float,
+        default=None,
+        help='Optical-depth log(tau) value used when --bz-balance-mode=tau_index (alternative to tau index).'
+    )
     
     # Optical depth remapping grid
     parser.add_argument(
@@ -1553,6 +2123,32 @@ def main():
                        help='Minimum number of epochs before WFA gate can activate')
 
     args = parser.parse_args()
+
+    if args.bz_balance_tau_idx is not None and args.bz_balance_logtau is not None:
+        raise ValueError("Use either --bz-balance-tau-idx or --bz-balance-logtau, not both.")
+
+    if args.logtau_values is not None:
+        resolved_logtau = np.asarray(args.logtau_values, dtype=np.float32)
+    else:
+        if args.logtau_step <= 0:
+            raise ValueError(f"logtau_step must be > 0, got {args.logtau_step}")
+        resolved_logtau = np.arange(
+            args.logtau_min,
+            args.logtau_max + 0.5 * args.logtau_step,
+            args.logtau_step,
+            dtype=np.float32,
+        )
+    resolved_logtau = np.round(resolved_logtau, 6)
+
+    if args.bz_balance_logtau is not None:
+        target_logtau = float(np.round(args.bz_balance_logtau, 6))
+        match_idx = np.where(np.isclose(resolved_logtau, target_logtau, atol=1e-6))[0]
+        if match_idx.size == 0:
+            raise ValueError(
+                "Requested --bz-balance-logtau is not in the active logtau grid. "
+                f"Requested: {target_logtau}. Grid: {resolved_logtau.tolist()}"
+            )
+        args.bz_balance_tau_idx = int(match_idx[0])
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
     args.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
     args.lambda_wfa = _normalize_lambda_values(args.lambda_wfa)
@@ -1583,6 +2179,7 @@ def main():
     print(f"Lambda WFA:         {args.lambda_wfa}")
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
+    print(f"Stokes mult factor: {args.stokes_mult_factor}")
     print(f"Lambda Tail (Bz):   {args.lambda_tail}")
     print(f"Tail alpha/gamma:   {args.tail_alpha} / {args.tail_gamma}")
     print(f"Stokes I_c mode:    {args.stokes_ic_mode}")
@@ -1596,6 +2193,17 @@ def main():
             f"min_delta={args.wfa_gate_min_delta}, warmup={args.wfa_gate_warmup_epochs}"
         )
     print(f"Apply region mask:  {args.apply_region_mask}")
+    print(f"Apply Bz balance:   {args.apply_bz_bin_balance}")
+    if args.apply_bz_bin_balance:
+        print(
+            f"Bz balance scope:   {args.bz_balance_scope}"
+        )
+        print(
+            f"Bz balance mode:    {args.bz_balance_mode} | bins={args.bz_balance_bins} | "
+            f"tau_idx={args.bz_balance_tau_idx} | "
+            f"logtau={(None if args.bz_balance_tau_idx is None else float(resolved_logtau[args.bz_balance_tau_idx]))} | "
+            f"seed={args.bz_balance_seed}"
+        )
     print(f"Train steps mode:  range [{args.min_step}, {args.max_step}] step={args.step_size}")
     if args.logtau_values is not None:
         print(f"log(tau) values:    {args.logtau_values}")
@@ -1666,7 +2274,14 @@ def main():
             logtau_max=args.logtau_max,
             logtau_step=args.logtau_step,
             apply_region_mask=args.apply_region_mask,
+            apply_bz_bin_balance=args.apply_bz_bin_balance,
+            bz_balance_scope=args.bz_balance_scope,
+            bz_balance_mode=args.bz_balance_mode,
+            bz_balance_bins=args.bz_balance_bins,
+            bz_balance_tau_idx=args.bz_balance_tau_idx,
+            bz_balance_seed=args.bz_balance_seed,
             c1_filters=args.c1_filters,
+            stokes_mult_factor=args.stokes_mult_factor,
             stokes_ic_mode=args.stokes_ic_mode,
             **common_epoch_plot_kwargs,
         )
@@ -1795,6 +2410,7 @@ def main():
     tracker.print_summary_table()
     tracker.generate_comparison_plots()
     tracker.plot_individual_loss_curves()
+    tracker.plot_testset_correlation_and_rrmse()
     
     print("\n✓ Experiment complete!")
     print(f"Results saved to: {output_dir}")

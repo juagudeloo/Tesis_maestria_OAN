@@ -46,7 +46,8 @@ def main(args):
     stokes_normalizer.load(filepath=default_cfg.data_path / default_cfg.stokes_normalizer_path)
 
     modest = ModestData(
-        circular_polarization_threshold=args.polarization_threshold
+        circular_polarization_threshold=args.polarization_threshold,
+        stokes_v_multiplier=args.modest_stokes_v_multiplier,
     )
     modest_cache = ModestDataCache(cache_dir=args.modest_cache_dir)
     print(f"MODEST cache directory: {args.modest_cache_dir}")
@@ -92,6 +93,13 @@ if __name__ == "__main__":
         type=float,
         default=1e-2,
         help='threshold for circular polarization mask (default: 0.01)'
+    )
+    parser.add_argument(
+        '--modest-stokes-v-multiplier', '--modest_stokes_v_multiplier',
+        dest='modest_stokes_v_multiplier',
+        type=float,
+        default=-1.0,
+        help='scale factor applied to MODEST Stokes V (default: -1.0 to match MURaM polarity)',
     )
     parser.add_argument(
         '--model-types', '--model_types',

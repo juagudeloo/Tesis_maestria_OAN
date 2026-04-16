@@ -16,6 +16,7 @@ import os
 import argparse
 import random
 import json
+import csv
 from pathlib import Path
 from dataclasses import dataclass, asdict, fields
 from typing import Any
@@ -41,6 +42,7 @@ from utils.muram_data import (
     MuramStepDataset,
     build_granulation_polarization_masks,
     build_balanced_region_indices,
+    build_bz_strength_balanced_indices,
 )
 from utils.modest_data import ModestData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
@@ -80,6 +82,7 @@ class TrainingConfig:
     stokes_cont_indices: list[int] | None = None
     stokes_ic_mode: str = "fixed_global"  # 'per_step' or 'fixed_global'
     stokes_fixed_ic: float | None = None
+    stokes_mult_factor: float = 1.0
     
     # Training parameters
     n_epochs: int = 20
@@ -143,6 +146,15 @@ class TrainingConfig:
     # Region-mask balancing (training only)
     apply_region_mask: bool = True
     log_region_mask_stats: bool = True
+
+    # Bz histogram balancing (training only)
+    apply_bz_bin_balance: bool = False
+    log_bz_bin_balance_stats: bool = True
+    bz_balance_mode: str = "mean_abs"  # 'mean_abs', 'max_abs', or 'tau_index'
+    bz_balance_bins: int = 12
+    bz_balance_tau_idx: int | None = None
+    bz_balance_scope: str = "global"  # 'global' or 'per_step'
+    bz_balance_seed: int = 42
     
     # Epoch diagnostics (image + scatter evolution)
     enable_epoch_plots: bool = True
@@ -159,6 +171,7 @@ class TrainingConfig:
     no_modest_cache: bool = False
     clear_modest_cache: bool = False
     modest_downsample_prediction_input: bool = True
+    modest_stokes_v_multiplier: float = -1.0
     modest_polarization_mask: bool = False
     modest_polarization_threshold: float = 1e-2
     modest_crop_bounds: list[int] | tuple[int, int, int, int] | None = None
@@ -184,6 +197,9 @@ class TrainingConfig:
                 fixed_ic = ic_payload.get("fixed_ic")
                 if fixed_ic is not None:
                     self.stokes_fixed_ic = float(fixed_ic)
+
+        if not np.isfinite(float(self.stokes_mult_factor)) or float(self.stokes_mult_factor) <= 0:
+            raise ValueError(f"stokes_mult_factor must be finite and > 0, got {self.stokes_mult_factor}")
 
         valid_ic_modes = {"per_step", "fixed_global"}
         if self.stokes_ic_mode not in valid_ic_modes:
@@ -246,6 +262,32 @@ class TrainingConfig:
 
         if self.modest_temp_calibration_file:
             self.modest_temp_calibration_file = str(Path(self.modest_temp_calibration_file).expanduser().resolve())
+
+        if not np.isfinite(float(self.modest_stokes_v_multiplier)) or float(self.modest_stokes_v_multiplier) == 0.0:
+            raise ValueError(
+                f"modest_stokes_v_multiplier must be finite and non-zero, got {self.modest_stokes_v_multiplier}"
+            )
+
+        valid_bz_balance_modes = {"mean_abs", "max_abs", "tau_index"}
+        self.bz_balance_mode = str(self.bz_balance_mode).lower()
+        if self.bz_balance_mode not in valid_bz_balance_modes:
+            raise ValueError(
+                f"bz_balance_mode must be one of {sorted(valid_bz_balance_modes)}, got {self.bz_balance_mode!r}"
+            )
+        self.bz_balance_bins = int(self.bz_balance_bins)
+        if self.bz_balance_bins < 2:
+            raise ValueError("bz_balance_bins must be >= 2")
+        if self.bz_balance_tau_idx is not None:
+            self.bz_balance_tau_idx = int(self.bz_balance_tau_idx)
+            if self.bz_balance_tau_idx < 0:
+                raise ValueError("bz_balance_tau_idx must be >= 0")
+        valid_bz_balance_scopes = {"global", "per_step"}
+        self.bz_balance_scope = str(self.bz_balance_scope).lower()
+        if self.bz_balance_scope not in valid_bz_balance_scopes:
+            raise ValueError(
+                f"bz_balance_scope must be one of {sorted(valid_bz_balance_scopes)}, got {self.bz_balance_scope!r}"
+            )
+        self.bz_balance_seed = int(self.bz_balance_seed)
 
         # Convert paths to Path objects
         self.data_path = Path(self.data_path)
@@ -363,6 +405,7 @@ def build_cache_config_signature(config: TrainingConfig) -> dict:
         'stokes_cont_indices': tuple(int(x) for x in (config.stokes_cont_indices or [0, 1, 2, 3])),
         'stokes_ic_mode': str(config.stokes_ic_mode),
         'stokes_fixed_ic': None if config.stokes_fixed_ic is None else float(config.stokes_fixed_ic),
+        'stokes_mult_factor': float(config.stokes_mult_factor),
     }
 
 
@@ -449,7 +492,11 @@ def load_and_prepare_step(
     cache: MuramDataCache | None = None,
     apply_balanced_masks: bool = False,
     log_region_stats: bool = False,
-) -> tuple[MuramStepDataset, dict[str, np.ndarray]]:
+    apply_bz_balance: bool = False,
+    global_bz_selection_indices: dict[int, np.ndarray] | None = None,
+    global_bz_balance_metadata: dict[str, Any] | None = None,
+    ignore_missing_files: bool = False,
+) -> tuple[MuramStepDataset, dict[str, np.ndarray]] | None:
     """
     Load and prepare a single simulation step for training.
     
@@ -467,6 +514,8 @@ def load_and_prepare_step(
         Stokes data normalizer
     cache : MuramDataCache, optional
         Cache manager for loading/saving processed data
+    ignore_missing_files : bool
+        If True, return None instead of raising when required input files are missing.
     
     Returns
     -------
@@ -481,6 +530,7 @@ def load_and_prepare_step(
     new_logtau = config.get_logtau_values()
 
     region_sampling_info = None
+    bz_balance_info = None
 
     # Try to load from cache (strict first, then relaxed hash fallback)
     allow_relaxed_cache_fallback = (
@@ -541,6 +591,28 @@ def load_and_prepare_step(
                         "counts_after": balance_stats["counts_after"],
                     }
 
+                if global_bz_selection_indices is not None and step in global_bz_selection_indices:
+                    selected_indices = np.asarray(global_bz_selection_indices[step], dtype=np.int64)
+                    step_stats = {}
+                    if isinstance(global_bz_balance_metadata, dict):
+                        step_stats = global_bz_balance_metadata.get("per_step_counts", {}).get(str(step), {})
+                    bz_balance_info = {
+                        "scope": "global",
+                        "reference_tau_idx": None if not isinstance(global_bz_balance_metadata, dict) else global_bz_balance_metadata.get("reference_tau_idx"),
+                        "reference_logtau": None if not isinstance(global_bz_balance_metadata, dict) else global_bz_balance_metadata.get("reference_logtau"),
+                        "counts_before_step": step_stats.get("before"),
+                        "counts_after_step": step_stats.get("after"),
+                        "counts_after": {"total_selected": int(selected_indices.size)},
+                    }
+                elif apply_bz_balance:
+                    selected_indices, bz_balance_info = build_bz_strength_balanced_indices(
+                        mhd_data=mhd_cached,
+                        base_selected_indices=selected_indices,
+                        n_bins=config.bz_balance_bins,
+                        score_mode=config.bz_balance_mode,
+                        tau_idx=config.bz_balance_tau_idx,
+                    )
+
                 dataset_cached = MuramStepDataset(
                     stokes_data=stokes_cached,
                     mhd_data=mhd_cached,
@@ -548,6 +620,7 @@ def load_and_prepare_step(
                     mhd_normalizer=mhd_normalizer,
                     selected_flat_indices=selected_indices,
                     region_sampling_info=region_sampling_info,
+                    bz_balance_info=bz_balance_info,
                 )
 
                 if apply_balanced_masks and log_region_stats and dataset_cached.region_sampling_info is not None:
@@ -565,6 +638,18 @@ def load_and_prepare_step(
                         f"GW={a['granular_weak']}, IW={a['intergranular_weak']} "
                         f"(total={a['total_selected']})"
                     )
+                if (apply_bz_balance or global_bz_selection_indices is not None) and config.log_bz_bin_balance_stats and dataset_cached.bz_balance_info is not None:
+                    stats = dataset_cached.bz_balance_info
+                    if stats.get("scope") == "global":
+                        print(
+                            f"  Bz bin balance (step {step}): scope=global, "
+                            f"tau_idx={stats.get('reference_tau_idx')}, selected={stats['counts_after']['total_selected']}"
+                        )
+                    else:
+                        print(
+                            f"  Bz bin balance (step {step}): mode={stats['score_mode']}, bins={stats['n_bins']}, "
+                            f"target/bin={stats['target_per_bin']}, selected={stats['counts_after']['total_selected']}"
+                        )
 
                 return dataset_cached, approx_cached
             except Exception as e:
@@ -576,7 +661,13 @@ def load_and_prepare_step(
         data_path=config.data_path / "muram-simulation",
         nx=config.nx, ny=config.ny, nz=config.nz
     )
-    mhd.load_step(step=step, z_max=config.z_max)
+    try:
+        mhd.load_step(step=step, z_max=config.z_max)
+    except FileNotFoundError as exc:
+        if ignore_missing_files:
+            print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
+            return None
+        raise
     mhd.load_opacity_table(kappa_path=config.data_path / config.kappa_path)
     mhd.compute_optical_depth(dz=config.dz_km * u.km)
     
@@ -595,7 +686,13 @@ def load_and_prepare_step(
         wavelength_range=(6300.5, 6303.5),
         wavelength_step=0.01
     )
-    stokes.load_stokes()
+    try:
+        stokes.load_stokes()
+    except FileNotFoundError as exc:
+        if ignore_missing_files:
+            print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
+            return None
+        raise
     stokes_cont_indices = config.stokes_cont_indices or [0, 1, 2, 3]
     if config.stokes_ic_mode == "fixed_global":
         if config.stokes_fixed_ic is None:
@@ -604,6 +701,9 @@ def load_and_prepare_step(
     else:
         fixed_ic = None
     stokes.continuum_normalization(cont_indices=stokes_cont_indices, fixed_ic=fixed_ic)
+    if config.stokes_mult_factor != 1.0:
+        stokes.data["I"] = stokes.data["I"] * config.stokes_mult_factor
+        stokes.data["V"] = stokes.data["V"] * config.stokes_mult_factor
     stokes.load_hinode_lsf(config.data_path / config.lsf_path)
     stokes.apply_spectral_convolution()
     stokes.resample_to_hinode()
@@ -629,6 +729,28 @@ def load_and_prepare_step(
             "counts_before": balance_stats["counts_before"],
             "counts_after": balance_stats["counts_after"],
         }
+
+    if global_bz_selection_indices is not None and step in global_bz_selection_indices:
+        selected_indices = np.asarray(global_bz_selection_indices[step], dtype=np.int64)
+        step_stats = {}
+        if isinstance(global_bz_balance_metadata, dict):
+            step_stats = global_bz_balance_metadata.get("per_step_counts", {}).get(str(step), {})
+        bz_balance_info = {
+            "scope": "global",
+            "reference_tau_idx": None if not isinstance(global_bz_balance_metadata, dict) else global_bz_balance_metadata.get("reference_tau_idx"),
+            "reference_logtau": None if not isinstance(global_bz_balance_metadata, dict) else global_bz_balance_metadata.get("reference_logtau"),
+            "counts_before_step": step_stats.get("before"),
+            "counts_after_step": step_stats.get("after"),
+            "counts_after": {"total_selected": int(selected_indices.size)},
+        }
+    elif apply_bz_balance:
+        selected_indices, bz_balance_info = build_bz_strength_balanced_indices(
+            mhd_data=mhd.od_data,
+            base_selected_indices=selected_indices,
+            n_bins=config.bz_balance_bins,
+            score_mode=config.bz_balance_mode,
+            tau_idx=config.bz_balance_tau_idx,
+        )
     
     # Create dataset
     dataset = MuramStepDataset(
@@ -638,6 +760,7 @@ def load_and_prepare_step(
         mhd_normalizer=mhd_normalizer,
         selected_flat_indices=selected_indices,
         region_sampling_info=region_sampling_info,
+        bz_balance_info=bz_balance_info,
     )
 
     if apply_balanced_masks and log_region_stats and dataset.region_sampling_info is not None:
@@ -655,6 +778,18 @@ def load_and_prepare_step(
             f"GW={a['granular_weak']}, IW={a['intergranular_weak']} "
             f"(total={a['total_selected']})"
         )
+    if (apply_bz_balance or global_bz_selection_indices is not None) and config.log_bz_bin_balance_stats and dataset.bz_balance_info is not None:
+        stats = dataset.bz_balance_info
+        if stats.get("scope") == "global":
+            print(
+                f"  Bz bin balance (step {step}): scope=global, "
+                f"tau_idx={stats.get('reference_tau_idx')}, selected={stats['counts_after']['total_selected']}"
+            )
+        else:
+            print(
+                f"  Bz bin balance (step {step}): mode={stats['score_mode']}, bins={stats['n_bins']}, "
+                f"target/bin={stats['target_per_bin']}, selected={stats['counts_after']['total_selected']}"
+            )
     
     # Compute physics approximations (unnormalized)
     inv = ApproxInversions(
@@ -696,6 +831,175 @@ def load_and_prepare_step(
             print(f"  ⚠ Failed to save cache for step {step}: {e}")
     
     return dataset, approx_data
+
+
+def compute_global_bz_balancing_indices(
+    train_steps: list[int],
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    cache: MuramDataCache | None = None,
+) -> tuple[dict[int, np.ndarray], dict[str, Any]]:
+    """Build global Bz-bin balancing indices across all training steps.
+
+    The balancing score is |Bz| evaluated at the deepest optical-depth level
+    unless bz_balance_tau_idx is explicitly provided.
+    """
+    if not config.apply_bz_bin_balance:
+        return {}, {}
+
+    n_tau = int(config.get_n_logtau())
+    ref_tau_idx = int(config.bz_balance_tau_idx) if config.bz_balance_tau_idx is not None else int(n_tau - 1)
+    if ref_tau_idx < 0 or ref_tau_idx >= n_tau:
+        raise ValueError(f"bz_balance_tau_idx must be within [0, {n_tau - 1}], got {ref_tau_idx}")
+
+    rng = np.random.default_rng(config.bz_balance_seed)
+
+    all_scores: list[np.ndarray] = []
+    all_step_ids: list[np.ndarray] = []
+    all_flat_idx: list[np.ndarray] = []
+    per_step_before: dict[str, int] = {}
+
+    print("\nPrecomputing global Bz balancing indices from ready-for-training data...")
+    for step in tqdm(train_steps, desc="Global Bz balance scan"):
+        result = load_and_prepare_step(
+            step=step,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            cache=cache,
+            apply_balanced_masks=config.apply_region_mask,
+            log_region_stats=False,
+            apply_bz_balance=False,
+            global_bz_selection_indices=None,
+            global_bz_balance_metadata=None,
+            ignore_missing_files=True,
+        )
+
+        if result is None:
+            per_step_before[str(step)] = 0
+            continue
+
+        dataset, _ = result
+
+        targets = np.asarray(dataset.mhd_targets, dtype=np.float32)
+        bz_norm = targets[:, 2 * n_tau:3 * n_tau]
+        bz_denorm = np.asarray(mhd_normalizer.denormalize(bz_norm, param="Bz"), dtype=np.float32)
+        scores = np.abs(bz_denorm[:, ref_tau_idx])
+
+        flat_idx = (
+            dataset.spatial_indices[:, 0].astype(np.int64) * int(dataset.ny)
+            + dataset.spatial_indices[:, 1].astype(np.int64)
+        )
+
+        finite_mask = np.isfinite(scores)
+        scores = scores[finite_mask]
+        flat_idx = flat_idx[finite_mask]
+
+        per_step_before[str(step)] = int(flat_idx.size)
+        if flat_idx.size == 0:
+            continue
+
+        all_scores.append(scores.astype(np.float32, copy=False))
+        all_flat_idx.append(flat_idx.astype(np.int64, copy=False))
+        all_step_ids.append(np.full(flat_idx.shape[0], int(step), dtype=np.int64))
+
+    if len(all_scores) == 0:
+        print("⚠ Global Bz balancing found no candidate pixels across train steps; continuing without global balancing.")
+        return {}, {
+            "reference_tau_idx": int(ref_tau_idx),
+            "reference_logtau": float(config.get_logtau_values()[ref_tau_idx]),
+            "counts_before": {},
+            "counts_after": {},
+            "per_step_counts": {step: {"before": count, "after": 0} for step, count in per_step_before.items()},
+            "n_selected": 0,
+            "skipped": True,
+        }
+
+    scores_global = np.concatenate(all_scores, axis=0)
+    step_ids_global = np.concatenate(all_step_ids, axis=0)
+    flat_idx_global = np.concatenate(all_flat_idx, axis=0)
+
+    score_min = float(np.min(scores_global))
+    score_max = float(np.max(scores_global))
+    n_bins = int(max(2, config.bz_balance_bins))
+
+    if np.isclose(score_min, score_max):
+        selected_positions = np.arange(scores_global.size, dtype=np.int64)
+        bin_edges = np.array([score_min, score_max], dtype=np.float32)
+        counts_before = {"bin_0": int(scores_global.size)}
+        target_per_bin = int(scores_global.size)
+    else:
+        bin_edges = np.linspace(score_min, score_max, n_bins + 1, dtype=np.float32)
+        bin_ids = np.digitize(scores_global, bin_edges[1:-1], right=False)
+        bin_ids = np.clip(bin_ids, 0, n_bins - 1)
+
+        counts_before = {
+            f"bin_{bin_idx}": int(np.sum(bin_ids == bin_idx))
+            for bin_idx in range(n_bins)
+        }
+        occupied = [c for c in counts_before.values() if c > 0]
+        if not occupied:
+            raise RuntimeError("Global Bz balancing found no occupied bins.")
+        target_per_bin = int(min(occupied))
+
+        selected_chunks = []
+        for bin_idx in range(n_bins):
+            idx_bin = np.flatnonzero(bin_ids == bin_idx)
+            if idx_bin.size == 0:
+                continue
+            if idx_bin.size > target_per_bin:
+                chosen = rng.choice(idx_bin, size=target_per_bin, replace=False)
+            else:
+                chosen = idx_bin
+            selected_chunks.append(chosen.astype(np.int64, copy=False))
+
+        selected_positions = np.concatenate(selected_chunks, axis=0)
+        rng.shuffle(selected_positions)
+
+    selected_by_step: dict[int, np.ndarray] = {}
+    per_step_after: dict[str, int] = {}
+    for step in train_steps:
+        step_mask = step_ids_global[selected_positions] == int(step)
+        step_selected = flat_idx_global[selected_positions][step_mask]
+        if step_selected.size == 0:
+            # Keep training robust: if a step receives no selected pixels, fallback to one candidate.
+            fallback = flat_idx_global[step_ids_global == int(step)]
+            if fallback.size > 0:
+                step_selected = fallback[:1]
+        selected_by_step[int(step)] = np.asarray(step_selected, dtype=np.int64)
+        per_step_after[str(step)] = int(step_selected.size)
+
+    counts_after_total = int(sum(per_step_after.values()))
+    metadata = {
+        "scope": "global",
+        "reference_tau_idx": int(ref_tau_idx),
+        "reference_logtau": float(config.get_logtau_values()[ref_tau_idx]),
+        "score_min": score_min,
+        "score_max": score_max,
+        "n_bins": int(len(bin_edges) - 1),
+        "bin_edges": [float(v) for v in bin_edges.tolist()],
+        "counts_before": counts_before,
+        "counts_after": {"total_selected": counts_after_total},
+        "target_per_bin": int(target_per_bin),
+        "per_step_counts": {
+            str(step): {
+                "before": int(per_step_before.get(str(step), 0)),
+                "after": int(per_step_after.get(str(step), 0)),
+            }
+            for step in train_steps
+        },
+        "seed": int(config.bz_balance_seed),
+    }
+
+    print(
+        "  ✓ Global Bz balancing ready: "
+        f"tau_idx={metadata['reference_tau_idx']} (logtau={metadata['reference_logtau']:.3f}), "
+        f"bins={metadata['n_bins']}, target/bin={metadata['target_per_bin']}, "
+        f"total_selected={metadata['counts_after']['total_selected']}"
+    )
+
+    return selected_by_step, metadata
 
 def train_one_step(
     model: PhysicsInformedMSCNN,
@@ -850,19 +1154,24 @@ def validate(
         Average validation loss across all validation steps
     """
     model.eval()
-    total_val_loss = 0.0
     n_val_samples = 0
     
     with torch.no_grad():
         for step in val_steps:
             try:
-                dataset, approx_data = load_and_prepare_step(
+                result = load_and_prepare_step(
                     step=step,
                     config=config,
                     mhd_normalizer=mhd_normalizer,
                     stokes_normalizer=stokes_normalizer,
                     cache=cache,
+                    ignore_missing_files=True,
                 )
+
+                if result is None:
+                    continue
+
+                dataset, approx_data = result
                 
                 dataloader = DataLoader(
                     dataset,
@@ -903,7 +1212,11 @@ def validate(
                 print(f"  Warning: Failed to validate on step {step}: {e}")
                 continue
     
-    return total_val_loss / n_val_samples if n_val_samples > 0 else float('inf')
+    if n_val_samples == 0:
+        print("  Warning: validation found no usable steps; returning NaN.")
+        return float("nan")
+
+    return total_val_loss / n_val_samples
 
 def save_checkpoint(
     model: PhysicsInformedMSCNN,
@@ -988,6 +1301,8 @@ def train_epoch(
     n_steps_per_epoch: int = -1,
     cache: MuramDataCache | None = None,
     enable_wfa: bool = True,
+    global_bz_selection_indices: dict[int, np.ndarray] | None = None,
+    global_bz_balance_metadata: dict[str, Any] | None = None,
 ) -> dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
@@ -1047,7 +1362,7 @@ def train_epoch(
     for step in step_pbar:
         try:
             # Load and prepare step (uses cache if available)
-            dataset, approx_data = load_and_prepare_step(
+            result = load_and_prepare_step(
                 step=step,
                 config=config,
                 mhd_normalizer=mhd_normalizer,
@@ -1055,7 +1370,16 @@ def train_epoch(
                 cache=cache,
                 apply_balanced_masks=config.apply_region_mask,
                 log_region_stats=(config.apply_region_mask and config.log_region_mask_stats),
+                apply_bz_balance=(config.apply_bz_bin_balance and config.bz_balance_scope == "per_step"),
+                global_bz_selection_indices=global_bz_selection_indices,
+                global_bz_balance_metadata=global_bz_balance_metadata,
+                ignore_missing_files=True,
             )
+
+            if result is None:
+                continue
+
+            dataset, approx_data = result
             
             # Create dataloader
             dataloader = DataLoader(
@@ -1105,6 +1429,9 @@ def train_epoch(
             print(f"\n  Error processing step {step}: {e}")
             continue
     
+    if epoch_metrics['n_steps'] == 0:
+        raise RuntimeError("No usable training steps were found after skipping missing files.")
+
     # Compute averages
     n_steps = epoch_metrics['n_steps']
     if n_steps > 0:
@@ -1138,17 +1465,27 @@ def generate_epoch_diagnostic_plots(
     base_out_dir = config.log_dir / "epoch_diagnostics" / f"step_{step}"
     out_dir = base_out_dir / f"epoch_{epoch+1:03d}"
     out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_rows: list[dict[str, float | int | str]] = []
 
     was_training = model.training
     model.eval()
 
-    dataset, _ = load_and_prepare_step(
+    result = load_and_prepare_step(
         step=step,
         config=config,
         mhd_normalizer=mhd_normalizer,
         stokes_normalizer=stokes_normalizer,
         cache=cache,
+        ignore_missing_files=True,
     )
+
+    if result is None:
+        if was_training:
+            model.train()
+        print(f"  Warning: skipping diagnostics for missing step {step}.")
+        return
+
+    dataset, _ = result
 
     n_pixels = dataset.stokes_input.shape[0]
     all_pred = []
@@ -1207,6 +1544,30 @@ def generate_epoch_diagnostic_plots(
             pred_map = pred_den[p][:, :, tau_idx]
             err_map = pred_map - true_map
 
+            x_all = true_map.ravel()
+            y_all = pred_map.ravel()
+            valid = np.isfinite(x_all) & np.isfinite(y_all)
+            x_all = x_all[valid]
+            y_all = y_all[valid]
+            if x_all.size == 0:
+                continue
+
+            rmse = float(np.sqrt(np.mean((y_all - x_all) ** 2)))
+            rrmse = float(rmse / (np.mean(np.abs(x_all)) + 1e-10))
+            corr = float(np.corrcoef(x_all, y_all)[0, 1]) if x_all.size > 1 else float("nan")
+
+            metrics_rows.append(
+                {
+                    "epoch": int(epoch + 1),
+                    "step": int(step),
+                    "param": str(p),
+                    "logtau": float(od_eff),
+                    "n_points": int(x_all.size),
+                    "corr": corr,
+                    "rrmse": rrmse,
+                }
+            )
+
             both = np.concatenate([true_map.ravel(), pred_map.ravel()])
             if p in ("Vz", "Bz"):
                 vmax = np.nanquantile(np.abs(both), 0.99)
@@ -1235,7 +1596,10 @@ def generate_epoch_diagnostic_plots(
             ax[2].axis("off")
             plt.colorbar(im2, ax=ax[2], fraction=0.046, pad=0.04)
 
-            fig.suptitle(f"Epoch {epoch+1} | Step {step} | {p} @ log(tau)={od_eff:.2f}")
+            fig.suptitle(
+                f"Epoch {epoch+1} | Step {step} | {p} @ log(tau)={od_eff:.2f} | "
+                f"Corr={corr:.3f}, RRMSE={rrmse:.3f}"
+            )
             fig.tight_layout()
             fig.savefig(
                 out_dir / f"{p}_logtau_{od_eff:.2f}_images.png",
@@ -1245,21 +1609,13 @@ def generate_epoch_diagnostic_plots(
             plt.close(fig)
 
             # Jointplot (seaborn): scatter + marginal histograms
-            x = true_map.ravel()
-            y = pred_map.ravel()
-            m = np.isfinite(x) & np.isfinite(y)
-            x, y = x[m], y[m]
-            if x.size == 0:
-                continue
+            x = x_all
+            y = y_all
 
             if x.size > n_sample > 0:
                 rng = np.random.default_rng(seed=epoch + tau_idx + 7)
                 idx = rng.choice(x.size, size=n_sample, replace=False)
                 x, y = x[idx], y[idx]
-
-            rmse = np.sqrt(np.mean((y - x) ** 2))
-            rrmse = rmse / (np.mean(np.abs(x)) + 1e-10)
-            corr = np.corrcoef(x, y)[0, 1] if x.size > 1 else np.nan
 
             lo, hi = np.nanquantile(np.concatenate([x, y]), [0.01, 0.99])
             g = sns.jointplot(
@@ -1289,6 +1645,16 @@ def generate_epoch_diagnostic_plots(
             )
             plt.close(g.fig)
 
+    if metrics_rows:
+        metrics_path = out_dir / "plot_metrics.csv"
+        with open(metrics_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=["epoch", "step", "param", "logtau", "n_points", "corr", "rrmse"],
+            )
+            writer.writeheader()
+            writer.writerows(metrics_rows)
+
     if was_training:
         model.train()
 
@@ -1299,6 +1665,70 @@ def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np
     t = torch.from_numpy(np.asarray(arr2d, dtype=np.float32)).float().unsqueeze(0).unsqueeze(0)
     out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
     return out.squeeze(0).squeeze(0).cpu().numpy()
+
+
+def generate_epoch_metric_trend_plots(
+    config: TrainingConfig,
+    step: int,
+) -> None:
+    """
+    Build trend plots (Corr and RRMSE) from per-epoch diagnostic CSVs.
+    """
+    step_dir = config.log_dir / "epoch_diagnostics" / f"step_{step}"
+    if not step_dir.exists():
+        return
+
+    trend_records: dict[tuple[str, float], list[tuple[int, float, float]]] = {}
+    epoch_dirs = sorted([d for d in step_dir.glob("epoch_*") if d.is_dir()], key=lambda p: p.name)
+
+    for e_dir in epoch_dirs:
+        metrics_path = e_dir / "plot_metrics.csv"
+        if not metrics_path.exists():
+            continue
+
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    epoch = int(float(row.get("epoch", "nan")))
+                    param = str(row.get("param", ""))
+                    logtau = float(row.get("logtau", "nan"))
+                    corr = float(row.get("corr", "nan"))
+                    rrmse = float(row.get("rrmse", "nan"))
+                except Exception:
+                    continue
+
+                if not param or not np.isfinite(logtau):
+                    continue
+
+                key = (param, float(logtau))
+                trend_records.setdefault(key, []).append((epoch, corr, rrmse))
+
+    if not trend_records:
+        return
+
+    trends_dir = step_dir / "trends"
+    trends_dir.mkdir(parents=True, exist_ok=True)
+
+    def _save_metric_plot(metric_name: str, value_index: int, out_name: str, y_label: str) -> None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        for (param, logtau), values in sorted(trend_records.items(), key=lambda item: (item[0][0], item[0][1])):
+            values_sorted = sorted(values, key=lambda x: x[0])
+            epochs = [v[0] for v in values_sorted]
+            metric_vals = [v[value_index] for v in values_sorted]
+            ax.plot(epochs, metric_vals, marker="o", linewidth=1.6, markersize=4, label=f"{param} @ {logtau:.2f}")
+
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel(y_label)
+        ax.set_title(f"Step {step} | {metric_name} vs Epoch")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8, ncol=2)
+        fig.tight_layout()
+        fig.savefig(trends_dir / out_name, dpi=170, bbox_inches="tight")
+        plt.close(fig)
+
+    _save_metric_plot(metric_name="Correlation", value_index=1, out_name="corr_vs_epoch.png", y_label="Correlation")
+    _save_metric_plot(metric_name="RRMSE", value_index=2, out_name="rrmse_vs_epoch.png", y_label="RRMSE")
 
 
 def _default_modest_temp_calibration_path(config: TrainingConfig) -> Path:
@@ -1419,7 +1849,10 @@ def prepare_modest_epoch_snapshot(
     stokes_normalizer: StokesNormalizer,
 ) -> dict[str, object]:
     """Load and normalize one MODEST snapshot for repeated per-epoch diagnostics."""
-    modest = ModestData(circular_polarization_threshold=config.modest_polarization_threshold)
+    modest = ModestData(
+        circular_polarization_threshold=config.modest_polarization_threshold,
+        stokes_v_multiplier=config.modest_stokes_v_multiplier,
+    )
     modest_cache = ModestDataCache(cache_dir=config.modest_cache_dir)
 
     print(f"MODEST cache directory: {config.modest_cache_dir}")
@@ -1885,6 +2318,12 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
     print(f"Lambda Temperature: {config.lambda_temp}")
+    print(f"Apply Bz bin balance: {config.apply_bz_bin_balance}")
+    if config.apply_bz_bin_balance:
+        print(
+            f"Bz balance scope/mode/bins: {config.bz_balance_scope}/{config.bz_balance_mode}/{config.bz_balance_bins}"
+        )
+        print(f"Bz balance tau idx: {config.bz_balance_tau_idx} (None -> deepest)")
     print(f"WFA gate mode: {config.wfa_gate_mode}")
     if config.wfa_gate_mode == 'threshold':
         print(f"WFA gate threshold (train MSE): {config.wfa_gate_threshold}")
@@ -2015,6 +2454,21 @@ def train_pinn_model(config: TrainingConfig):
         print("\nCache Information:")
         cache.print_cache_info()
 
+    global_bz_selection_indices = None
+    global_bz_balance_metadata = None
+    if config.apply_bz_bin_balance and config.bz_balance_scope == "global":
+        global_bz_selection_indices, global_bz_balance_metadata = compute_global_bz_balancing_indices(
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            cache=cache,
+        )
+        global_meta_path = config.log_dir / "global_bz_balance_metadata.json"
+        with open(global_meta_path, "w") as f:
+            json.dump(global_bz_balance_metadata, f, indent=2)
+        print(f"Global Bz balance metadata saved to: {global_meta_path}")
+
     modest_snapshot = None
     if config.enable_modest_epoch_plots:
         print("\nPreparing MODEST snapshot for per-epoch diagnostics...")
@@ -2049,6 +2503,8 @@ def train_pinn_model(config: TrainingConfig):
             n_steps_per_epoch=-1,  # Use all training steps
             cache=cache,
             enable_wfa=train_wfa_enabled,
+            global_bz_selection_indices=global_bz_selection_indices,
+            global_bz_balance_metadata=global_bz_balance_metadata,
         )
         
         avg_train_loss = epoch_metrics['total_loss']
@@ -2153,11 +2609,28 @@ def train_pinn_model(config: TrainingConfig):
         "step_size": int(config.step_size),
         "batch_size": int(config.batch_size),
         "wfa_gate_state": wfa_gate_state,
+        "bz_balance": {
+            "enabled": bool(config.apply_bz_bin_balance),
+            "scope": str(config.bz_balance_scope),
+            "mode": str(config.bz_balance_mode),
+            "bins": int(config.bz_balance_bins),
+            "tau_idx": None if config.bz_balance_tau_idx is None else int(config.bz_balance_tau_idx),
+            "global_metadata_file": str(config.log_dir / "global_bz_balance_metadata.json")
+            if config.apply_bz_bin_balance and config.bz_balance_scope == "global"
+            else None,
+        },
     }
     metadata_path = config.log_dir / "training_metadata.json"
     with open(metadata_path, "w") as f:
         json.dump(training_metadata, f, indent=2)
     print(f"Training metadata saved to: {metadata_path}")
+
+    if config.enable_epoch_plots:
+        print("Generating final epoch-metric trend plots...")
+        generate_epoch_metric_trend_plots(
+            config=config,
+            step=monitor_step_for_epoch_plots,
+        )
     
     # Build epoch-diagnostic videos at end of training
     if config.enable_epoch_plots and config.enable_epoch_videos:
@@ -2183,6 +2656,9 @@ def main():
     parser.add_argument('--stokes-ic-mode', '--stokes_ic_mode', dest='stokes_ic_mode',
                        type=str, choices=['per_step', 'fixed_global'], default='fixed_global',
                        help='Continuum normalization mode for Stokes data')
+    parser.add_argument('--stokes-mult-factor', '--stokes_mult_factor', dest='stokes_mult_factor',
+                       type=float, default=1.0,
+                       help='Scalar multiplier applied to normalized Stokes I and V before training')
     parser.add_argument('--wfa-gate-mode', '--wfa_gate_mode', dest='wfa_gate_mode',
                        type=str, choices=['off', 'threshold', 'plateau'], default=None,
                        help='Train-time WFA activation gate mode')
@@ -2265,6 +2741,9 @@ def main():
     parser.add_argument('--modest-polarization-threshold', '--modest_polarization_threshold',
                        dest='modest_polarization_threshold', type=float, default=None,
                        help='Circular polarization threshold for MODEST mask')
+    parser.add_argument('--modest-stokes-v-multiplier', '--modest_stokes_v_multiplier',
+                       dest='modest_stokes_v_multiplier', type=float, default=None,
+                       help='Scale factor applied to MODEST Stokes V (default: -1.0 to match MURaM polarity)')
     parser.add_argument('--modest-crop-bounds', '--modest_crop_bounds', dest='modest_crop_bounds',
                        nargs=4, type=int, default=None,
                        metavar=('Y_MIN', 'Y_MAX', 'X_MIN', 'X_MAX'),
@@ -2349,6 +2828,7 @@ def main():
     if args.c1_filters is not None:
         config.c1_filters = args.c1_filters
     config.stokes_ic_mode = args.stokes_ic_mode
+    config.stokes_mult_factor = args.stokes_mult_factor
     if config.stokes_ic_mode == 'fixed_global' and config.stokes_fixed_ic is None:
         ic_stats_path = Path(config.data_path) / "normalization_stats" / "ic_reference_stats.json"
         if ic_stats_path.exists():
@@ -2403,6 +2883,8 @@ def main():
     config.modest_polarization_mask = args.modest_polarization_mask
     if args.modest_polarization_threshold is not None:
         config.modest_polarization_threshold = args.modest_polarization_threshold
+    if args.modest_stokes_v_multiplier is not None:
+        config.modest_stokes_v_multiplier = args.modest_stokes_v_multiplier
     if args.modest_crop_bounds is not None:
         config.modest_crop_bounds = tuple(args.modest_crop_bounds)
     if args.modest_epoch_plot_ods is not None:
