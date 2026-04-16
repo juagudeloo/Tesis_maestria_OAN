@@ -147,6 +147,12 @@ if __name__ == "__main__":
         help='invert MODEST Stokes profile direction along the spectral axis before optional shift/scale',
     )
     parser.add_argument(
+        '--modest-pred-mhd-invert-sign', '--modest_pred_mhd_invert_sign',
+        dest='modest_pred_mhd_invert_sign',
+        action='store_true',
+        help='invert predicted MODEST V_LOS and B_LOS signs before region/joint plotting',
+    )
+    parser.add_argument(
         '--model-types', '--model_types',
         nargs='+',
         default=['all'],

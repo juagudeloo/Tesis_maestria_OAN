@@ -32,6 +32,7 @@ MODEST_STOKES_SHIFT_POSITIONS="0.0"
 MODEST_STOKES_I_SCALE="1.0"
 MODEST_STOKES_V_SCALE="1.0"
 MODEST_STOKES_INVERT_DIRECTION="0"      # 1 => --modest-stokes-invert-direction
+MODEST_PRED_MHD_INVERT_SIGN="0"         # 1 => --modest-pred-mhd-invert-sign (invert predicted Vz/Bz)
 
 # Temperature calibration args (MODEST only)
 TEMP_CALIBRATION_MODE="off"             # off | apply_fit (bias-only: per-tau b, fixed a=1)
@@ -58,6 +59,7 @@ Options:
   --modest-stokes-i-scale VALUE  MODEST: multiplicative factor for Stokes I
   --modest-stokes-v-scale VALUE  MODEST: multiplicative factor for Stokes V
   --modest-stokes-invert-direction 0|1  MODEST: invert spectral direction before optional shift/scale
+  --modest-pred-mhd-invert-sign 0|1  MODEST: invert predicted V_LOS and B_LOS signs before plotting
   --temp-calibration-mode off|apply_fit  MODEST: calibration mode; apply_fit is bias-only (a=1)
   --temp-calibration-dir PATH   MODEST: shared dir to store/load calibration JSON
   --temp-calibration-min-samples N   MODEST: min samples to fit per-tau bias (default: 500)
@@ -133,6 +135,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --modest-stokes-invert-direction)
       MODEST_STOKES_INVERT_DIRECTION="${2:-}"
+      shift 2
+      ;;
+    --modest-pred-mhd-invert-sign)
+      MODEST_PRED_MHD_INVERT_SIGN="${2:-}"
       shift 2
       ;;
     --temp-calibration-mode)
@@ -229,6 +235,11 @@ if [[ "${MODEST_STOKES_INVERT_DIRECTION}" != "0" && "${MODEST_STOKES_INVERT_DIRE
   exit 1
 fi
 
+if [[ "${MODEST_PRED_MHD_INVERT_SIGN}" != "0" && "${MODEST_PRED_MHD_INVERT_SIGN}" != "1" ]]; then
+  echo "Invalid value for --modest-pred-mhd-invert-sign: ${MODEST_PRED_MHD_INVERT_SIGN} (use: 0|1)" >&2
+  exit 1
+fi
+
 case "${TEMP_CALIBRATION_MODE}" in
   off|apply_fit) ;;
   *)
@@ -262,6 +273,11 @@ fi
 MODEST_STOKES_INVERT_DIRECTION_FLAG=""
 if [[ "${MODEST_STOKES_INVERT_DIRECTION}" == "1" ]]; then
   MODEST_STOKES_INVERT_DIRECTION_FLAG="--modest-stokes-invert-direction"
+fi
+
+MODEST_PRED_MHD_INVERT_SIGN_FLAG=""
+if [[ "${MODEST_PRED_MHD_INVERT_SIGN}" == "1" ]]; then
+  MODEST_PRED_MHD_INVERT_SIGN_FLAG="--modest-pred-mhd-invert-sign"
 fi
 
 TEMP_CALIBRATION_FLAGS=""
@@ -304,6 +320,7 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
     --modest-stokes-i-scale "${MODEST_STOKES_I_SCALE}" \
     --modest-stokes-v-scale "${MODEST_STOKES_V_SCALE}" \
     ${MODEST_STOKES_INVERT_DIRECTION_FLAG} \
+    ${MODEST_PRED_MHD_INVERT_SIGN_FLAG} \
     ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
     ${CLEAR_MODEST_CACHE_FLAG} \
     ${TEMP_CALIBRATION_FLAGS}

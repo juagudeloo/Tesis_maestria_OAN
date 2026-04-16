@@ -1192,6 +1192,10 @@ class ModestDiagnosticPlots:
                 pred_ny=self.pred_ny,
                 batch_size=self.args.inference_batch_size,
             )
+            if bool(getattr(self.args, "modest_pred_mhd_invert_sign", False)):
+                pred_mhd["Vz"] = -pred_mhd["Vz"]
+                pred_mhd["Bz"] = -pred_mhd["Bz"]
+                print(f"[{model_type}] Applied predicted MHD sign inversion for Vz and Bz.")
             out_root = self.modest_output_dir / model_type
             self._plot_stokes_mean_std(model_type=model_type, out_root=out_root)
             cal_path = self._temperature_calibration_path(model_type=model_type, out_root=out_root)
