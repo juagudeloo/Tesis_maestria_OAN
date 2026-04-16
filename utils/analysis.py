@@ -11,6 +11,7 @@ import seaborn as sns
 
 from scripts.base_training import TrainingConfig
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
+from utils.modest_data import transform_modest_stokes_profiles
 
 try:
     from torchinfo import summary as torch_summary
@@ -925,9 +926,18 @@ class ModestDiagnosticPlots:
         # MODEST Stokes profiles are already continuum-normalized in the loader path.
         # Keep them as-is here and only apply the standard Stokes normalizer expected by the model.
         prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
+        wl_raw = self.modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1]))
         self.modest_wavelength = np.asarray(
-            self.modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1])),
+            wl_raw.value if hasattr(wl_raw, "value") else wl_raw,
             dtype=np.float64,
+        )
+        prediction_stokes = transform_modest_stokes_profiles(
+            stokes=prediction_stokes,
+            wavelength_angstrom=self.modest_wavelength,
+            shift_positions=float(getattr(self.args, "modest_stokes_shift_positions", 0.0)),
+            i_scale=float(getattr(self.args, "modest_stokes_i_scale", 1.0)),
+            v_scale=float(getattr(self.args, "modest_stokes_v_scale", 1.0)),
+            invert_direction=bool(getattr(self.args, "modest_stokes_invert_direction", False)),
         )
         self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
         norm_stokes = self.stokes_normalizer.transform(prediction_stokes)

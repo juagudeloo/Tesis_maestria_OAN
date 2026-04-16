@@ -120,6 +120,33 @@ if __name__ == "__main__":
         help='scale factor applied to MODEST Stokes V (default: -1.0 to match MURaM polarity)',
     )
     parser.add_argument(
+        '--modest-stokes-shift-positions', '--modest_stokes_shift_positions',
+        dest='modest_stokes_shift_positions',
+        type=float,
+        default=0.0,
+        help='shift MODEST Stokes profiles by this many spectral sample positions (default: 0.0)',
+    )
+    parser.add_argument(
+        '--modest-stokes-i-scale', '--modest_stokes_i_scale',
+        dest='modest_stokes_i_scale',
+        type=float,
+        default=1.0,
+        help='multiply MODEST Stokes I profiles by this factor after optional shift/inversion (default: 1.0)',
+    )
+    parser.add_argument(
+        '--modest-stokes-v-scale', '--modest_stokes_v_scale',
+        dest='modest_stokes_v_scale',
+        type=float,
+        default=1.0,
+        help='multiply MODEST Stokes V profiles by this factor after optional shift/inversion (default: 1.0)',
+    )
+    parser.add_argument(
+        '--modest-stokes-invert-direction', '--modest_stokes_invert_direction',
+        dest='modest_stokes_invert_direction',
+        action='store_true',
+        help='invert MODEST Stokes profile direction along the spectral axis before optional shift/scale',
+    )
+    parser.add_argument(
         '--model-types', '--model_types',
         nargs='+',
         default=['all'],

@@ -11,6 +11,7 @@ sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
 
 from utils.modest_data import ModestData
 from utils.cache_manage import ModestDataCache
+from utils.modest_data import transform_modest_stokes_profiles
 
 
 PLAGE_CROP_BOUNDS = (0, 100, 400, 600)  # X_MIN, X_MAX, Y_MIN, Y_MAX
@@ -251,8 +252,16 @@ def main(args):
         prediction_stokes = modest_data.get("prediction_stokes", modest_data.get("smoothed_stokes", None))
         if not isinstance(prediction_stokes, dict):
             raise ValueError("MODEST prediction stokes are missing; cannot generate stokes distributions")
-        stokes_input = _reshape_prediction_stokes(prediction_stokes)
         wl = _to_wavelength_array(modest_data.get("wl", None))
+        prediction_stokes = transform_modest_stokes_profiles(
+            stokes=prediction_stokes,
+            wavelength_angstrom=wl,
+            shift_positions=float(args.modest_stokes_shift_positions),
+            i_scale=float(args.modest_stokes_i_scale),
+            v_scale=float(args.modest_stokes_v_scale),
+            invert_direction=bool(args.modest_stokes_invert_direction),
+        )
+        stokes_input = _reshape_prediction_stokes(prediction_stokes)
         _plot_modest_stokes_mean_std(
             stokes_input=stokes_input,
             wavelengths=wl,
@@ -331,6 +340,29 @@ if __name__ == "__main__":
         type=float,
         default=-1.0,
         help="Multiplier applied to MODEST Stokes V during loading",
+    )
+    parser.add_argument(
+        "--modest-stokes-shift-positions",
+        type=float,
+        default=0.0,
+        help="Shift MODEST Stokes profiles by this many spectral sample positions (default: 0.0)",
+    )
+    parser.add_argument(
+        "--modest-stokes-i-scale",
+        type=float,
+        default=1.0,
+        help="Multiply MODEST Stokes I profiles by this factor after optional shift/inversion (default: 1.0)",
+    )
+    parser.add_argument(
+        "--modest-stokes-v-scale",
+        type=float,
+        default=1.0,
+        help="Multiply MODEST Stokes V profiles by this factor after optional shift/inversion (default: 1.0)",
+    )
+    parser.add_argument(
+        "--modest-stokes-invert-direction",
+        action="store_true",
+        help="Invert MODEST Stokes profile direction along the spectral axis before optional shift/scale",
     )
 
     main(parser.parse_args())

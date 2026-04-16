@@ -13,6 +13,105 @@ from scipy.ndimage import uniform_filter1d
 from utils.cache_manage import ModestDataCache
 
 
+def transform_modest_stokes_profiles(
+	stokes: Dict[str, np.ndarray],
+	wavelength_angstrom: np.ndarray,
+	shift_positions: float = 0.0,
+	i_scale: float = 1.0,
+	v_scale: float = 1.0,
+	invert_direction: bool = False,
+	edge_extrapolation_points: int = 4,
+) -> Dict[str, np.ndarray]:
+	"""Apply optional spectral transformations to MODEST Stokes I/V profiles.
+
+	Transform order:
+	1) Optional spectral-axis inversion.
+	2) Optional spectral shift in sample positions with edge extrapolation.
+	3) Channel scaling (I and V independently).
+	"""
+	if "I" not in stokes or "V" not in stokes:
+		raise KeyError("stokes dictionary must contain 'I' and 'V' keys")
+
+	wl = np.asarray(wavelength_angstrom, dtype=np.float64)
+	if wl.ndim != 1:
+		raise ValueError(f"wavelength_angstrom must be 1D, got shape {wl.shape}")
+
+	I = np.asarray(stokes["I"], dtype=np.float32)
+	V = np.asarray(stokes["V"], dtype=np.float32)
+	if I.shape != V.shape:
+		raise ValueError(f"Stokes I/V shape mismatch: I{I.shape} vs V{V.shape}")
+	if I.ndim != 3:
+		raise ValueError(f"Expected Stokes cubes with shape (ny, nx, nwl), got {I.shape}")
+	if I.shape[2] != wl.size:
+		raise ValueError(
+			f"Wavelength size mismatch: nwl={I.shape[2]} in Stokes but {wl.size} wavelength points"
+		)
+
+	# Work on copies to keep the input dictionary unchanged.
+	I_out = np.array(I, copy=True)
+	V_out = np.array(V, copy=True)
+
+	if invert_direction:
+		I_out = I_out[:, :, ::-1]
+		V_out = V_out[:, :, ::-1]
+
+	def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+		if x.size < 2:
+			return 0.0, float(y[0]) if y.size > 0 else 0.0
+		a, b = np.polyfit(x, y, 1)
+		return float(a), float(b)
+
+	def _shift_cube(cube: np.ndarray, delta_positions: float) -> np.ndarray:
+		if abs(delta_positions) < 1e-14:
+			return cube
+
+		shifted = np.array(cube, copy=True)
+		nwl = shifted.shape[2]
+		grid = np.arange(nwl, dtype=np.float64)
+		query_grid = grid - float(delta_positions)
+		grid_min = 0.0
+		grid_max = float(nwl - 1)
+
+		ny, nx, _ = shifted.shape
+		for iy in range(ny):
+			for ix in range(nx):
+				spec = shifted[iy, ix, :]
+				finite = np.isfinite(spec)
+				if np.count_nonzero(finite) < 2:
+					continue
+
+				x = grid[finite]
+				y = spec[finite].astype(np.float64)
+
+				if x.size < 2:
+					continue
+
+				y_interp = np.interp(query_grid, x, y)
+
+				k = max(2, min(int(edge_extrapolation_points), x.size))
+				a_left, b_left = _fit_line(x[:k], y[:k])
+				a_right, b_right = _fit_line(x[-k:], y[-k:])
+
+				left_mask = query_grid < grid_min
+				right_mask = query_grid > grid_max
+				if np.any(left_mask):
+					y_interp[left_mask] = a_left * query_grid[left_mask] + b_left
+				if np.any(right_mask):
+					y_interp[right_mask] = a_right * query_grid[right_mask] + b_right
+
+				shifted[iy, ix, :] = y_interp.astype(np.float32)
+
+		return shifted
+
+	I_out = _shift_cube(I_out, shift_positions)
+	V_out = _shift_cube(V_out, shift_positions)
+
+	I_out = I_out * float(i_scale)
+	V_out = V_out * float(v_scale)
+
+	return {"I": I_out.astype(np.float32, copy=False), "V": V_out.astype(np.float32, copy=False)}
+
+
 class ModestData:
 	"""Load, process, and visualize MODEST Hinode/SP data products.
 

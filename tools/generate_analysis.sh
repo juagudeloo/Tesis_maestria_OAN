@@ -28,6 +28,10 @@ CROP_LABEL="plage"
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
 CLEAR_MODEST_CACHE="0"                  # 1 => --clear-modest-cache
 DOWNSAMPLE_PREDICTION_INPUT="0"         # 1 => --downsample-prediction-input
+MODEST_STOKES_SHIFT_POSITIONS="0.0"
+MODEST_STOKES_I_SCALE="1.0"
+MODEST_STOKES_V_SCALE="1.0"
+MODEST_STOKES_INVERT_DIRECTION="0"      # 1 => --modest-stokes-invert-direction
 
 # Temperature calibration args (MODEST only)
 TEMP_CALIBRATION_MODE="off"             # off | apply_fit (bias-only: per-tau b, fixed a=1)
@@ -50,6 +54,10 @@ Options:
   --modest-cache-dir PATH   MODEST cache directory
   --clear-modest-cache 0|1  Clear MODEST cache before run (default: 0)
   --downsample-prediction-input 0|1  MODEST: downsample prediction Stokes to native grid
+  --modest-stokes-shift-positions VALUE  MODEST: shift Stokes profiles by sample positions
+  --modest-stokes-i-scale VALUE  MODEST: multiplicative factor for Stokes I
+  --modest-stokes-v-scale VALUE  MODEST: multiplicative factor for Stokes V
+  --modest-stokes-invert-direction 0|1  MODEST: invert spectral direction before optional shift/scale
   --temp-calibration-mode off|apply_fit  MODEST: calibration mode; apply_fit is bias-only (a=1)
   --temp-calibration-dir PATH   MODEST: shared dir to store/load calibration JSON
   --temp-calibration-min-samples N   MODEST: min samples to fit per-tau bias (default: 500)
@@ -109,6 +117,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --downsample-prediction-input)
       DOWNSAMPLE_PREDICTION_INPUT="${2:-}"
+      shift 2
+      ;;
+    --modest-stokes-shift-positions)
+      MODEST_STOKES_SHIFT_POSITIONS="${2:-}"
+      shift 2
+      ;;
+    --modest-stokes-i-scale)
+      MODEST_STOKES_I_SCALE="${2:-}"
+      shift 2
+      ;;
+    --modest-stokes-v-scale)
+      MODEST_STOKES_V_SCALE="${2:-}"
+      shift 2
+      ;;
+    --modest-stokes-invert-direction)
+      MODEST_STOKES_INVERT_DIRECTION="${2:-}"
       shift 2
       ;;
     --temp-calibration-mode)
@@ -185,6 +209,26 @@ if [[ "${DOWNSAMPLE_PREDICTION_INPUT}" != "0" && "${DOWNSAMPLE_PREDICTION_INPUT}
   exit 1
 fi
 
+if ! [[ "${MODEST_STOKES_SHIFT_POSITIONS}" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]; then
+  echo "Invalid value for --modest-stokes-shift-positions: ${MODEST_STOKES_SHIFT_POSITIONS} (must be numeric)" >&2
+  exit 1
+fi
+
+if ! [[ "${MODEST_STOKES_I_SCALE}" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]; then
+  echo "Invalid value for --modest-stokes-i-scale: ${MODEST_STOKES_I_SCALE} (must be numeric)" >&2
+  exit 1
+fi
+
+if ! [[ "${MODEST_STOKES_V_SCALE}" =~ ^[+-]?(([0-9]+([.][0-9]*)?)|([.][0-9]+))([eE][+-]?[0-9]+)?$ ]]; then
+  echo "Invalid value for --modest-stokes-v-scale: ${MODEST_STOKES_V_SCALE} (must be numeric)" >&2
+  exit 1
+fi
+
+if [[ "${MODEST_STOKES_INVERT_DIRECTION}" != "0" && "${MODEST_STOKES_INVERT_DIRECTION}" != "1" ]]; then
+  echo "Invalid value for --modest-stokes-invert-direction: ${MODEST_STOKES_INVERT_DIRECTION} (use: 0|1)" >&2
+  exit 1
+fi
+
 case "${TEMP_CALIBRATION_MODE}" in
   off|apply_fit) ;;
   *)
@@ -213,6 +257,11 @@ fi
 DOWNSAMPLE_PREDICTION_INPUT_FLAG=""
 if [[ "${DOWNSAMPLE_PREDICTION_INPUT}" == "1" ]]; then
   DOWNSAMPLE_PREDICTION_INPUT_FLAG="--downsample-prediction-input"
+fi
+
+MODEST_STOKES_INVERT_DIRECTION_FLAG=""
+if [[ "${MODEST_STOKES_INVERT_DIRECTION}" == "1" ]]; then
+  MODEST_STOKES_INVERT_DIRECTION_FLAG="--modest-stokes-invert-direction"
 fi
 
 TEMP_CALIBRATION_FLAGS=""
@@ -251,6 +300,10 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
     --model-types ${MODEL_TYPES} \
     --crop-label "${CROP_LABEL}" \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    --modest-stokes-shift-positions "${MODEST_STOKES_SHIFT_POSITIONS}" \
+    --modest-stokes-i-scale "${MODEST_STOKES_I_SCALE}" \
+    --modest-stokes-v-scale "${MODEST_STOKES_V_SCALE}" \
+    ${MODEST_STOKES_INVERT_DIRECTION_FLAG} \
     ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
     ${CLEAR_MODEST_CACHE_FLAG} \
     ${TEMP_CALIBRATION_FLAGS}
@@ -266,6 +319,10 @@ if [[ "${RUN_TARGET}" == "distributions" ]]; then
     --experiment-root "${EXPERIMENT_ROOT}" \
     --distribution-target "${DISTRIBUTION_TARGET}" \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    --modest-stokes-shift-positions "${MODEST_STOKES_SHIFT_POSITIONS}" \
+    --modest-stokes-i-scale "${MODEST_STOKES_I_SCALE}" \
+    --modest-stokes-v-scale "${MODEST_STOKES_V_SCALE}" \
+    ${MODEST_STOKES_INVERT_DIRECTION_FLAG} \
     ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
     ${CLEAR_MODEST_CACHE_FLAG}
 fi
