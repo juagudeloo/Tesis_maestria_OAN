@@ -483,26 +483,31 @@ class MuramDiagnosticPlots:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_rows: list[dict[str, float | str | int]] = []
 
-    @staticmethod
-    def _default_hinode_wavelength() -> np.ndarray:
-        return 6302.0 + (np.arange(1, 112 + 1) - 57) * 0.0215
-
     def plot_stokes_mean_std(
         self,
         stokes_input: np.ndarray,
         wavelengths: np.ndarray | None = None,
     ) -> None:
-        """Plot denormalized mean ± std Stokes I/V profiles from final model inputs."""
+        """Plot denormalized mean ± std Stokes I/V profiles from final model inputs.
+        
+        wavelengths must not be None. Always use metadata-derived wavelength arrays.
+        """
         arr = np.asarray(stokes_input, dtype=np.float32)
         if arr.ndim != 3 or arr.shape[1] != 2:
             return
 
-        if wavelengths is not None:
-            wl = np.asarray(wavelengths, dtype=np.float64)
-        else:
-            wl = self._default_hinode_wavelength()
+        if wavelengths is None:
+            raise ValueError(
+                "wavelengths parameter is required and must come from MODEST metadata. "
+                "Do not use hardcoded Hinode wavelength defaults."
+            )
+        
+        wl = np.asarray(wavelengths, dtype=np.float64)
         if wl.ndim != 1 or wl.size != arr.shape[2]:
-            wl = self._default_hinode_wavelength() if arr.shape[2] == 112 else np.arange(arr.shape[2], dtype=np.float64)
+            raise ValueError(
+                f"wavelengths shape mismatch: expected (n_wavelengths={arr.shape[2]},), got {wl.shape}. "
+                "Ensure wavelengths are properly extracted from MODEST metadata."
+            )
 
         I_norm = arr[:, 0, :]
         V_norm = arr[:, 1, :]
@@ -1090,7 +1095,10 @@ class ModestDiagnosticPlots:
         return out_metrics, comparison
 
     def _plot_stokes_mean_std(self, model_type: str, out_root: Path) -> None:
-        """Plot denormalized mean ± std Stokes I/V profiles from MODEST model-input stokes."""
+        """Plot denormalized mean ± std Stokes I/V profiles from MODEST model-input stokes.
+        
+        Wavelength data is always extracted from MODEST metadata. No hardcoded defaults are used.
+        """
         if self.modest_stokes_input is None:
             return
 
@@ -1098,9 +1106,18 @@ class ModestDiagnosticPlots:
         if arr.ndim != 3 or arr.shape[1] != 2:
             return
 
-        wl = np.asarray(self.modest_wavelength, dtype=np.float64) if self.modest_wavelength is not None else np.arange(arr.shape[2], dtype=np.float64)
+        if self.modest_wavelength is None:
+            raise ValueError(
+                "MODEST wavelength metadata is required and must be set during prepare_snapshot(). "
+                "Cannot use hardcoded defaults."
+            )
+        
+        wl = np.asarray(self.modest_wavelength, dtype=np.float64)
         if wl.ndim != 1 or wl.size != arr.shape[2]:
-            wl = np.arange(arr.shape[2], dtype=np.float64)
+            raise ValueError(
+                f"MODEST wavelength shape mismatch: expected (n_wavelengths={arr.shape[2]},), got {wl.shape}. "
+                "Ensure wavelength arrays are properly extracted from MODEST metadata."
+            )
 
         I_norm = arr[:, 0, :]
         V_norm = arr[:, 1, :]
