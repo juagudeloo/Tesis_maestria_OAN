@@ -13,6 +13,7 @@ EXPERIMENT_ROOT="experiment_81_to_181-bz_balance__region_mask_"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest
+DISTRIBUTION_TARGET="both"              # stokes | mhd | both (distributions mode)
 
 # MURaM analysis args
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
@@ -36,10 +37,11 @@ TEMP_CALIBRATION_CLIP_QUANTILES=""      # e.g. "0.01 0.99" — leave empty to di
 
 usage() {
   cat <<'EOF'
-Usage: tools/generate_analysis.sh [options]
+Usage: tools/generate_analysis.sh [distributions] [options]
 
 Options:
   --run both|muram|modest   Select analyses to run (default: both)
+  --distribution-target stokes|mhd|both  distributions mode selector (default: both)
   --step-to-plot STEP         MURaM: simulation step to plot (default: 198)
   --cropped-region 0|1      MODEST only: enable/disable cropped-region output (default: 0)
   --polarization-mask 0|1   MODEST only: enable/disable polarization mask (default: 0)
@@ -56,6 +58,17 @@ Options:
 EOF
 }
 
+if [[ $# -gt 0 && "${1}" != --* ]]; then
+  if [[ "${1}" == "distributions" ]]; then
+    RUN_TARGET="distributions"
+    shift
+  else
+    echo "Unknown positional mode: ${1} (supported: distributions)" >&2
+    usage
+    exit 1
+  fi
+fi
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --run)
@@ -64,6 +77,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --step-to-plot)
       STEP_TO_PLOT="${2:-}"
+      shift 2
+      ;;
+    --distribution-target)
+      DISTRIBUTION_TARGET="${2:-}"
       shift 2
       ;;
     --cropped-region)
@@ -123,9 +140,17 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "${RUN_TARGET}" in
-  both|muram|modest) ;;
+  both|muram|modest|distributions) ;;
   *)
     echo "Invalid value for --run: ${RUN_TARGET} (use: both|muram|modest)" >&2
+    exit 1
+    ;;
+esac
+
+case "${DISTRIBUTION_TARGET}" in
+  stokes|mhd|both) ;;
+  *)
+    echo "Invalid value for --distribution-target: ${DISTRIBUTION_TARGET} (use: stokes|mhd|both)" >&2
     exit 1
     ;;
 esac
@@ -229,4 +254,18 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
     ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
     ${CLEAR_MODEST_CACHE_FLAG} \
     ${TEMP_CALIBRATION_FLAGS}
+fi
+
+if [[ "${RUN_TARGET}" == "distributions" ]]; then
+  python3 ./scripts/analysis/distributions_analysis.py \
+    ${CROPPED_REGION_FLAG} \
+    --crop-bounds "${CROP_BOUNDS[@]}" \
+    ${POLARIZATION_MASK_FLAG} \
+    --polarization-threshold "${POLARIZATION_THRESHOLD}" \
+    --crop-label "${CROP_LABEL}" \
+    --experiment-root "${EXPERIMENT_ROOT}" \
+    --distribution-target "${DISTRIBUTION_TARGET}" \
+    --modest-cache-dir "${MODEST_CACHE_DIR}" \
+    ${DOWNSAMPLE_PREDICTION_INPUT_FLAG} \
+    ${CLEAR_MODEST_CACHE_FLAG}
 fi

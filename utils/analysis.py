@@ -922,21 +922,15 @@ class ModestDiagnosticPlots:
                 [self.modest_data["spinor_atm"]["Blos"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
             ).astype(np.float32),
         }
+        # MODEST Stokes profiles are already continuum-normalized in the loader path.
+        # Keep them as-is here and only apply the standard Stokes normalizer expected by the model.
         prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
         self.modest_wavelength = np.asarray(
             self.modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1])),
             dtype=np.float64,
         )
         self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
-        cont_indices = [0, 1, 2, 3]
-        I_c_modest = float(np.nanmean(prediction_stokes["I"][:, :, cont_indices]))
-        if np.isfinite(I_c_modest) and I_c_modest > 10.0:
-            print(f"MODEST continuum appears unnormalized (I_c={I_c_modest:.6e}); applying I/I_c scaling.")
-            stokes_for_norm = {k: v / I_c_modest for k, v in prediction_stokes.items()}
-        else:
-            print(f"MODEST continuum appears already normalized (I_c={I_c_modest:.6e}); skipping extra I/I_c scaling.")
-            stokes_for_norm = prediction_stokes
-        norm_stokes = self.stokes_normalizer.transform(stokes_for_norm)
+        norm_stokes = self.stokes_normalizer.transform(prediction_stokes)
         I_flat = norm_stokes["I"].reshape(self.pred_nx * self.pred_ny, -1)
         V_flat = norm_stokes["V"].reshape(self.pred_nx * self.pred_ny, -1)
         self.modest_stokes_input = np.stack([I_flat, V_flat], axis=1).astype(np.float32)

@@ -14,9 +14,20 @@ from scripts.base_training import TrainingConfig
 
 PLAGE_CROP_BOUNDS = (0,100,400, 600)  # X_MIN, X_MAX, Y_MIN, Y_MAX
 
+
+# -----------------------------------------------------------------------------
+# Main MODEST analysis flow
+# - selects cropped or whole-region output layout
+# - loads trained models and MODEST observations
+# - prepares model inputs from MODEST data
+# - writes region diagnostics, joint plots, and Stokes summaries
+# -----------------------------------------------------------------------------
 def main(args):
+    # Pick GPU when available; otherwise fall back to CPU.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     modest_base_dir = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/modest")
+
+    # Choose where MODEST diagnostics should be written based on the crop flag.
     if args.cropped_region:
         crop_label = args.crop_label.strip()
         if not crop_label:
@@ -30,21 +41,26 @@ def main(args):
         output_dir=modest_output_dir,
         experiment_root=args.experiment_root,
     )
+
+    # Load the trained model checkpoints and determine their shared tau grid.
     model_configs, models, n_tau = pipeline.prepare_models(args.model_types)
     print(f"Using device: {device}")
     print(f"Number of log(tau) points: {n_tau}")
     print(f"Prediction input mode: {'downsampled' if args.downsample_prediction_input else 'upsampled'}")
 
+    # Print the selected experiments so it is obvious which checkpoints are being analyzed.
     print("Selected model configs:")
     for _, cfg in model_configs.items():
         print(f"  - {cfg['label']} ({cfg['experiment_key']})")
 
+    # Normalizers are loaded once and reused for every model.
     mhd_normalizer = MhdNormalizer()
     stokes_normalizer = StokesNormalizer()
     default_cfg = TrainingConfig()
-    mhd_normalizer.load(filepath=default_cfg.data_path / default_cfg.mhd_normalizer_path)
-    stokes_normalizer.load(filepath=default_cfg.data_path / default_cfg.stokes_normalizer_path)
+    mhd_normalizer.load(filepath=str(Path(default_cfg.data_path) / default_cfg.mhd_normalizer_path))
+    stokes_normalizer.load(filepath=str(Path(default_cfg.data_path) / default_cfg.stokes_normalizer_path))
 
+    # MODEST loader handles observation ingestion, masking, and wavelength metadata.
     modest = ModestData(
         circular_polarization_threshold=args.polarization_threshold,
         stokes_v_multiplier=args.modest_stokes_v_multiplier,
@@ -55,6 +71,7 @@ def main(args):
         modest_cache.clear(confirm=False)
     modest_cache.print_cache_info()
 
+    # Diagnostic helper does the per-model plotting and metrics writing.
     diagnostics = ModestDiagnosticPlots(
         pipeline=pipeline,
         modest_output_dir=modest_output_dir,
@@ -70,6 +87,7 @@ def main(args):
     print(f"\nFinished analysis for {modest_output_dir}")
 
 if __name__ == "__main__":
+    # CLI arguments mirror the training and data-loading choices used during analysis.
     parser = argparse.ArgumentParser(description="Train PINN MSCNN model")
     parser.add_argument(
         '--cropped-region', 
