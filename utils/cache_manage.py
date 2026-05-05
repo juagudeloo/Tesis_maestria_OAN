@@ -31,6 +31,203 @@ from utils.muram_data import MuramStepDataset
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 
 
+class BalancedTrainDataCache:
+    """Cache manager for post-balancing train-ready tensors.
+
+    This cache stores one file per simulation step containing the final balanced
+    tensors used by training, so balancing logic is not re-run every epoch.
+    """
+
+    def __init__(self, cache_dir: str = ".muram_balanced_cache", compression: str = "lzf"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.compression = compression
+        self.manifest_path = self.cache_dir / "balanced_manifest.json"
+        self.manifest = self._load_manifest()
+
+    def _load_manifest(self) -> dict[str, object]:
+        if self.manifest_path.exists():
+            with open(self.manifest_path, "r") as f:
+                return json.load(f)
+        return {
+            "version": 1,
+            "signature_hash": None,
+            "signature": {},
+            "steps": {},
+            "total_steps": 0,
+            "total_selected": 0,
+            "total_bytes": 0,
+        }
+
+    def _save_manifest(self) -> None:
+        with open(self.manifest_path, "w") as f:
+            json.dump(self.manifest, f, indent=2)
+
+    @staticmethod
+    def make_signature_hash(signature: dict) -> str:
+        payload = json.dumps(signature, sort_keys=True)
+        return hashlib.md5(payload.encode()).hexdigest()[:12]
+
+    def _step_path(self, step: int) -> Path:
+        return self.cache_dir / f"balanced_step_{step:06d}.h5"
+
+    def reset(self, signature: dict, signature_hash: str) -> None:
+        for fp in self.cache_dir.glob("balanced_step_*.h5"):
+            fp.unlink()
+        self.manifest = {
+            "version": 1,
+            "signature_hash": signature_hash,
+            "signature": signature,
+            "steps": {},
+            "total_steps": 0,
+            "total_selected": 0,
+            "total_bytes": 0,
+        }
+        self._save_manifest()
+
+    def clear(self) -> None:
+        """Remove all balanced cache files and reset manifest."""
+        for fp in self.cache_dir.glob("balanced_step_*.h5"):
+            fp.unlink()
+        self.manifest = {
+            "version": 1,
+            "signature_hash": None,
+            "signature": {},
+            "steps": {},
+            "total_steps": 0,
+            "total_selected": 0,
+            "total_bytes": 0,
+        }
+        self._save_manifest()
+
+    def ensure_signature(self, signature: dict, signature_hash: str) -> bool:
+        """Return True if the manifest matches this signature hash."""
+        current_hash = self.manifest.get("signature_hash")
+        if current_hash is None:
+            self.manifest["signature_hash"] = signature_hash
+            self.manifest["signature"] = signature
+            self._save_manifest()
+            return True
+        return current_hash == signature_hash
+
+    def has_step(self, step: int, signature_hash: str) -> bool:
+        if self.manifest.get("signature_hash") != signature_hash:
+            return False
+        entry = self.manifest.get("steps", {}).get(str(step))
+        if not isinstance(entry, dict):
+            return False
+        path = self._step_path(step)
+        if not path.exists():
+            return False
+        return bool(entry.get("valid", False))
+
+    def save_step(
+        self,
+        step: int,
+        signature_hash: str,
+        stokes_input: np.ndarray,
+        mhd_targets: np.ndarray,
+        spatial_indices: np.ndarray,
+        approx_data: dict[str, np.ndarray],
+        extra_metadata: dict[str, object] | None = None,
+    ) -> Path:
+        if self.manifest.get("signature_hash") != signature_hash:
+            raise ValueError("Balanced cache signature mismatch. Reset cache before saving.")
+
+        path = self._step_path(step)
+        with h5py.File(path, "w") as f:
+            ds = f.create_group("dataset")
+            ds.create_dataset(
+                "stokes_input",
+                data=np.asarray(stokes_input, dtype=np.float32),
+                compression=self.compression,
+            )
+            ds.create_dataset(
+                "mhd_targets",
+                data=np.asarray(mhd_targets, dtype=np.float32),
+                compression=self.compression,
+            )
+            ds.create_dataset(
+                "spatial_indices",
+                data=np.asarray(spatial_indices, dtype=np.int64),
+                compression=self.compression,
+            )
+
+            ap = f.create_group("approximations")
+            for key in ("blos", "vlos", "temp"):
+                if key not in approx_data:
+                    raise KeyError(f"Missing approximation key '{key}' for balanced cache step {step}")
+                ap.create_dataset(
+                    key,
+                    data=np.asarray(approx_data[key], dtype=np.float32),
+                    compression=self.compression,
+                )
+
+            f.attrs["step"] = int(step)
+            f.attrs["signature_hash"] = str(signature_hash)
+
+        entry = {
+            "file": path.name,
+            "selected": int(stokes_input.shape[0]),
+            "bytes": int(path.stat().st_size),
+            "valid": True,
+        }
+        if extra_metadata:
+            entry["metadata"] = extra_metadata
+
+        steps = self.manifest.setdefault("steps", {})
+        steps[str(step)] = entry
+
+        self.manifest["total_steps"] = int(len(steps))
+        self.manifest["total_selected"] = int(sum(int(v.get("selected", 0)) for v in steps.values()))
+        self.manifest["total_bytes"] = int(sum(int(v.get("bytes", 0)) for v in steps.values()))
+        self._save_manifest()
+        return path
+
+    def load_step(
+        self,
+        step: int,
+        signature_hash: str,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+        if not self.has_step(step, signature_hash):
+            raise FileNotFoundError(f"Balanced cache miss for step {step}")
+
+        path = self._step_path(step)
+        with h5py.File(path, "r") as f:
+            stokes_input = np.asarray(f["dataset"]["stokes_input"][:], dtype=np.float32)
+            mhd_targets = np.asarray(f["dataset"]["mhd_targets"][:], dtype=np.float32)
+            spatial_indices = np.asarray(f["dataset"]["spatial_indices"][:], dtype=np.int64)
+            approx_data = {
+                "blos": np.asarray(f["approximations"]["blos"][:], dtype=np.float32),
+                "vlos": np.asarray(f["approximations"]["vlos"][:], dtype=np.float32),
+                "temp": np.asarray(f["approximations"]["temp"][:], dtype=np.float32),
+            }
+        return stokes_input, mhd_targets, spatial_indices, approx_data
+
+    def get_stats(self) -> dict[str, object]:
+        return {
+            "cache_dir": str(self.cache_dir),
+            "signature_hash": self.manifest.get("signature_hash"),
+            "total_steps": int(self.manifest.get("total_steps", 0)),
+            "total_selected": int(self.manifest.get("total_selected", 0)),
+            "total_bytes": int(self.manifest.get("total_bytes", 0)),
+            "total_size_mb": float(self.manifest.get("total_bytes", 0)) / (1024**2),
+            "steps": self.manifest.get("steps", {}),
+        }
+
+    def print_cache_info(self) -> None:
+        stats = self.get_stats()
+        print("\n" + "=" * 80)
+        print("BALANCED TRAIN CACHE STATISTICS".center(80))
+        print("=" * 80)
+        print(f"Cache directory:      {stats['cache_dir']}")
+        print(f"Signature hash:       {stats['signature_hash']}")
+        print(f"Steps cached:         {stats['total_steps']}")
+        print(f"Selected samples:     {stats['total_selected']}")
+        print(f"Total size:           {stats['total_size_mb']:.1f} MB")
+        print("=" * 80 + "\n")
+
+
 class MuramDataCache:
     """
     Cache manager for processed MURaM data using HDF5 format.

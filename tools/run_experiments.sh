@@ -29,10 +29,10 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # ==============================================================================
 
 # Data range
-MIN_STEP=60
-MAX_STEP=190
-STEP_SIZE=10
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-bz_balance_${APPLY_BZ_BIN_BALANCE}_region_mask_${APPLY_REGION_MASK}-all_steps"
+MIN_STEP=81
+MAX_STEP=181
+STEP_SIZE=5
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-step_size_${STEP_SIZE}-no_stokes_mult_factor"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
@@ -74,11 +74,20 @@ WFA_GATE_WARMUP_EPOCHS=0
 STOKES_IC_MODE='fixed_global'   # 'per_step' or 'fixed_global'
 
 # Scalar multiplier applied after continuum normalization
-STOKES_MULT_FACTOR=0.25
+STOKES_MULT_FACTOR=1
 
 # Shared cache (same path used by normalization script)
 CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
+
+# Balanced post-bz cache (final balanced tensors reused across epochs)
+BALANCED_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+export MURAM_BALANCED_CACHE_DIR="${BALANCED_CACHE_DIR}"
+ENABLE_BALANCED_CACHE=1
+BALANCED_CACHE_STRATEGY='auto'   # auto, preload, or disk
+BALANCED_CACHE_RAM_BUDGET_GB=32
+BALANCED_CACHE_RAM_FRACTION=0.75
+CLEAR_BALANCED_CACHE=0
 
 # MODEST epoch diagnostics (ablation study)
 ENABLE_MODEST_EPOCH_PLOTS=1
@@ -135,6 +144,12 @@ python3 ./scripts/experiments/ablation_study.py \
     --stokes_ic_mode "${STOKES_IC_MODE}" \
     --stokes-mult-factor "${STOKES_MULT_FACTOR}" \
     --cache-dir "${CACHE_DIR}" \
+    $( [[ "${ENABLE_BALANCED_CACHE}" == "1" ]] && echo "--balanced-cache" ) \
+    --balanced-cache-dir "${BALANCED_CACHE_DIR}" \
+    --balanced-cache-strategy "${BALANCED_CACHE_STRATEGY}" \
+    --balanced-cache-ram-budget-gb "${BALANCED_CACHE_RAM_BUDGET_GB}" \
+    --balanced-cache-ram-fraction "${BALANCED_CACHE_RAM_FRACTION}" \
+    $( [[ "${CLEAR_BALANCED_CACHE}" == "1" ]] && echo "--clear-balanced-cache" ) \
     --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
     --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \
     --lambda_temp "${LAMBDA_TEMP_VALUES[@]}" \

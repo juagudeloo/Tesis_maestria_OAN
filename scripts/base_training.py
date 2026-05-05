@@ -46,7 +46,7 @@ from utils.muram_data import (
 )
 from utils.modest_data import ModestData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
-from utils.cache_manage import MuramDataCache, ModestDataCache
+from utils.cache_manage import MuramDataCache, ModestDataCache, BalancedTrainDataCache
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
 from utils.physics_utils import ApproxInversions
 
@@ -143,6 +143,14 @@ class TrainingConfig:
     use_cache: bool = True
     cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
 
+    # Post-balancing cache (stores final train-ready tensors)
+    use_balanced_cache: bool = False
+    balanced_cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+    clear_balanced_cache: bool = False
+    balanced_cache_strategy: str = "auto"  # 'auto', 'preload', or 'disk'
+    balanced_cache_ram_budget_gb: float = 32.0
+    balanced_cache_ram_fraction: float = 0.75
+
     # Region-mask balancing (training only)
     apply_region_mask: bool = True
     log_region_mask_stats: bool = True
@@ -229,6 +237,25 @@ class TrainingConfig:
         if (not self.cache_dir or self.cache_dir == default_cache) and os.environ.get("MURAM_CACHE_DIR"):
             self.cache_dir = os.environ["MURAM_CACHE_DIR"]
         self.cache_dir = str(Path(self.cache_dir).expanduser().resolve())
+
+        default_balanced_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+        if (not self.balanced_cache_dir or self.balanced_cache_dir == default_balanced_cache) and os.environ.get("MURAM_BALANCED_CACHE_DIR"):
+            self.balanced_cache_dir = os.environ["MURAM_BALANCED_CACHE_DIR"]
+        self.balanced_cache_dir = str(Path(self.balanced_cache_dir).expanduser().resolve())
+
+        valid_balanced_cache_strategies = {"auto", "preload", "disk"}
+        self.balanced_cache_strategy = str(self.balanced_cache_strategy).lower()
+        if self.balanced_cache_strategy not in valid_balanced_cache_strategies:
+            raise ValueError(
+                "balanced_cache_strategy must be one of "
+                f"{sorted(valid_balanced_cache_strategies)}, got {self.balanced_cache_strategy!r}"
+            )
+        self.balanced_cache_ram_budget_gb = float(self.balanced_cache_ram_budget_gb)
+        if self.balanced_cache_ram_budget_gb <= 0:
+            raise ValueError("balanced_cache_ram_budget_gb must be > 0")
+        self.balanced_cache_ram_fraction = float(self.balanced_cache_ram_fraction)
+        if self.balanced_cache_ram_fraction <= 0 or self.balanced_cache_ram_fraction > 1:
+            raise ValueError("balanced_cache_ram_fraction must be in (0, 1]")
 
         default_modest_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
         if (not self.modest_cache_dir or self.modest_cache_dir == default_modest_cache) and os.environ.get("MODEST_CACHE_DIR"):
@@ -407,6 +434,190 @@ def build_cache_config_signature(config: TrainingConfig) -> dict:
         'stokes_fixed_ic': None if config.stokes_fixed_ic is None else float(config.stokes_fixed_ic),
         'stokes_mult_factor': float(config.stokes_mult_factor),
     }
+
+
+def build_balanced_cache_signature(config: TrainingConfig, train_steps: list[int]) -> dict:
+    """Signature for post-balancing cache validity."""
+    return {
+        "version": 1,
+        "steps": [int(s) for s in sorted(train_steps)],
+        "apply_region_mask": bool(config.apply_region_mask),
+        "apply_bz_bin_balance": bool(config.apply_bz_bin_balance),
+        "bz_balance_scope": str(config.bz_balance_scope),
+        "bz_balance_mode": str(config.bz_balance_mode),
+        "bz_balance_bins": int(config.bz_balance_bins),
+        "bz_balance_tau_idx": None if config.bz_balance_tau_idx is None else int(config.bz_balance_tau_idx),
+        "bz_balance_seed": int(config.bz_balance_seed),
+        "logtau_values": [float(x) for x in config.get_logtau_values().tolist()],
+        "stokes_cont_indices": [int(x) for x in (config.stokes_cont_indices or [0, 1, 2, 3])],
+        "stokes_ic_mode": str(config.stokes_ic_mode),
+        "stokes_fixed_ic": None if config.stokes_fixed_ic is None else float(config.stokes_fixed_ic),
+        "stokes_mult_factor": float(config.stokes_mult_factor),
+    }
+
+
+def estimate_balanced_cache_sample_bytes(dataset: MuramStepDataset) -> int:
+    """Estimate in-memory bytes needed to preload one balanced sample set."""
+    return (
+        int(dataset.stokes_input.nbytes)
+        + int(dataset.mhd_targets.nbytes)
+        + int(dataset.spatial_indices.nbytes)
+    )
+
+
+class BalancedStepTensorDataset(Dataset):
+    """Dataset wrapping cached balanced tensors (already normalized)."""
+
+    def __init__(self, stokes_input: np.ndarray, mhd_targets: np.ndarray, spatial_indices: np.ndarray):
+        if stokes_input.ndim != 3:
+            raise ValueError(f"Expected stokes_input as 3D array, got shape {stokes_input.shape}")
+        if mhd_targets.ndim != 2:
+            raise ValueError(f"Expected mhd_targets as 2D array, got shape {mhd_targets.shape}")
+        if spatial_indices.ndim != 2 or spatial_indices.shape[1] != 2:
+            raise ValueError(f"Expected spatial_indices as (N,2), got shape {spatial_indices.shape}")
+        n = int(stokes_input.shape[0])
+        if int(mhd_targets.shape[0]) != n or int(spatial_indices.shape[0]) != n:
+            raise ValueError("Balanced tensors have inconsistent sample dimension")
+
+        self.stokes_input = np.asarray(stokes_input, dtype=np.float32)
+        self.mhd_targets = np.asarray(mhd_targets, dtype=np.float32)
+        self.spatial_indices = np.asarray(spatial_indices, dtype=np.int64)
+
+    def __len__(self):
+        return int(self.stokes_input.shape[0])
+
+    def __getitem__(self, idx):
+        return (
+            torch.from_numpy(self.stokes_input[idx]).float(),
+            torch.from_numpy(self.mhd_targets[idx]).float(),
+            torch.from_numpy(self.spatial_indices[idx]).long(),
+        )
+
+
+def build_or_refresh_balanced_cache(
+    train_steps: list[int],
+    config: TrainingConfig,
+    mhd_normalizer: MhdNormalizer,
+    stokes_normalizer: StokesNormalizer,
+    raw_cache: MuramDataCache | None,
+    global_bz_selection_indices: dict[int, np.ndarray] | None,
+    global_bz_balance_metadata: dict[str, Any] | None,
+) -> tuple[BalancedTrainDataCache, str, dict[str, Any]]:
+    """Build balanced-cache entries for all train steps if needed.
+
+    Returns cache object, signature hash, and summary report.
+    """
+    balanced_cache = BalancedTrainDataCache(cache_dir=config.balanced_cache_dir, compression="lzf")
+    signature = build_balanced_cache_signature(config=config, train_steps=train_steps)
+    signature_hash = BalancedTrainDataCache.make_signature_hash(signature)
+
+    if config.clear_balanced_cache:
+        balanced_cache.reset(signature=signature, signature_hash=signature_hash)
+
+    if not balanced_cache.ensure_signature(signature=signature, signature_hash=signature_hash):
+        print("Balanced cache signature mismatch detected; rebuilding balanced cache.")
+        balanced_cache.reset(signature=signature, signature_hash=signature_hash)
+
+    built_steps = 0
+    reused_steps = 0
+    skipped_steps = 0
+    preload_bytes = 0
+
+    for step in tqdm(train_steps, desc="Build balanced cache"):
+        if balanced_cache.has_step(step=step, signature_hash=signature_hash):
+            reused_steps += 1
+            step_entry = balanced_cache.manifest.get("steps", {}).get(str(step), {})
+            preload_bytes += int(step_entry.get("metadata", {}).get("preload_bytes", 0))
+            continue
+
+        result = load_and_prepare_step(
+            step=step,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            cache=raw_cache,
+            apply_balanced_masks=config.apply_region_mask,
+            log_region_stats=False,
+            apply_bz_balance=(config.apply_bz_bin_balance and config.bz_balance_scope == "per_step"),
+            global_bz_selection_indices=global_bz_selection_indices,
+            global_bz_balance_metadata=global_bz_balance_metadata,
+            ignore_missing_files=True,
+        )
+        if result is None:
+            skipped_steps += 1
+            continue
+
+        dataset, approx_data = result
+        step_preload_bytes = estimate_balanced_cache_sample_bytes(dataset)
+        preload_bytes += step_preload_bytes
+
+        balanced_cache.save_step(
+            step=step,
+            signature_hash=signature_hash,
+            stokes_input=dataset.stokes_input,
+            mhd_targets=dataset.mhd_targets,
+            spatial_indices=dataset.spatial_indices,
+            approx_data=approx_data,
+            extra_metadata={
+                "preload_bytes": int(step_preload_bytes),
+                "n_selected": int(len(dataset)),
+            },
+        )
+        built_steps += 1
+
+    stats = balanced_cache.get_stats()
+    report = {
+        "signature_hash": signature_hash,
+        "built_steps": int(built_steps),
+        "reused_steps": int(reused_steps),
+        "skipped_steps": int(skipped_steps),
+        "total_steps_cached": int(stats.get("total_steps", 0)),
+        "total_selected": int(stats.get("total_selected", 0)),
+        "total_disk_bytes": int(stats.get("total_bytes", 0)),
+        "total_disk_mb": float(stats.get("total_size_mb", 0.0)),
+        "single_file_estimated_mb": float(stats.get("total_size_mb", 0.0)),
+        "multi_file_recommended": True,
+        "estimated_preload_bytes": int(preload_bytes),
+        "estimated_preload_gb": float(preload_bytes) / (1024**3),
+    }
+    return balanced_cache, signature_hash, report
+
+
+def choose_balanced_cache_runtime_mode(config: TrainingConfig, estimated_preload_bytes: int) -> str:
+    """Select runtime mode for balanced cache: preload or disk."""
+    requested = str(config.balanced_cache_strategy).lower()
+    if requested in {"preload", "disk"}:
+        return requested
+
+    allowed_bytes = int(config.balanced_cache_ram_budget_gb * config.balanced_cache_ram_fraction * (1024**3))
+    if estimated_preload_bytes <= allowed_bytes:
+        return "preload"
+    return "disk"
+
+
+def preload_balanced_steps_from_cache(
+    train_steps: list[int],
+    balanced_cache: BalancedTrainDataCache,
+    signature_hash: str,
+) -> dict[int, tuple[BalancedStepTensorDataset, dict[str, np.ndarray]]]:
+    """Load all cached balanced steps into RAM once."""
+    loaded: dict[int, tuple[BalancedStepTensorDataset, dict[str, np.ndarray]]] = {}
+    for step in tqdm(train_steps, desc="Preload balanced cache"):
+        if not balanced_cache.has_step(step=step, signature_hash=signature_hash):
+            continue
+        stokes_input, mhd_targets, spatial_indices, approx_data = balanced_cache.load_step(
+            step=step,
+            signature_hash=signature_hash,
+        )
+        loaded[step] = (
+            BalancedStepTensorDataset(
+                stokes_input=stokes_input,
+                mhd_targets=mhd_targets,
+                spatial_indices=spatial_indices,
+            ),
+            approx_data,
+        )
+    return loaded
 
 
 def initialize_wfa_gate_state(config: TrainingConfig) -> dict[str, Any]:
@@ -1303,6 +1514,9 @@ def train_epoch(
     enable_wfa: bool = True,
     global_bz_selection_indices: dict[int, np.ndarray] | None = None,
     global_bz_balance_metadata: dict[str, Any] | None = None,
+    balanced_cache: BalancedTrainDataCache | None = None,
+    balanced_cache_signature_hash: str | None = None,
+    preloaded_balanced_steps: dict[int, tuple[BalancedStepTensorDataset, dict[str, np.ndarray]]] | None = None,
 ) -> dict[str, float]:
     """
     Train for one epoch across multiple simulation steps.
@@ -1361,25 +1575,41 @@ def train_epoch(
     
     for step in step_pbar:
         try:
-            # Load and prepare step (uses cache if available)
-            result = load_and_prepare_step(
-                step=step,
-                config=config,
-                mhd_normalizer=mhd_normalizer,
-                stokes_normalizer=stokes_normalizer,
-                cache=cache,
-                apply_balanced_masks=config.apply_region_mask,
-                log_region_stats=(config.apply_region_mask and config.log_region_mask_stats),
-                apply_bz_balance=(config.apply_bz_bin_balance and config.bz_balance_scope == "per_step"),
-                global_bz_selection_indices=global_bz_selection_indices,
-                global_bz_balance_metadata=global_bz_balance_metadata,
-                ignore_missing_files=True,
-            )
+            if preloaded_balanced_steps is not None:
+                preloaded = preloaded_balanced_steps.get(step)
+                if preloaded is None:
+                    continue
+                dataset, approx_data = preloaded
+            elif balanced_cache is not None and balanced_cache_signature_hash is not None:
+                stokes_input, mhd_targets, spatial_indices, approx_data = balanced_cache.load_step(
+                    step=step,
+                    signature_hash=balanced_cache_signature_hash,
+                )
+                dataset = BalancedStepTensorDataset(
+                    stokes_input=stokes_input,
+                    mhd_targets=mhd_targets,
+                    spatial_indices=spatial_indices,
+                )
+            else:
+                # Load and prepare step (uses raw cache if available)
+                result = load_and_prepare_step(
+                    step=step,
+                    config=config,
+                    mhd_normalizer=mhd_normalizer,
+                    stokes_normalizer=stokes_normalizer,
+                    cache=cache,
+                    apply_balanced_masks=config.apply_region_mask,
+                    log_region_stats=(config.apply_region_mask and config.log_region_mask_stats),
+                    apply_bz_balance=(config.apply_bz_bin_balance and config.bz_balance_scope == "per_step"),
+                    global_bz_selection_indices=global_bz_selection_indices,
+                    global_bz_balance_metadata=global_bz_balance_metadata,
+                    ignore_missing_files=True,
+                )
 
-            if result is None:
-                continue
+                if result is None:
+                    continue
 
-            dataset, approx_data = result
+                dataset, approx_data = result
             
             # Create dataloader
             dataloader = DataLoader(
@@ -2314,6 +2544,14 @@ def train_pinn_model(config: TrainingConfig):
     print(f"Use cache: {config.use_cache}")
     if config.use_cache:
         print(f"Cache dir: {config.cache_dir}")
+    print(f"Use balanced cache: {config.use_balanced_cache}")
+    if config.use_balanced_cache:
+        print(f"Balanced cache dir: {config.balanced_cache_dir}")
+        print(f"Balanced cache strategy: {config.balanced_cache_strategy}")
+        print(
+            "Balanced cache RAM budget: "
+            f"{config.balanced_cache_ram_budget_gb:.1f} GB x {config.balanced_cache_ram_fraction:.2f}"
+        )
     print(f"Learning rate: {config.learning_rate}")
     print(f"Lambda WFA: {config.lambda_wfa}")
     print(f"Lambda Doppler: {config.lambda_doppler}")
@@ -2469,6 +2707,51 @@ def train_pinn_model(config: TrainingConfig):
             json.dump(global_bz_balance_metadata, f, indent=2)
         print(f"Global Bz balance metadata saved to: {global_meta_path}")
 
+    balanced_cache = None
+    balanced_cache_signature_hash = None
+    balanced_cache_report = None
+    balanced_runtime_mode = None
+    preloaded_balanced_steps = None
+    if config.use_balanced_cache:
+        print("\nPreparing balanced training cache...")
+        balanced_cache, balanced_cache_signature_hash, balanced_cache_report = build_or_refresh_balanced_cache(
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            raw_cache=cache,
+            global_bz_selection_indices=global_bz_selection_indices,
+            global_bz_balance_metadata=global_bz_balance_metadata,
+        )
+        balanced_runtime_mode = choose_balanced_cache_runtime_mode(
+            config=config,
+            estimated_preload_bytes=int(balanced_cache_report["estimated_preload_bytes"]),
+        )
+        balanced_cache_report["runtime_mode"] = balanced_runtime_mode
+        balanced_cache_report["ram_budget_gb"] = float(config.balanced_cache_ram_budget_gb)
+        balanced_cache_report["ram_fraction"] = float(config.balanced_cache_ram_fraction)
+
+        balanced_report_path = config.log_dir / "balanced_cache_report.json"
+        with open(balanced_report_path, "w") as f:
+            json.dump(balanced_cache_report, f, indent=2)
+        print(f"Balanced cache report saved to: {balanced_report_path}")
+        print(
+            "Balanced cache summary: "
+            f"steps={balanced_cache_report['total_steps_cached']}, "
+            f"selected={balanced_cache_report['total_selected']}, "
+            f"disk={balanced_cache_report['total_disk_mb']:.1f} MB, "
+            f"preload_est={balanced_cache_report['estimated_preload_gb']:.2f} GB, "
+            f"mode={balanced_runtime_mode}"
+        )
+
+        if balanced_runtime_mode == "preload":
+            preloaded_balanced_steps = preload_balanced_steps_from_cache(
+                train_steps=train_steps,
+                balanced_cache=balanced_cache,
+                signature_hash=balanced_cache_signature_hash,
+            )
+            print(f"Preloaded balanced steps: {len(preloaded_balanced_steps)}/{len(train_steps)}")
+
     modest_snapshot = None
     if config.enable_modest_epoch_plots:
         print("\nPreparing MODEST snapshot for per-epoch diagnostics...")
@@ -2505,6 +2788,9 @@ def train_pinn_model(config: TrainingConfig):
             enable_wfa=train_wfa_enabled,
             global_bz_selection_indices=global_bz_selection_indices,
             global_bz_balance_metadata=global_bz_balance_metadata,
+            balanced_cache=balanced_cache if balanced_runtime_mode == "disk" else None,
+            balanced_cache_signature_hash=balanced_cache_signature_hash if balanced_runtime_mode == "disk" else None,
+            preloaded_balanced_steps=preloaded_balanced_steps,
         )
         
         avg_train_loss = epoch_metrics['total_loss']
@@ -2619,6 +2905,14 @@ def train_pinn_model(config: TrainingConfig):
             if config.apply_bz_bin_balance and config.bz_balance_scope == "global"
             else None,
         },
+        "balanced_cache": {
+            "enabled": bool(config.use_balanced_cache),
+            "dir": str(config.balanced_cache_dir),
+            "strategy": str(config.balanced_cache_strategy),
+            "runtime_mode": None if balanced_runtime_mode is None else str(balanced_runtime_mode),
+            "signature_hash": balanced_cache_signature_hash,
+            "report_file": str(config.log_dir / "balanced_cache_report.json") if config.use_balanced_cache else None,
+        },
     }
     metadata_path = config.log_dir / "training_metadata.json"
     with open(metadata_path, "w") as f:
@@ -2697,6 +2991,25 @@ def main():
                        help='Directory for cached data (or set MURAM_CACHE_DIR)')
     parser.add_argument('--clear-cache', action='store_true',
                        help='Clear cache before training')
+    parser.add_argument('--balanced-cache', '--balanced_cache', dest='use_balanced_cache', action='store_true',
+                       help='Enable post-balancing train-data cache')
+    parser.add_argument('--balanced-cache-dir', '--balanced_cache_dir', dest='balanced_cache_dir', type=str,
+                       default=os.environ.get(
+                           "MURAM_BALANCED_CACHE_DIR",
+                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache",
+                       ),
+                       help='Directory for balanced training cache')
+    parser.add_argument('--clear-balanced-cache', '--clear_balanced_cache', dest='clear_balanced_cache', action='store_true',
+                       help='Clear balanced training cache before training')
+    parser.add_argument('--balanced-cache-strategy', '--balanced_cache_strategy', dest='balanced_cache_strategy',
+                       type=str, choices=['auto', 'preload', 'disk'], default='auto',
+                       help='Balanced cache runtime strategy')
+    parser.add_argument('--balanced-cache-ram-budget-gb', '--balanced_cache_ram_budget_gb',
+                       dest='balanced_cache_ram_budget_gb', type=float, default=32.0,
+                       help='RAM budget in GB used to decide balanced-cache preload feasibility')
+    parser.add_argument('--balanced-cache-ram-fraction', '--balanced_cache_ram_fraction',
+                       dest='balanced_cache_ram_fraction', type=float, default=0.75,
+                       help='Fraction of RAM budget allowed for balanced-cache preload')
     
     # Epoch diagnostics CLI
     parser.add_argument('--no-epoch-plots', '--no_epoch_plots', dest='no_epoch_plots', action='store_true',
@@ -2859,6 +3172,12 @@ def main():
     # Apply cache CLI overrides
     config.use_cache = not args.no_cache
     config.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
+    config.use_balanced_cache = args.use_balanced_cache
+    config.balanced_cache_dir = str(Path(args.balanced_cache_dir).expanduser().resolve())
+    config.clear_balanced_cache = args.clear_balanced_cache
+    config.balanced_cache_strategy = args.balanced_cache_strategy
+    config.balanced_cache_ram_budget_gb = args.balanced_cache_ram_budget_gb
+    config.balanced_cache_ram_fraction = args.balanced_cache_ram_fraction
 
     # Apply epoch diagnostics CLI overrides
     config.enable_epoch_plots = not args.no_epoch_plots
@@ -2907,6 +3226,10 @@ def main():
         cache = MuramDataCache(cache_dir=config.cache_dir)
         cache.clear(step=None, confirm=False)
         print("✓ Cache cleared\n")
+    if args.clear_balanced_cache and config.use_balanced_cache:
+        balanced_cache = BalancedTrainDataCache(cache_dir=config.balanced_cache_dir)
+        balanced_cache.clear()
+        print("✓ Balanced cache cleared\n")
     
     # Apply optical-depth CLI overrides (RESTORED)
     if args.logtau_values is not None:

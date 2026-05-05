@@ -9,7 +9,7 @@ set -euo pipefail
 # Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
 # Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
 MODEL_TYPES="no_physics wfa_only"
-EXPERIMENT_ROOT="experiment_81_to_181-bz_balance__region_mask_"
+EXPERIMENT_ROOT="experiment_81_to_181-step_size_5-no_stokes_mult_factor"
 
 # Runtime control
 RUN_TARGET="both"                       # both | muram | modest
@@ -21,10 +21,17 @@ STEP_TO_PLOT="198"
 
 # MODEST analysis args
 CROPPED_REGION="0"                      # 1 => --cropped-region
-CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
+#sunspot
+CROP_BOUNDS=(100 300 250 450)             # X_MIN X_MAX Y_MIN Y_MAX
+CROP_LABEL="sunspot"                      # label for cropped region (used in plot titles and output paths)
+#plage
+#CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
+#CROP_LABEL="plage"                      # label for cropped region (used in plot titles and output paths)
+#quiet sun
+#CROP_BOUNDS=(0 100 600 700)             # X_MIN X_MAX Y_MIN Y_MAX
+#CROP_LABEL="quiet_sun"                      # label for cropped region (used in plot titles and output paths)
 POLARIZATION_MASK="0"                   # 1 => --polarization-mask
 POLARIZATION_THRESHOLD="1e-2"
-CROP_LABEL="plage"
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
 CLEAR_MODEST_CACHE="0"                  # 1 => --clear-modest-cache
 DOWNSAMPLE_PREDICTION_INPUT="0"         # 1 => --downsample-prediction-input

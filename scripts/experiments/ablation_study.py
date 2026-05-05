@@ -33,12 +33,14 @@ sys.path.insert(0, str(ROOT))
 
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
-from utils.cache_manage import MuramDataCache
+from utils.cache_manage import MuramDataCache, BalancedTrainDataCache
 from scripts.base_training import (
     TrainingConfig,
     load_and_prepare_step, validate, train_epoch, MetricsLogger,
     initialize_wfa_gate_state, update_wfa_gate_state,
     compute_global_bz_balancing_indices,
+    build_or_refresh_balanced_cache, choose_balanced_cache_runtime_mode,
+    preload_balanced_steps_from_cache,
     generate_epoch_diagnostic_plots, generate_epoch_diagnostic_videos,
     prepare_modest_epoch_snapshot, generate_epoch_modest_diagnostic_plots,
     generate_epoch_modest_diagnostic_videos,
@@ -1487,6 +1489,46 @@ def run_single_experiment(
             json.dump(global_bz_balance_metadata, f, indent=2)
         print(f"Global Bz balance metadata saved to: {global_meta_path}")
 
+    balanced_cache = None
+    balanced_cache_signature_hash = None
+    balanced_runtime_mode = None
+    preloaded_balanced_steps = None
+    if config.use_balanced_cache:
+        balanced_cache, balanced_cache_signature_hash, balanced_cache_report = build_or_refresh_balanced_cache(
+            train_steps=train_steps,
+            config=config,
+            mhd_normalizer=mhd_normalizer,
+            stokes_normalizer=stokes_normalizer,
+            raw_cache=cache,
+            global_bz_selection_indices=global_bz_selection_indices,
+            global_bz_balance_metadata=global_bz_balance_metadata,
+        )
+        balanced_runtime_mode = choose_balanced_cache_runtime_mode(
+            config=config,
+            estimated_preload_bytes=int(balanced_cache_report["estimated_preload_bytes"]),
+        )
+        balanced_cache_report["runtime_mode"] = balanced_runtime_mode
+        balanced_cache_report_path = config.log_dir / "balanced_cache_report.json"
+        with open(balanced_cache_report_path, "w") as f:
+            json.dump(balanced_cache_report, f, indent=2)
+        print(f"Balanced cache report saved to: {balanced_cache_report_path}")
+        print(
+            "Balanced cache summary: "
+            f"steps={balanced_cache_report['total_steps_cached']}, "
+            f"selected={balanced_cache_report['total_selected']}, "
+            f"disk={balanced_cache_report['total_disk_mb']:.1f} MB, "
+            f"preload_est={balanced_cache_report['estimated_preload_gb']:.2f} GB, "
+            f"mode={balanced_runtime_mode}"
+        )
+
+        if balanced_runtime_mode == "preload":
+            preloaded_balanced_steps = preload_balanced_steps_from_cache(
+                train_steps=train_steps,
+                balanced_cache=balanced_cache,
+                signature_hash=balanced_cache_signature_hash,
+            )
+            print(f"Preloaded balanced steps: {len(preloaded_balanced_steps)}/{len(train_steps)}")
+
     if plot_training_data_histograms:
         hist_output_dir = config.checkpoint_dir.parent.parent
         try:
@@ -1580,6 +1622,9 @@ def run_single_experiment(
                 enable_wfa=train_wfa_enabled,
                 global_bz_selection_indices=global_bz_selection_indices,
                 global_bz_balance_metadata=global_bz_balance_metadata,
+                balanced_cache=balanced_cache if balanced_runtime_mode == "disk" else None,
+                balanced_cache_signature_hash=balanced_cache_signature_hash if balanced_runtime_mode == "disk" else None,
+                preloaded_balanced_steps=preloaded_balanced_steps,
             )
             
             # Extract metrics
@@ -1956,6 +2001,25 @@ def main():
                        help='Disable data caching')
     parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=default_cache_dir,
                        help='Directory for cached MURaM data (or set MURAM_CACHE_DIR)')
+    parser.add_argument('--balanced-cache', '--balanced_cache', dest='use_balanced_cache', action='store_true',
+                       help='Enable post-balancing train-data cache')
+    parser.add_argument('--balanced-cache-dir', '--balanced_cache_dir', dest='balanced_cache_dir', type=str,
+                       default=os.environ.get(
+                           'MURAM_BALANCED_CACHE_DIR',
+                           '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache'
+                       ),
+                       help='Directory for balanced training cache')
+    parser.add_argument('--clear-balanced-cache', '--clear_balanced_cache', dest='clear_balanced_cache', action='store_true',
+                       help='Clear balanced training cache before running experiments')
+    parser.add_argument('--balanced-cache-strategy', '--balanced_cache_strategy', dest='balanced_cache_strategy',
+                       type=str, choices=['auto', 'preload', 'disk'], default='auto',
+                       help='Balanced cache runtime strategy')
+    parser.add_argument('--balanced-cache-ram-budget-gb', '--balanced_cache_ram_budget_gb',
+                       dest='balanced_cache_ram_budget_gb', type=float, default=32.0,
+                       help='RAM budget in GB used to decide balanced-cache preload feasibility')
+    parser.add_argument('--balanced-cache-ram-fraction', '--balanced_cache_ram_fraction',
+                       dest='balanced_cache_ram_fraction', type=float, default=0.75,
+                       help='Fraction of RAM budget allowed for balanced-cache preload')
 
     # Region masking toggle (training only)
     mask_group = parser.add_mutually_exclusive_group()
@@ -2150,6 +2214,7 @@ def main():
             )
         args.bz_balance_tau_idx = int(match_idx[0])
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
+    args.balanced_cache_dir = str(Path(args.balanced_cache_dir).expanduser().resolve())
     args.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
     args.lambda_wfa = _normalize_lambda_values(args.lambda_wfa)
     args.lambda_doppler = _normalize_lambda_values(args.lambda_doppler)
@@ -2194,6 +2259,13 @@ def main():
         )
     print(f"Apply region mask:  {args.apply_region_mask}")
     print(f"Apply Bz balance:   {args.apply_bz_bin_balance}")
+    print(f"Use balanced cache: {args.use_balanced_cache}")
+    if args.use_balanced_cache:
+        print(f"Balanced cache dir: {args.balanced_cache_dir}")
+        print(
+            "Balanced cache mode: "
+            f"{args.balanced_cache_strategy} (RAM budget={args.balanced_cache_ram_budget_gb} GB x {args.balanced_cache_ram_fraction})"
+        )
     if args.apply_bz_bin_balance:
         print(
             f"Bz balance scope:   {args.bz_balance_scope}"
@@ -2246,6 +2318,12 @@ def main():
         wfa_gate_patience=args.wfa_gate_patience,
         wfa_gate_min_delta=args.wfa_gate_min_delta,
         wfa_gate_warmup_epochs=args.wfa_gate_warmup_epochs,
+        use_balanced_cache=args.use_balanced_cache,
+        balanced_cache_dir=args.balanced_cache_dir,
+        clear_balanced_cache=args.clear_balanced_cache,
+        balanced_cache_strategy=args.balanced_cache_strategy,
+        balanced_cache_ram_budget_gb=args.balanced_cache_ram_budget_gb,
+        balanced_cache_ram_fraction=args.balanced_cache_ram_fraction,
     )
 
     def _build_cfg(folder_name: str, lambda_wfa: float, lambda_doppler: float, lambda_temp: float) -> TrainingConfig:
@@ -2377,6 +2455,11 @@ def main():
         print(f"Shared MURaM data cache: {args.cache_dir}")
         print("\nInitial Cache Status:")
         cache.print_cache_info()
+
+    if args.clear_balanced_cache and args.use_balanced_cache:
+        balanced_cache = BalancedTrainDataCache(cache_dir=args.balanced_cache_dir)
+        balanced_cache.clear()
+        print(f"Cleared balanced cache: {args.balanced_cache_dir}")
     
     # Run selected experiments with shared cache
     for name in experiments_to_run:
@@ -2387,6 +2470,12 @@ def main():
         config = all_experiment_configs[name]
         config.use_cache = not args.no_cache
         config.cache_dir = args.cache_dir
+        config.use_balanced_cache = args.use_balanced_cache
+        config.balanced_cache_dir = args.balanced_cache_dir
+        config.clear_balanced_cache = False
+        config.balanced_cache_strategy = args.balanced_cache_strategy
+        config.balanced_cache_ram_budget_gb = args.balanced_cache_ram_budget_gb
+        config.balanced_cache_ram_fraction = args.balanced_cache_ram_fraction
         
         results = run_single_experiment(
             experiment_name=name,
