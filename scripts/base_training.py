@@ -107,9 +107,6 @@ class TrainingConfig:
     lambda_wfa: float = 0.01      # WFA term weight
     lambda_doppler: float = 0.01  # Doppler term weight
     lambda_temp: float = 0.01     # Temperature term weight
-    lambda_tail: float = 0.2      # Tail-weighted Huber loss weight (Bz only)
-    tail_alpha: float = 4.0       # Tail weight strength
-    tail_gamma: float = 1.5       # Tail weight sharpness
     wfa_gate_mode: str = "off"  # 'off', 'threshold', or 'plateau'
     wfa_gate_threshold: float = 0.0  # Activate WFA when epoch train MSE <= threshold
     wfa_gate_patience: int = 5  # Plateau epochs before activating WFA
@@ -386,7 +383,7 @@ class MetricsLogger:
         
         # Write headers
         self.epoch_log.write("epoch,train_loss,val_loss,lr\n")
-        self.batch_log.write("epoch,step,batch,loss,mse_loss,tail_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
+        self.batch_log.write("epoch,step,batch,loss,mse_loss,physics_loss,wfa_loss,doppler_loss,temperature_loss\n")
     
     def log_batch(self, epoch: int, step: int, batch: int, loss_dict: dict[str, float]):
         """Log batch-level metrics."""
@@ -394,7 +391,6 @@ class MetricsLogger:
             f"{epoch},{step},{batch},"
             f"{loss_dict.get('total_loss', 0.0)},"
             f"{loss_dict.get('mse_loss', 0.0)},"
-            f"{loss_dict.get('tail_loss', 0.0)},"
             f"{loss_dict.get('physics_loss', 0.0)},"
             f"{loss_dict.get('wfa_loss', 0.0)},"
             f"{loss_dict.get('doppler_loss', 0.0)},"
@@ -1267,7 +1263,6 @@ def train_one_step(
     step_metrics = {
         'total_loss': 0.0,
         'mse_loss': 0.0,
-        'tail_loss': 0.0,
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
@@ -1302,7 +1297,6 @@ def train_one_step(
         
         # Accumulate loss components
         step_metrics['mse_loss'] += loss_dict['mse'].item()
-        step_metrics['tail_loss'] += float(loss_dict.get('tail', 0.0))
         step_metrics['physics_loss'] += loss_dict['physics'].item()
         step_metrics['wfa_loss'] += float(loss_dict.get('wfa', 0.0))
         step_metrics['doppler_loss'] += float(loss_dict.get('doppler', 0.0))
@@ -1561,7 +1555,6 @@ def train_epoch(
     epoch_metrics = {
         'total_loss': 0.0,
         'mse_loss': 0.0,
-        'tail_loss': 0.0,
         'physics_loss': 0.0,
         'wfa_loss': 0.0,
         'doppler_loss': 0.0,
@@ -1637,7 +1630,6 @@ def train_epoch(
             # Accumulate step metrics (including temperature)
             epoch_metrics['total_loss'] += step_metrics['total_loss']
             epoch_metrics['mse_loss'] += step_metrics['mse_loss']
-            epoch_metrics['tail_loss'] += step_metrics['tail_loss']
             epoch_metrics['physics_loss'] += step_metrics['physics_loss']
             epoch_metrics['wfa_loss'] += step_metrics['wfa_loss']
             epoch_metrics['doppler_loss'] += step_metrics['doppler_loss']
@@ -1648,7 +1640,6 @@ def train_epoch(
             # Update progress bar
             step_pbar.set_postfix({
                 'loss': f'{step_metrics["total_loss"]:.6f}',
-                'tail': f'{step_metrics["tail_loss"]:.6f}',
             })
             
             # Clean up
@@ -2625,9 +2616,6 @@ def train_pinn_model(config: TrainingConfig):
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
-        lambda_tail=config.lambda_tail,
-        alpha=config.tail_alpha,
-        gamma=config.tail_gamma,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -2847,7 +2835,6 @@ def train_pinn_model(config: TrainingConfig):
         # Print detailed loss breakdown
         print(f"  Loss Components:")
         print(f"    ├─ MSE Loss:         {epoch_metrics['mse_loss']:.6f}")
-        print(f"    ├─ Tail Loss:        {epoch_metrics['tail_loss']:.6f}")
         print(f"    └─ Physics Loss:     {epoch_metrics['physics_loss']:.6f}")
         print(f"        ├─ WFA Loss:         {epoch_metrics['wfa_loss']:.6f}")
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
@@ -2969,17 +2956,6 @@ def main():
                        type=int, default=None,
                        help='Minimum number of epochs before WFA gate can activate')
     
-    # Tail-loss parameters for Bz regression-to-mean mitigation
-    parser.add_argument('--lambda-tail', '--lambda_tail', dest='lambda_tail',
-                       type=float, default=None,
-                       help='Weight for Huber tail-loss term on Bz (default: 0.2)')
-    parser.add_argument('--tail-alpha', '--tail_alpha', dest='tail_alpha',
-                       type=float, default=None,
-                       help='Tail weight strength parameter (default: 4.0)')
-    parser.add_argument('--tail-gamma', '--tail_gamma', dest='tail_gamma',
-                       type=float, default=None,
-                       help='Tail weight sharpness exponent (default: 1.5)')
-
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
@@ -3161,14 +3137,6 @@ def main():
     if args.wfa_gate_warmup_epochs is not None:
         config.wfa_gate_warmup_epochs = args.wfa_gate_warmup_epochs
     
-    # Apply tail-loss CLI overrides
-    if args.lambda_tail is not None:
-        config.lambda_tail = args.lambda_tail
-    if args.tail_alpha is not None:
-        config.tail_alpha = args.tail_alpha
-    if args.tail_gamma is not None:
-        config.tail_gamma = args.tail_gamma
-
     # Apply cache CLI overrides
     config.use_cache = not args.no_cache
     config.cache_dir = str(Path(args.cache_dir).expanduser().resolve())

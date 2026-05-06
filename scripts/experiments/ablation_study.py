@@ -595,18 +595,8 @@ class ExperimentTracker:
             ax4.grid(True, alpha=0.3)
             ax4.set_yscale('log')
 
-            # Tail loss component (raw, unweighted)
-            ax5 = axes[0, 2]
-            if 'tail_loss_history' in results and any(l > 0 for l in results['tail_loss_history']):
-                ax5.plot(epochs, _series_for_log_plot(results['tail_loss_history']), 'k-d', label='Tail Loss', linewidth=2)
-            ax5.set_xlabel('Epoch')
-            ax5.set_ylabel('Loss')
-            ax5.set_title('Tail Loss Component (Raw)')
-            ax5.legend()
-            ax5.grid(True, alpha=0.3)
-            ax5.set_yscale('log')
-
-            # Empty panel (kept for layout symmetry)
+            # Empty panels kept for layout symmetry
+            axes[0, 2].axis('off')
             axes[1, 2].axis('off')
             
             plt.tight_layout()
@@ -1028,20 +1018,9 @@ class ExperimentTracker:
         ax11.grid(True, alpha=0.3)
         ax11.set_ylim([0, 1])
 
-        # 12. Tail Loss Component (raw, unweighted)
+        # 12. Empty panel kept for layout symmetry
         ax12 = plt.subplot(4, 3, 12)
-        for exp in experiments:
-            if 'tail_loss_history' in self.results[exp]:
-                loss_history = self.results[exp]['tail_loss_history']
-                if len(loss_history) > 0 and any(l > 0 for l in loss_history):
-                    epochs = range(1, len(loss_history) + 1)
-                    ax12.plot(epochs, _series_for_log_plot(loss_history), marker='d', label=exp, linewidth=2, markersize=4)
-        ax12.set_xlabel('Epoch')
-        ax12.set_ylabel('Tail Loss')
-        ax12.set_title('Tail Loss Component (Raw)')
-        ax12.legend(fontsize=8)
-        ax12.grid(True, alpha=0.3)
-        ax12.set_yscale('log')
+        ax12.axis('off')
         
         plt.suptitle('Physics Regularization Ablation Study', fontsize=16, y=0.997)
         plt.tight_layout()
@@ -1446,9 +1425,6 @@ def run_single_experiment(
         lambda_wfa=config.lambda_wfa,
         lambda_doppler=config.lambda_doppler,
         lambda_temp=config.lambda_temp,
-        lambda_tail=config.lambda_tail,
-        alpha=config.tail_alpha,
-        gamma=config.tail_gamma,
         blos_physics_mode=config.blos_physics_mode,
         blos_target_logtau=config.blos_target_logtau,
         vlos_physics_mode=config.vlos_physics_mode,
@@ -1570,7 +1546,6 @@ def run_single_experiment(
     val_loss_history = []
     train_loss_history = []
     mse_loss_history = []
-    tail_loss_history = []
     physics_loss_history = []
     wfa_loss_history = []
     doppler_loss_history = []
@@ -1630,7 +1605,6 @@ def run_single_experiment(
             # Extract metrics
             avg_train_loss = epoch_metrics['total_loss']
             avg_mse_loss = epoch_metrics['mse_loss']
-            avg_tail_loss = epoch_metrics['tail_loss']
             avg_physics_loss = epoch_metrics['physics_loss']
             avg_wfa_loss = epoch_metrics['wfa_loss']
             avg_doppler_loss = epoch_metrics['doppler_loss']
@@ -1639,7 +1613,6 @@ def run_single_experiment(
             # Store histories
             train_loss_history.append(avg_train_loss)
             mse_loss_history.append(avg_mse_loss)
-            tail_loss_history.append(avg_tail_loss)
             physics_loss_history.append(avg_physics_loss)
             wfa_loss_history.append(avg_wfa_loss)
             doppler_loss_history.append(avg_doppler_loss)
@@ -1750,7 +1723,6 @@ def run_single_experiment(
             print(f"Epoch {epoch + 1} Summary:")
             print(f"  Total Loss:      {avg_train_loss:.6f}")
             print(f"  MSE Loss:        {avg_mse_loss:.6f}")
-            print(f"  Tail Loss:       {avg_tail_loss:.6f}")
             print(f"  Physics Loss:    {avg_physics_loss:.6f}")
             print(f"    ├─ WFA Loss:         {avg_wfa_loss:.6f}")
             print(f"    ├─ Doppler Loss:     {avg_doppler_loss:.6f}")
@@ -1864,7 +1836,6 @@ def run_single_experiment(
         'val_loss_history': val_loss_history,
         'train_loss_history': train_loss_history,
         'mse_loss_history': mse_loss_history,
-        'tail_loss_history': tail_loss_history,
         'physics_loss_history': physics_loss_history,
         'wfa_loss_history': wfa_loss_history,
         'doppler_loss_history': doppler_loss_history,
@@ -1895,9 +1866,6 @@ def run_single_experiment(
             'lambda_doppler': config.lambda_doppler,
             'lambda_temp': config.lambda_temp,
             'stokes_mult_factor': config.stokes_mult_factor,
-            'lambda_tail': config.lambda_tail,
-            'tail_alpha': config.tail_alpha,
-            'tail_gamma': config.tail_gamma,
             'wfa_gate_mode': config.wfa_gate_mode,
             'wfa_gate_threshold': config.wfa_gate_threshold,
             'wfa_gate_patience': config.wfa_gate_patience,
@@ -1950,12 +1918,6 @@ def main():
                        help='Weight(s) for Doppler V_LOS loss. Example: --lambda_doppler 0.1 0.01')
     parser.add_argument('--lambda_temp', type=float, nargs='+', default=[0.01],
                        help='Weight(s) for temperature loss. Example: --lambda_temp 2.0 1.0 0.5')
-    parser.add_argument('--lambda_tail', type=float, default=0.05,
-                       help='Weight for Bz tail-weighted Huber term (default: 0.05)')
-    parser.add_argument('--tail_alpha', type=float, default=2.0,
-                       help='Tail weighting alpha (default: 2.0)')
-    parser.add_argument('--tail_gamma', type=float, default=1.2,
-                       help='Tail weighting gamma (default: 1.2)')
     parser.add_argument('--no-training-data-histograms', '--no_training_data_histograms',
                        dest='no_training_data_histograms', action='store_true',
                        help='Disable train-split histogram diagnostics (T, Vz, Bz)')
@@ -2245,8 +2207,6 @@ def main():
     print(f"Lambda Doppler:     {args.lambda_doppler}")
     print(f"Lambda Temperature: {args.lambda_temp}")
     print(f"Stokes mult factor: {args.stokes_mult_factor}")
-    print(f"Lambda Tail (Bz):   {args.lambda_tail}")
-    print(f"Tail alpha/gamma:   {args.tail_alpha} / {args.tail_gamma}")
     print(f"Stokes I_c mode:    {args.stokes_ic_mode}")
     print(f"MODEST pred input:  {'downsampled' if args.modest_downsample_prediction_input else 'upsampled'}")
     print(f"WFA gate mode:      {args.wfa_gate_mode}")
@@ -2334,9 +2294,6 @@ def main():
             lambda_wfa=lambda_wfa,
             lambda_doppler=lambda_doppler,
             lambda_temp=lambda_temp,
-            lambda_tail=args.lambda_tail,
-            tail_alpha=args.tail_alpha,
-            tail_gamma=args.tail_gamma,
             blos_physics_mode=args.blos_physics_mode,
             blos_target_logtau=args.blos_target_logtau,
             vlos_physics_mode=args.vlos_physics_mode,

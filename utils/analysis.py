@@ -282,9 +282,6 @@ class AnalysisModelPipeline:
                 "lambda_wfa": float(phys_cfg.get("lambda_wfa", model_cfg["lambda_wfa"])),
                 "lambda_doppler": float(phys_cfg.get("lambda_doppler", model_cfg["lambda_doppler"])),
                 "lambda_temp": float(phys_cfg.get("lambda_temp", model_cfg["lambda_temp"])),
-                "lambda_tail": float(phys_cfg.get("lambda_tail", 0.2)),
-                "tail_alpha": float(phys_cfg.get("tail_alpha", 4.0)),
-                "tail_gamma": float(phys_cfg.get("tail_gamma", 1.5)),
                 "blos_physics_mode": phys_cfg.get("blos_physics_mode", "tau_averaged"),
                 "blos_target_logtau": phys_cfg.get("blos_target_logtau", None),
                 "vlos_physics_mode": phys_cfg.get("vlos_physics_mode", "single_height"),
@@ -319,9 +316,6 @@ class AnalysisModelPipeline:
             lambda_wfa=config["lambda_wfa"],
             lambda_doppler=config["lambda_doppler"],
             lambda_temp=config["lambda_temp"],
-            lambda_tail=config.get("lambda_tail", 0.2),
-            alpha=config.get("tail_alpha", 4.0),
-            gamma=config.get("tail_gamma", 1.5),
         ).to(self.device)
 
         model.load_state_dict(checkpoint["model_state_dict"])

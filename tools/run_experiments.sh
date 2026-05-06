@@ -45,11 +45,6 @@ LAMBDA_WFA_VALUES=(10)
 LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
 
-# Tail-weighted Huber loss on Bz (regression-to-mean mitigation)
-LAMBDA_TAIL=0.1
-TAIL_ALPHA=2.0
-TAIL_GAMMA=1.2
-
 # Logtau values to map
 LOGTAU_VALUES=(-1.0 -0.8 0.0)
 
@@ -153,9 +148,6 @@ python3 ./scripts/experiments/ablation_study.py \
     --lambda_wfa "${LAMBDA_WFA_VALUES[@]}" \
     --lambda_doppler "${LAMBDA_DOPPLER_VALUES[@]}" \
     --lambda_temp "${LAMBDA_TEMP_VALUES[@]}" \
-    --lambda_tail "${LAMBDA_TAIL}" \
-    --tail_alpha "${TAIL_ALPHA}" \
-    --tail_gamma "${TAIL_GAMMA}" \
     --training-hist-bins "${TRAINING_HIST_BINS}" \
     --training-hist-max-samples "${TRAINING_HIST_MAX_SAMPLES}" \
     --bz-balance-scope "${BZ_BALANCE_SCOPE}" \
