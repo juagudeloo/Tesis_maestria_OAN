@@ -1562,6 +1562,7 @@ def run_single_experiment(
     wfa_gate_trigger_epoch = None
     wfa_gate_trigger_reason = None
 
+    Path(config.log_dir).mkdir(parents=True, exist_ok=True)
     epoch_test_log_path = Path(config.log_dir) / "test_set_epoch_log.csv"
     with open(epoch_test_log_path, 'w') as f:
         f.write(

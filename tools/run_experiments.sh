@@ -32,7 +32,7 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 MIN_STEP=81
 MAX_STEP=181
 STEP_SIZE=5
-EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-step_size_${STEP_SIZE}-no_stokes_mult_factor"
+EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-step_size_${STEP_SIZE}-normal"
 
 # Training hyperparameters
 LEARNING_RATE=1e-3
@@ -100,9 +100,13 @@ EXPERIMENTS="no_physics wfa_only"
 # 1 = apply balanced region mask, 0 = disable mask
 APPLY_REGION_MASK=0
 
+# NOTE: Bz-bin balancing is DISABLED for base training. Use tools/fine_tune.sh for fine-tuning on balanced Bz data.
+# This ensures base training uses the full unsorted dataset, while fine-tuning can focus on balanced bins.
+# See docs/how-to-fine-tune.md for fine-tuning workflow and magnetic_field_balancing_and_finetuning.md for theory.
+
 # Bz-bin balancing during training (ablation study)
 # 1 = enable Bz balancing, 0 = disable
-APPLY_BZ_BIN_BALANCE=1
+APPLY_BZ_BIN_BALANCE=0
 # Scope: global (recommended) or per_step
 BZ_BALANCE_SCOPE='global'
 # Mode: mean_abs, max_abs, tau_index
