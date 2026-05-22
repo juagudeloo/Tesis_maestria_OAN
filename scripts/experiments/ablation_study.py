@@ -2184,7 +2184,7 @@ def main():
     args.lambda_temp = _normalize_lambda_values(args.lambda_temp)
 
     # Base configuration
-    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/")
     output_dir = Path(args.output_dir) / args.experiment_name
     output_dir.mkdir(parents=True, exist_ok=True)
     test_steps = list(range(198, 201))

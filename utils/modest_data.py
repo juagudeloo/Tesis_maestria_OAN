@@ -124,8 +124,8 @@ class ModestData:
 
 	def __init__(
 		self,
-		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/INV_560_AR11967/",
-		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
+		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/MUISCA/data/hinode-MODEST/INV_560_AR11967/",
+		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/MUISCA/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
 		circular_polarization_threshold: float = 1e-2,
 		stokes_v_multiplier: float = -1.0,
 	) -> None:
@@ -343,7 +343,17 @@ class ModestData:
 
 				# Step 6: Inverse FFT
 				upsampled = np.real(ifft2(fftshift(dfc)))
-				upsampled_stokes[key][:, :, iw] = upsampled[:dn[0], :dn[1]]
+				result = upsampled[:dn[0], :dn[1]]
+
+				# Step 7: Normalize to preserve original mean intensity
+				# The upsampling and FFT operations distribute energy across more pixels
+				# This renormalization ensures the mean intensity is preserved
+				original_mean = np.nanmean(self.obs_stokes[key][:, :, iw])
+				result_mean = np.nanmean(result)
+				if result_mean != 0 and not np.isnan(result_mean):
+					result = result * (original_mean / result_mean)
+
+				upsampled_stokes[key][:, :, iw] = result
 
 		return upsampled_stokes
 
@@ -394,7 +404,7 @@ class ModestData:
 				)
 		return self.deconvolved_stokes
 
-	def smooth_stokes(self, window_size: int = 7, use_deconvolved: bool = True) -> Dict[str, np.ndarray]:
+	def smooth_stokes(self, window_size: int = 3, use_deconvolved: bool = True) -> Dict[str, np.ndarray]:
 		source = self.deconvolved_stokes if use_deconvolved else self.obs_stokes
 		if source is None:
 			raise ValueError("Stokes data not available for smoothing")

@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
+sys.path.append("/scratchsan/observatorio/juagudeloo/MUISCA/")
 import argparse
 from pathlib import Path
 

@@ -137,7 +137,7 @@ def run_fine_tune_single_variation(
     print(f"Output dir: {output_dir}")
     
     # Load normalizers
-    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/")
     mhd_normalizer = MhdNormalizer()
     mhd_normalizer.load(filepath=data_path / "normalization_stats" / "mhd_normalization.json")
     stokes_normalizer = StokesNormalizer()

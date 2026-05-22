@@ -55,7 +55,7 @@ from utils.physics_utils import ApproxInversions
 class TrainingConfig:
     """Training configuration parameters."""
     # Data paths
-    data_path: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/"
+    data_path: str = "/scratchsan/observatorio/juagudeloo/MUISCA/data/"
     mhd_normalizer_path: str = "normalization_stats/mhd_normalization.json"
     stokes_normalizer_path: str = "normalization_stats/stokes_normalization.json"
     kappa_path: str = "csv/kappa.0.dat"
@@ -138,11 +138,11 @@ class TrainingConfig:
     
     # New: Caching parameters
     use_cache: bool = True
-    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
 
     # Post-balancing cache (stores final train-ready tensors)
     use_balanced_cache: bool = False
-    balanced_cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+    balanced_cache_dir: str = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
     clear_balanced_cache: bool = False
     balanced_cache_strategy: str = "auto"  # 'auto', 'preload', or 'disk'
     balanced_cache_ram_budget_gb: float = 32.0
@@ -172,7 +172,7 @@ class TrainingConfig:
 
     # MODEST snapshot diagnostics per epoch
     enable_modest_epoch_plots: bool = False
-    modest_cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+    modest_cache_dir: str = "/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
     no_modest_cache: bool = False
     clear_modest_cache: bool = False
     modest_downsample_prediction_input: bool = True
@@ -230,12 +230,12 @@ class TrainingConfig:
         if self.logtau_values is not None and len(self.logtau_values) == 0:
             self.logtau_values = None
         # Normalize cache dir (allow shared override via env)
-        default_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+        default_cache = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
         if (not self.cache_dir or self.cache_dir == default_cache) and os.environ.get("MURAM_CACHE_DIR"):
             self.cache_dir = os.environ["MURAM_CACHE_DIR"]
         self.cache_dir = str(Path(self.cache_dir).expanduser().resolve())
 
-        default_balanced_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+        default_balanced_cache = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
         if (not self.balanced_cache_dir or self.balanced_cache_dir == default_balanced_cache) and os.environ.get("MURAM_BALANCED_CACHE_DIR"):
             self.balanced_cache_dir = os.environ["MURAM_BALANCED_CACHE_DIR"]
         self.balanced_cache_dir = str(Path(self.balanced_cache_dir).expanduser().resolve())
@@ -254,7 +254,7 @@ class TrainingConfig:
         if self.balanced_cache_ram_fraction <= 0 or self.balanced_cache_ram_fraction > 1:
             raise ValueError("balanced_cache_ram_fraction must be in (0, 1]")
 
-        default_modest_cache = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+        default_modest_cache = "/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
         if (not self.modest_cache_dir or self.modest_cache_dir == default_modest_cache) and os.environ.get("MODEST_CACHE_DIR"):
             self.modest_cache_dir = os.environ["MODEST_CACHE_DIR"]
         self.modest_cache_dir = str(Path(self.modest_cache_dir).expanduser().resolve())
@@ -2962,7 +2962,7 @@ def main():
     parser.add_argument('--cache-dir', '--cache_dir', type=str,
                        default=os.environ.get(
                            "MURAM_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
+                           "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
                        ),
                        help='Directory for cached data (or set MURAM_CACHE_DIR)')
     parser.add_argument('--clear-cache', action='store_true',
@@ -2972,7 +2972,7 @@ def main():
     parser.add_argument('--balanced-cache-dir', '--balanced_cache_dir', dest='balanced_cache_dir', type=str,
                        default=os.environ.get(
                            "MURAM_BALANCED_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache",
+                           "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache",
                        ),
                        help='Directory for balanced training cache')
     parser.add_argument('--clear-balanced-cache', '--clear_balanced_cache', dest='clear_balanced_cache', action='store_true',
@@ -3009,7 +3009,7 @@ def main():
     parser.add_argument('--modest-cache-dir', '--modest_cache_dir', dest='modest_cache_dir', type=str,
                        default=os.environ.get(
                            "MODEST_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+                           "/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache",
                        ),
                        help='MODEST cache directory (or set MODEST_CACHE_DIR)')
     parser.add_argument('--no-modest-cache', '--no_modest_cache', dest='no_modest_cache', action='store_true',

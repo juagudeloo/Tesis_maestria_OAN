@@ -9,8 +9,8 @@
 #SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
 #SBATCH --mem=10G                       #Total de memoria RAM por nodo en Gbytes
 #SBATCH --gres=gpu:1              # Numbers of needed GPU.
-#SBATCH --output=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/experiments/experiment_%j.out      #archivo salida estandar(seguimiento)
-#SBATCH --error=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/experiments/experiment_%j.err       #archivo de Errores
+#SBATCH --output=/scratchsan/observatorio/juagudeloo/MUISCA/scripts/experiments/experiment_%j.out      #archivo salida estandar(seguimiento)
+#SBATCH --error=/scratchsan/observatorio/juagudeloo/MUISCA/scripts/experiments/experiment_%j.err       #archivo de Errores
 ###SBATCH --mail-type=begin             #Send email when job begins
 ###SBATCH --mail-type=end               #Send email when job ends
 ###SBATCH --mail-user=juagudeloo@unal.edu.co
@@ -46,7 +46,9 @@ LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
 
 # Logtau values to map
-LOGTAU_VALUES=(-1.0 -0.8 0.0)
+# Use NICOLE's standard log(tau_5000) grid: from -8.0 to +1.4 in 0.1 steps.
+# Generate at runtime to keep the script concise and exact.
+LOGTAU_VALUES=($(seq -f "%.6f" -8.0 0.1 1.4))
 
 # Physics modes
 BLOS_MODE='single_height'        # 'tau_averaged' or 'single_height'
@@ -72,11 +74,11 @@ STOKES_IC_MODE='fixed_global'   # 'per_step' or 'fixed_global'
 STOKES_MULT_FACTOR=1
 
 # Shared cache (same path used by normalization script)
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
 
 # Balanced post-bz cache (final balanced tensors reused across epochs)
-BALANCED_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache"
+BALANCED_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
 export MURAM_BALANCED_CACHE_DIR="${BALANCED_CACHE_DIR}"
 ENABLE_BALANCED_CACHE=1
 BALANCED_CACHE_STRATEGY='auto'   # auto, preload, or disk
@@ -86,7 +88,7 @@ CLEAR_BALANCED_CACHE=0
 
 # MODEST epoch diagnostics (ablation study)
 ENABLE_MODEST_EPOCH_PLOTS=1
-MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
 MODEST_CROP_BOUNDS=(0 100 400 600)   # default plage crop from scripts/analysis/modest_analysis.py
 # MODEST pred input mode for per-epoch diagnostics:
 # 1 = downsampled (pixel-by-pixel), 0 = upsampled
@@ -137,7 +139,7 @@ python3 ./scripts/experiments/ablation_study.py \
     --n_steps -1 \
     --device cuda \
     --experiment_name "${EXPERIMENT_ROOT}" \
-    --output_dir '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments' \
+    --output_dir '/scratchsan/observatorio/juagudeloo/MUISCA/output/experiments' \
     --learning_rate "${LEARNING_RATE}" \
     --c1-filters "${C1_FILTERS}" \
     --stokes_ic_mode "${STOKES_IC_MODE}" \

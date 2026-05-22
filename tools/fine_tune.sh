@@ -38,8 +38,8 @@
 #SBATCH --mem=32G                       # 32 GB RAM
 #SBATCH --gres=gpu:1                    # 1× GPU
 #SBATCH --time=12:00:00                 # 12 hour wall time
-#SBATCH --output=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/fine-tune/finetune_%j.out
-#SBATCH --error=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/fine-tune/finetune_%j.err
+#SBATCH --output=/scratchsan/observatorio/juagudeloo/MUISCA/output/fine-tune/finetune_%j.out
+#SBATCH --error=/scratchsan/observatorio/juagudeloo/MUISCA/output/fine-tune/finetune_%j.err
 #SBATCH --export=SCRATCH_DIR=/scratch/$SLURM_JOB_ACCOUNT/$SLURM_JOB_USER/$SLURM_JOB_ID
 
 ################################################################################
@@ -101,7 +101,7 @@ fi
 ################################################################################
 
 # Setup project paths
-PROJECT_ROOT="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN"
+PROJECT_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA"
 cd "$PROJECT_ROOT" || exit 1
 
 # Set defaults if not provided via arguments

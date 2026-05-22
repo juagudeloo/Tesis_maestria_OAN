@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
+sys.path.append("/scratchsan/observatorio/juagudeloo/MUISCA/")
 
 from pathlib import Path
 import json
@@ -66,7 +66,7 @@ def compute_normalization_stats(
     logtau_max: float = 0.0,
     logtau_step: float = 0.1,
     use_cache: bool = True,
-    cache_dir: str = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
+    cache_dir: str = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
     stokes_ic_mode: str = "fixed_global",
     ic_start_step: int = 70,
     ic_end_step: int = 80,
@@ -96,7 +96,7 @@ def compute_normalization_stats(
         purge_cache: if True and clean_start=True, remove cache directory before run
     """
     # Configuration - using same paths as other scripts
-    data_path = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/")
+    data_path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/")
     mhd_data_dir = data_path / "muram-simulation"
     stokes_data_dir = data_path / "muram-simulation"
     kappa_path = data_path / "csv/kappa.0.dat"
@@ -104,6 +104,7 @@ def compute_normalization_stats(
     output_dir = data_path / "normalization_stats"
     output_dir.mkdir(parents=True, exist_ok=True)
     ic_reference_path = output_dir / "ic_reference_stats.json"
+    raw_bz_values_dir = output_dir / "raw_bz_values"
 
     if ic_cont_indices is None:
         ic_cont_indices = [0, 1, 2, 3]
@@ -121,6 +122,7 @@ def compute_normalization_stats(
             output_dir / "stokes_normalization.json",
             output_dir / "intermediate_states",
             output_dir / "error_state",
+            raw_bz_values_dir,
             ic_reference_path,
         ]:
             if target.exists():
@@ -174,7 +176,7 @@ def compute_normalization_stats(
             )
         print(f"Resuming from saved state: {resume_from}")
         resume_path = Path(resume_from)
-        mhd_normalizer = MhdNormalizer(n_tau=n_tau).load_state(
+        mhd_normalizer = MhdNormalizer(n_tau=n_tau, raw_values_dir=str(raw_bz_values_dir)).load_state(
             resume_path / "mhd_state.json"
         )
         stokes_normalizer = StokesNormalizer().load_state(
@@ -203,7 +205,7 @@ def compute_normalization_stats(
             start_step = min_step
         print(f"Resuming from step {start_step}")
     else:
-        mhd_normalizer = MhdNormalizer(n_tau=n_tau)
+        mhd_normalizer = MhdNormalizer(n_tau=n_tau, raw_values_dir=str(raw_bz_values_dir))
         mhd_normalizer.logtau_values = [float(x) for x in new_logtau.tolist()]
         stokes_normalizer = StokesNormalizer()
         start_step = min_step
@@ -495,7 +497,7 @@ if __name__ == "__main__":
         type=str,
         default=os.environ.get(
             "MURAM_CACHE_DIR",
-            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
+            "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
         ),
         help="Cache directory (or set MURAM_CACHE_DIR)"
     )

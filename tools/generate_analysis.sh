@@ -16,7 +16,7 @@ RUN_TARGET="both"                       # both | muram | modest
 DISTRIBUTION_TARGET="both"              # stokes | mhd | both (distributions mode)
 
 # MURaM analysis args
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
 STEP_TO_PLOT="198"
 
 # MODEST analysis args
@@ -32,7 +32,7 @@ CROP_LABEL="sunspot"                      # label for cropped region (used in pl
 #CROP_LABEL="quiet_sun"                      # label for cropped region (used in plot titles and output paths)
 POLARIZATION_MASK="0"                   # 1 => --polarization-mask
 POLARIZATION_THRESHOLD="1e-2"
-MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache"
+MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
 CLEAR_MODEST_CACHE="0"                  # 1 => --clear-modest-cache
 DOWNSAMPLE_PREDICTION_INPUT="0"         # 1 => --downsample-prediction-input
 MODEST_STOKES_SHIFT_POSITIONS="0.0"

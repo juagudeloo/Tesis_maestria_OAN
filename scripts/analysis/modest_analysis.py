@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
+sys.path.append("/scratchsan/observatorio/juagudeloo/MUISCA/")
 import argparse
 from pathlib import Path
 
@@ -25,7 +25,7 @@ PLAGE_CROP_BOUNDS = (0,100,400, 600)  # X_MIN, X_MAX, Y_MIN, Y_MAX
 def main(args):
     # Pick GPU when available; otherwise fall back to CPU.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modest_base_dir = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/modest")
+    modest_base_dir = Path("/scratchsan/observatorio/juagudeloo/MUISCA/images/analysis/modest")
 
     # Choose where MODEST diagnostics should be written based on the crop flag.
     if args.cropped_region:
@@ -189,7 +189,7 @@ if __name__ == "__main__":
         type=str,
         default=os.environ.get(
             "MODEST_CACHE_DIR",
-            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+            "/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache",
         ),
         help='MODEST cache directory (or set MODEST_CACHE_DIR)'
     )

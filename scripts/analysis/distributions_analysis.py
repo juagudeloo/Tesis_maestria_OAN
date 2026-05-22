@@ -7,7 +7,7 @@ from typing import Any, cast
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/")
+sys.path.append("/scratchsan/observatorio/juagudeloo/MUISCA/")
 
 from utils.modest_data import ModestData
 from utils.cache_manage import ModestDataCache
@@ -26,7 +26,7 @@ PLAGE_CROP_BOUNDS = (0, 100, 400, 600)  # X_MIN, X_MAX, Y_MIN, Y_MAX
 # -----------------------------------------------------------------------------
 def _output_root(cropped_region: bool, crop_label: str) -> Path:
     # Keep distribution outputs grouped under the same MODEST whole/cropped tree.
-    base = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/modest")
+    base = Path("/scratchsan/observatorio/juagudeloo/MUISCA/images/analysis/modest")
     if cropped_region:
         label = crop_label.strip()
         if not label:
@@ -36,7 +36,7 @@ def _output_root(cropped_region: bool, crop_label: str) -> Path:
 
 
 def _experiment_root_dir(experiment_root: str) -> Path:
-    root = Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments") / experiment_root
+    root = Path("/scratchsan/observatorio/juagudeloo/MUISCA/output/experiments") / experiment_root
     if not root.exists():
         raise FileNotFoundError(f"Experiment root not found: {root}")
     return root

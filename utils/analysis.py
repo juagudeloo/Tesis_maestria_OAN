@@ -148,7 +148,7 @@ class AnalysisModelPipeline:
         self.device = device
         self.output_dir = output_dir
         self.experiments_base_dir = Path(experiments_base_dir) if experiments_base_dir is not None else Path(
-            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/"
+            "/scratchsan/observatorio/juagudeloo/MUISCA/output/experiments/"
         )
         self.experiment_root = str(experiment_root)
 
