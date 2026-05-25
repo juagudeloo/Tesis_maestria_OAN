@@ -881,19 +881,37 @@ class StokesData:
         print("  Done.")
         return self.data
 
-    def continuum_normalization(self, cont_indices: Optional[np.ndarray] = None) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    def continuum_normalization(
+        self,
+        cont_indices: Optional[List[int]] = None,
+        fixed_ic: Optional[float] = None,
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
         if not self.data:
             raise ValueError("Stokes data not loaded. Call load_stokes() first.")
         if cont_indices is None:
             cont_indices = [0, 1, 2, 3]
+        cont_indices = np.asarray(cont_indices, dtype=int)
+        if cont_indices.ndim != 1 or cont_indices.size == 0:
+            raise ValueError("cont_indices must be a 1D non-empty array-like of indices")
+
         print("Applying continuum normalization...")
-        I_c = self.data["I"][:, :, cont_indices].mean(axis=2).flatten().mean()
+        if fixed_ic is None:
+            I_c = float(self.data["I"][:, :, cont_indices].mean(axis=2).mean())
+            ic_mode = "per-step"
+        else:
+            I_c = float(fixed_ic)
+            if not np.isfinite(I_c) or I_c <= 0:
+                raise ValueError(f"fixed_ic must be finite and > 0, got {fixed_ic}")
+            ic_mode = "fixed-global"
+
         for key in self.data.keys():
             self.data[key] = self.data[key] / I_c
-        self.mean_continuum = self.data["I"][:, :, cont_indices].mean(axis=2)
-        print(f"  Global continuum: I_c = {I_c:.6e}")
+        mean_continuum = self.data["I"][:, :, cont_indices].mean(axis=2)
+        self.mean_continuum = mean_continuum
+        print(f"  Continuum mode: {ic_mode}")
+        print(f"  Global continuum used: I_c = {I_c:.6e}")
         print("  Done.")
-        return self.data, self.mean_continuum
+        return self.data, mean_continuum
 
     def spectropolarimetry(self, stokes_data: Optional[Dict[str, np.ndarray]] = None) -> np.ndarray:
         if stokes_data is None:
@@ -1214,6 +1232,124 @@ def build_balanced_region_indices(
     }
 
 
+def build_bz_strength_balanced_indices(
+    mhd_data: Dict[str, np.ndarray],
+    base_selected_indices: Optional[np.ndarray] = None,
+    n_bins: int = 12,
+    score_mode: str = "mean_abs",
+    tau_idx: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Return flattened indices balanced across Bz-strength bins."""
+    if "Bz" not in mhd_data:
+        raise KeyError("mhd_data must contain a 'Bz' array")
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    bz = np.asarray(mhd_data["Bz"], dtype=np.float32)
+    if bz.ndim != 3:
+        raise ValueError(f"Expected Bz to be 3D (nx, ny, n_tau), got shape {bz.shape}")
+
+    valid_score_modes = {"mean_abs", "max_abs", "tau_index"}
+    if score_mode not in valid_score_modes:
+        raise ValueError(f"score_mode must be one of {sorted(valid_score_modes)}, got {score_mode!r}")
+
+    if score_mode == "mean_abs":
+        pixel_scores = np.mean(np.abs(bz), axis=2)
+    elif score_mode == "max_abs":
+        pixel_scores = np.max(np.abs(bz), axis=2)
+    else:
+        if tau_idx is None:
+            tau_idx = bz.shape[2] // 2
+        if tau_idx < 0 or tau_idx >= bz.shape[2]:
+            raise ValueError(f"tau_idx must be within [0, {bz.shape[2] - 1}], got {tau_idx}")
+        pixel_scores = np.abs(bz[:, :, int(tau_idx)])
+
+    score_flat = np.asarray(pixel_scores, dtype=np.float32).ravel()
+    if base_selected_indices is None:
+        candidate_indices = np.arange(score_flat.size, dtype=np.int64)
+    else:
+        candidate_indices = np.asarray(base_selected_indices, dtype=np.int64).ravel()
+
+    if candidate_indices.size == 0:
+        raise ValueError("base_selected_indices is empty")
+    if candidate_indices.min() < 0 or candidate_indices.max() >= score_flat.size:
+        raise ValueError("base_selected_indices contains out-of-range values")
+
+    candidate_scores = score_flat[candidate_indices]
+    finite_mask = np.isfinite(candidate_scores)
+    candidate_indices = candidate_indices[finite_mask]
+    candidate_scores = candidate_scores[finite_mask]
+
+    if candidate_indices.size == 0:
+        raise ValueError("No finite Bz scores available for balancing")
+
+    score_min = float(np.min(candidate_scores))
+    score_max = float(np.max(candidate_scores))
+    if np.isclose(score_min, score_max):
+        counts_before = {"bin_0": int(candidate_indices.size)}
+        return candidate_indices.astype(np.int64), {
+            "score_mode": score_mode,
+            "tau_idx": None if tau_idx is None else int(tau_idx),
+            "n_bins": 1,
+            "score_min": score_min,
+            "score_max": score_max,
+            "bin_edges": [score_min, score_max],
+            "counts_before": counts_before,
+            "counts_after": {"bin_0": int(candidate_indices.size), "total_selected": int(candidate_indices.size)},
+            "total_candidates": int(candidate_indices.size),
+        }
+
+    bin_edges = np.linspace(score_min, score_max, int(max(2, n_bins)) + 1, dtype=np.float32)
+    bin_ids = np.digitize(candidate_scores, bin_edges[1:-1], right=False)
+    bin_ids = np.clip(bin_ids, 0, bin_edges.size - 2)
+
+    counts_before = {
+        f"bin_{bin_idx}": int(np.sum(bin_ids == bin_idx))
+        for bin_idx in range(bin_edges.size - 1)
+    }
+    occupied_bins = [count for count in counts_before.values() if count > 0]
+    if not occupied_bins:
+        raise ValueError("No occupied Bz bins found during balancing")
+
+    target_per_bin = min(occupied_bins)
+    selected_chunks = []
+    counts_after = {}
+    for bin_idx in range(bin_edges.size - 1):
+        mask = bin_ids == bin_idx
+        bin_indices = candidate_indices[mask]
+        bin_count = int(bin_indices.size)
+        counts_after[f"bin_{bin_idx}"] = int(min(bin_count, target_per_bin))
+        if bin_count == 0:
+            continue
+        if bin_count > target_per_bin:
+            chosen = rng.choice(bin_indices, size=target_per_bin, replace=False)
+        else:
+            chosen = bin_indices
+        selected_chunks.append(chosen)
+
+    if not selected_chunks:
+        raise ValueError("Bz balancing produced no selected indices")
+
+    selected = np.concatenate(selected_chunks)
+    rng.shuffle(selected)
+    counts_after["total_selected"] = int(selected.size)
+
+    return selected.astype(np.int64), {
+        "score_mode": score_mode,
+        "tau_idx": None if tau_idx is None else int(tau_idx),
+        "n_bins": int(bin_edges.size - 1),
+        "score_min": score_min,
+        "score_max": score_max,
+        "bin_edges": [float(v) for v in bin_edges.tolist()],
+        "counts_before": counts_before,
+        "counts_after": counts_after,
+        "total_candidates": int(candidate_indices.size),
+        "target_per_bin": int(target_per_bin),
+    }
+
+
 # ============================================================================
 # MuramStepDataset class - PyTorch Dataset for training
 # ============================================================================
@@ -1261,10 +1397,15 @@ class MuramStepDataset(Dataset):
         mhd_normalizer: MhdNormalizer,
         selected_flat_indices: Optional[np.ndarray] = None,
         region_sampling_info: Optional[Dict[str, Any]] = None,
+        bz_balance_info: Optional[Dict[str, Any]] = None,
     ):
         self.nx, self.ny = stokes_data['I'].shape[:2]
         self.n_pixels_full = self.nx * self.ny
         self.region_sampling_info = region_sampling_info
+        self.bz_balance_info = bz_balance_info
+        self.hinode_wl = None
+        if "hinode_wl" in stokes_data:
+            self.hinode_wl = np.asarray(stokes_data["hinode_wl"], dtype=np.float32)
         
         # Normalize data
         norm_stokes = stokes_normalizer.transform(stokes_data)
@@ -1322,4 +1463,5 @@ __all__ = [
     "MuramStepDataset",
     "build_granulation_polarization_masks",
     "build_balanced_region_indices",
+    "build_bz_strength_balanced_indices",
 ]

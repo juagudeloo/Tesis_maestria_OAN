@@ -7,10 +7,10 @@
 ##SBATCH --time=1-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
 #SBATCH --nodes=1                       #Numberode nodos a usar
 #SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
-#SBATCH --mem=10G                       #Total de memoria RAM por nodo en Gbytes
+#SBATCH --mem=60G                       #Total de memoria RAM por nodo en Gbytes
 #SBATCH --gres=gpu:1              # Numbers of needed GPU.
-#SBATCH --output=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/comp_norm%j.out      #archivo salida estandar(seguimiento)
-#SBATCH --error=/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/scripts/comp_norm%j.err       #archivo de Errores
+#SBATCH --output=/scratchsan/observatorio/juagudeloo/MUISCA/scripts/comp_norm%j.out      #archivo salida estandar(seguimiento)
+#SBATCH --error=/scratchsan/observatorio/juagudeloo/MUISCA/scripts/comp_norm%j.err       #archivo de Errores
 ###SBATCH --mail-type=begin             #Send email when job begins
 ###SBATCH --mail-type=end               #Send email when job ends
 ###SBATCH --mail-user=juagudeloo@unal.edu.co
@@ -31,8 +31,12 @@ MAX_STEP=200
 SAVE_INTERVAL=20
 
 USE_CACHE=true
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache"
+CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
 export MURAM_CACHE_DIR="${CACHE_DIR}"
+
+# Start from zero
+CLEAN_START=true
+PURGE_CACHE=false
 
 # Resume (optional)
 USE_RESUME=false
@@ -42,11 +46,17 @@ RESUME_FROM=""
 # If true, uses explicit nodes (same as as_run.batch).
 # If false, uses range mode: logtau_min/max/step.
 USE_EXPLICIT_LOGTAU=true
-LOGTAU_VALUES=(-1.0 -0.8 0.0)
+LOGTAU_VALUES=($(seq -f "%.6f" -8.0 0.1 1.4))
 
 LOGTAU_MIN=-2.0
 LOGTAU_MAX=0.0
 LOGTAU_STEP=0.1
+
+# Stokes continuum normalization policy
+STOKES_IC_MODE="fixed_global"
+IC_START_STEP=70
+IC_END_STEP=80
+IC_CONT_INDICES=(0 1 2 3)
 
 # ==============================================================================
 # RUN
@@ -71,6 +81,21 @@ if [ "${USE_EXPLICIT_LOGTAU}" = true ]; then
     CMD+=(--logtau_values "${LOGTAU_VALUES[@]}")
 else
     CMD+=(--logtau_min "${LOGTAU_MIN}" --logtau_max "${LOGTAU_MAX}" --logtau_step "${LOGTAU_STEP}")
+fi
+
+CMD+=(
+    --stokes_ic_mode "${STOKES_IC_MODE}"
+    --ic_start_step "${IC_START_STEP}"
+    --ic_end_step "${IC_END_STEP}"
+    --ic_cont_indices "${IC_CONT_INDICES[@]}"
+)
+
+if [ "${CLEAN_START}" = true ]; then
+    CMD+=(--clean_start)
+fi
+
+if [ "${PURGE_CACHE}" = true ]; then
+    CMD+=(--purge_cache)
 fi
 
 "${CMD[@]}"

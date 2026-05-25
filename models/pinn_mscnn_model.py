@@ -72,6 +72,11 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         self.temp_physics_mode = temp_physics_mode
         self.temp_target_logtau = temp_target_logtau
         
+        # Tail-loss parameters (loaded from normalizer)
+        self.B0_weight_start = None  # P90 of |Bz|
+        self.B1_weight_saturation = None  # P99.5 of |Bz|
+        self.huber_delta = None  # Huber threshold
+        
         # Physics computation state (set via set_physics_context)
         self.mhd_normalizer = None
         self.logtau_values = None
@@ -183,6 +188,21 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             else:
                 self._temp_target_logtau_idx = int(np.argmin(np.abs(logtau_values - self.temp_target_logtau)))
                 self.temp_target_logtau = logtau_values[self._temp_target_logtau_idx]
+        
+        # Load tail-loss parameters from normalizer (new names + legacy fallback)
+        B0_weight_start = getattr(mhd_normalizer, 'B0_weight_start', None)
+        B1_weight_saturation = getattr(mhd_normalizer, 'B1_weight_saturation', None)
+        huber_delta = getattr(mhd_normalizer, 'huber_delta', None)
+
+        if B0_weight_start is None:
+            B0_weight_start = getattr(mhd_normalizer, 'bz_B0_w', None)
+            B1_weight_saturation = getattr(mhd_normalizer, 'bz_B1_w', None)
+            huber_delta = getattr(mhd_normalizer, 'bz_delta', None)
+
+        if B0_weight_start is not None and B1_weight_saturation is not None and huber_delta is not None:
+            self.B0_weight_start = float(B0_weight_start)
+            self.B1_weight_saturation = float(B1_weight_saturation)
+            self.huber_delta = float(huber_delta)
         
         # Move approximations to device
         device = self._get_device()
@@ -637,12 +657,15 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Ground truth targets (batch_size, 63)
         spatial_indices : torch.Tensor, optional
             Spatial coordinates (batch_size, 2) for physics losses
+        enable_wfa : bool
+            Enable WFA physics term
+            
         Returns
         -------
         loss_dict : Dict[str, torch.Tensor]
             Dictionary containing loss terms
         """
-        # Supervised MSE loss
+        # Base supervised MSE loss in normalized space
         mse_loss = F.mse_loss(predictions, targets)
         
         # Physics regularization - check if ANY lambda is non-zero and spatial_indices provided

@@ -3,7 +3,7 @@ import json
 import csv
 import torch
 import torch.nn.functional as F
-from typing import Callable
+from typing import Callable, Any
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,6 +11,7 @@ import seaborn as sns
 
 from scripts.base_training import TrainingConfig
 from models.pinn_mscnn_model import PhysicsInformedMSCNN
+from utils.modest_data import transform_modest_stokes_profiles
 
 try:
     from torchinfo import summary as torch_summary
@@ -147,7 +148,7 @@ class AnalysisModelPipeline:
         self.device = device
         self.output_dir = output_dir
         self.experiments_base_dir = Path(experiments_base_dir) if experiments_base_dir is not None else Path(
-            "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments/"
+            "/scratchsan/observatorio/juagudeloo/MUISCA/output/experiments/"
         )
         self.experiment_root = str(experiment_root)
 
@@ -456,6 +457,7 @@ class MuramDiagnosticPlots:
         label: str | None = None,
         step: int | None = None,
         output_dir: str | Path | None = Path('./images'),
+        stokes_normalizer=None,
     ):
         self.config = config
         self.model_name = model_name
@@ -468,12 +470,82 @@ class MuramDiagnosticPlots:
 
         self.param_cmaps = {"T": "hot", "Vz": "bwr_r", "Bz": "PiYG"}
         self.error_cmap = "RdBu_r"
+        self.stokes_normalizer = stokes_normalizer
         
         base_out_dir = Path(output_dir)
         step_folder = str(step) if step is not None else "snapshot"
         self.out_dir = base_out_dir / "final" / step_folder / model_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.metrics_rows: list[dict[str, float | str | int]] = []
+
+    def plot_stokes_mean_std(
+        self,
+        stokes_input: np.ndarray,
+        wavelengths: np.ndarray | None = None,
+    ) -> None:
+        """Plot denormalized mean ± std Stokes I/V profiles from final model inputs.
+        
+        wavelengths must not be None. Always use metadata-derived wavelength arrays.
+        """
+        arr = np.asarray(stokes_input, dtype=np.float32)
+        if arr.ndim != 3 or arr.shape[1] != 2:
+            return
+
+        if wavelengths is None:
+            raise ValueError(
+                "wavelengths parameter is required and must come from MODEST metadata. "
+                "Do not use hardcoded Hinode wavelength defaults."
+            )
+        
+        wl = np.asarray(wavelengths, dtype=np.float64)
+        if wl.ndim != 1 or wl.size != arr.shape[2]:
+            raise ValueError(
+                f"wavelengths shape mismatch: expected (n_wavelengths={arr.shape[2]},), got {wl.shape}. "
+                "Ensure wavelengths are properly extracted from MODEST metadata."
+            )
+
+        I_norm = arr[:, 0, :]
+        V_norm = arr[:, 1, :]
+        I_mean_norm = np.mean(I_norm, axis=0)
+        I_std_norm = np.std(I_norm, axis=0)
+        V_mean_norm = np.mean(V_norm, axis=0)
+        V_std_norm = np.std(V_norm, axis=0)
+
+        I_mean = I_mean_norm
+        I_std = I_std_norm
+        V_mean = V_mean_norm
+        V_std = V_std_norm
+        if self.stokes_normalizer is not None and getattr(self.stokes_normalizer, "final_stats", None) is not None:
+            stats_i = self.stokes_normalizer.final_stats.get("I", {})
+            stats_v = self.stokes_normalizer.final_stats.get("V", {})
+            mu_i = float(stats_i.get("mean", 0.0))
+            sd_i = float(stats_i.get("std", 1.0))
+            mu_v = float(stats_v.get("mean", 0.0))
+            sd_v = float(stats_v.get("std", 1.0))
+            I_mean = I_mean_norm * sd_i + mu_i
+            I_std = I_std_norm * abs(sd_i)
+            V_mean = V_mean_norm * sd_v + mu_v
+            V_std = V_std_norm * abs(sd_v)
+
+        fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        fig.suptitle(f"{self.model_name} | Final Stokes Profiles: mean ± 1σ", fontsize=13, fontweight="bold")
+
+        axes[0].plot(wl, I_mean, color="tab:orange", linewidth=1.8, label="Mean I")
+        axes[0].fill_between(wl, I_mean - I_std, I_mean + I_std, color="tab:orange", alpha=0.25, label="±1σ")
+        axes[0].set_ylabel("Stokes I")
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(loc="best", fontsize=9)
+
+        axes[1].plot(wl, V_mean, color="tab:purple", linewidth=1.8, label="Mean V")
+        axes[1].fill_between(wl, V_mean - V_std, V_mean + V_std, color="tab:purple", alpha=0.25, label="±1σ")
+        axes[1].set_xlabel("Wavelength [Angstrom]")
+        axes[1].set_ylabel("Stokes V")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc="best", fontsize=9)
+
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(self.out_dir / "stokes_mean_std_profiles.png", dpi=170, bbox_inches="tight")
+        plt.close(fig)
 
     def _write_metrics_csv(self) -> None:
         if not self.metrics_rows:
@@ -568,6 +640,8 @@ class MuramDiagnosticPlots:
         self,
         pred_den: dict[str, np.ndarray],
         gt_den: dict[str, np.ndarray],
+        stokes_input: np.ndarray | None = None,
+        wavelengths: np.ndarray | None = None,
     ) -> None:
         for od in self.ods:
             tau_idx = int(np.argmin(np.abs(self.logtau - od)))
@@ -599,6 +673,9 @@ class MuramDiagnosticPlots:
                         "nmae": float(metrics["nmae"]),
                         "bias": float(metrics["bias"]),
                     })
+
+        if stokes_input is not None:
+            self.plot_stokes_mean_std(stokes_input=stokes_input, wavelengths=wavelengths)
 
         self._write_metrics_csv()
 
@@ -638,6 +715,155 @@ class ModestDiagnosticPlots:
         self.n_tau_eff = None
         self.tau_indices = None
         self.metrics_rows: list[dict[str, float | str | int]] = []
+        self.modest_wavelength: np.ndarray | None = None
+
+    @staticmethod
+    def _resize_map_to_shape(arr2d: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+        if arr2d.shape == target_shape:
+            return arr2d
+        t = torch.from_numpy(arr2d).float().unsqueeze(0).unsqueeze(0)
+        out = F.interpolate(t, size=target_shape, mode="bilinear", align_corners=False)
+        return out.squeeze(0).squeeze(0).cpu().numpy()
+
+    def _temperature_calibration_mode(self) -> str:
+        mode = str(getattr(self.args, "temp_calibration_mode", "off")).lower()
+        if mode not in {"off", "apply_fit"}:
+            return "off"
+        return mode
+
+    def _temperature_calibration_clip_quantiles(self) -> tuple[float, float] | None:
+        q = getattr(self.args, "temp_calibration_clip_quantiles", None)
+        if q is None:
+            return None
+        if len(q) != 2:
+            return None
+        qlo = float(q[0])
+        qhi = float(q[1])
+        if not (0.0 <= qlo < qhi <= 1.0):
+            return None
+        return (qlo, qhi)
+
+    def _temperature_calibration_min_samples(self) -> int:
+        return int(max(10, int(getattr(self.args, "temp_calibration_min_samples", 500))))
+
+    def _temperature_calibration_path(self, model_type: str, out_root: Path) -> Path:
+        base_dir_raw = getattr(self.args, "temp_calibration_dir", None)
+        if base_dir_raw:
+            return Path(base_dir_raw) / model_type / "temperature_calibration.json"
+        return out_root / "temperature_calibration.json"
+
+    def _fit_temperature_affine_by_tau(
+        self,
+        model_type: str,
+        matches: list[tuple[float, int, int]],
+        true_cube: np.ndarray,
+        pred_cube: np.ndarray,
+    ) -> dict[str, Any]:
+        min_samples = self._temperature_calibration_min_samples()
+        clip_q = self._temperature_calibration_clip_quantiles()
+        coefficients: dict[str, dict[str, float | int]] = {}
+
+        for tau_val, i_mod, i_pred in matches:
+            if i_mod >= true_cube.shape[2] or i_pred >= pred_cube.shape[2]:
+                continue
+            true_map = np.asarray(true_cube[:, :, i_mod], dtype=np.float32)
+            pred_map = np.asarray(pred_cube[:, :, i_pred], dtype=np.float32)
+            if true_map.shape != pred_map.shape:
+                true_map = self._resize_map_to_shape(true_map, pred_map.shape)
+
+            x = true_map.ravel()  # GT
+            y = pred_map.ravel()  # Pred
+            m = np.isfinite(x) & np.isfinite(y)
+            x = x[m]
+            y = y[m]
+
+            if x.size < min_samples:
+                continue
+
+            if clip_q is not None:
+                qlo, qhi = clip_q
+                x_lo, x_hi = np.quantile(x, [qlo, qhi])
+                y_lo, y_hi = np.quantile(y, [qlo, qhi])
+                m2 = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
+                if np.count_nonzero(m2) >= min_samples:
+                    x = x[m2]
+                    y = y[m2]
+
+            if x.size < min_samples:
+                continue
+
+            a = 1.0
+            b = float(np.nanmean(x - y))
+
+            metrics_before = compute_regression_metrics(x, y)
+            metrics_after = compute_regression_metrics(x, y + b)
+            coefficients[f"{float(tau_val):.6f}"] = {
+                "tau_value": float(tau_val),
+                "a": float(a),
+                "b": float(b),
+                "n_points": int(x.size),
+                "corr_before": float(metrics_before["corr"]),
+                "corr_after": float(metrics_after["corr"]),
+                "rrmse_before": float(metrics_before["rrmse"]),
+                "rrmse_after": float(metrics_after["rrmse"]),
+            }
+
+        return {
+            "mode": "bias_per_tau",
+            "model_type": model_type,
+            "min_samples": int(min_samples),
+            "clip_quantiles": list(clip_q) if clip_q is not None else None,
+            "coefficients": coefficients,
+        }
+
+    @staticmethod
+    def _save_temperature_calibration(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+    @staticmethod
+    def _load_temperature_calibration(path: Path) -> dict[str, Any] | None:
+        if not path.exists():
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    @staticmethod
+    def _find_tau_coeff(coefficients: dict[str, dict[str, Any]], tau_val: float) -> dict[str, Any] | None:
+        for key, coeff in coefficients.items():
+            try:
+                if np.isclose(float(key), float(tau_val), atol=1e-6, rtol=0.0):
+                    return coeff
+            except Exception:
+                continue
+        return None
+
+    def _apply_temperature_calibration(
+        self,
+        pred_cube: np.ndarray,
+        matches: list[tuple[float, int, int]],
+        payload: dict[str, Any],
+    ) -> tuple[np.ndarray, dict[int, dict[str, float]]]:
+        coefficients = payload.get("coefficients", {}) if isinstance(payload, dict) else {}
+        calibrated = np.array(pred_cube, copy=True)
+        applied_by_pred_idx: dict[int, dict[str, float]] = {}
+
+        for tau_val, _i_mod, i_pred in matches:
+            if i_pred >= calibrated.shape[2]:
+                continue
+            coeff = self._find_tau_coeff(coefficients, tau_val)
+            if coeff is None:
+                continue
+            b = float(coeff.get("b", 0.0))
+            calibrated[:, :, i_pred] = calibrated[:, :, i_pred] + b
+            applied_by_pred_idx[i_pred] = {
+                "a": 1.0,
+                "b": b,
+                "n_points": int(coeff.get("n_points", 0)),
+            }
+
+        return calibrated, applied_by_pred_idx
 
     def _write_metrics_csv(self, model_type: str, out_root: Path) -> None:
         rows = [r for r in self.metrics_rows if r.get("model") == model_type]
@@ -648,6 +874,8 @@ class ModestDiagnosticPlots:
             "model", "param", "logtau", "comparison", "n_points", "n_true", "n_pred",
             "corr", "r2", "rmse", "rrmse", "mae", "nmae", "bias",
             "ks", "w1_quantile", "jsd", "overlap",
+            "calibration_mode", "calibration_applied", "calibration_source",
+            "calibration_a", "calibration_b", "calibration_n_fit",
         ]
         with open(metrics_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -689,7 +917,22 @@ class ModestDiagnosticPlots:
                 [self.modest_data["spinor_atm"]["Blos"][t] for t in self.modest_logtau[:self.n_tau_eff]], axis=-1
             ).astype(np.float32),
         }
+        # MODEST Stokes profiles are already continuum-normalized in the loader path.
+        # Keep them as-is here and only apply the standard Stokes normalizer expected by the model.
         prediction_stokes = self.modest_data.get("prediction_stokes", self.modest_data["smoothed_stokes"])
+        wl_raw = self.modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1]))
+        self.modest_wavelength = np.asarray(
+            wl_raw.value if hasattr(wl_raw, "value") else wl_raw,
+            dtype=np.float64,
+        )
+        prediction_stokes = transform_modest_stokes_profiles(
+            stokes=prediction_stokes,
+            wavelength_angstrom=self.modest_wavelength,
+            shift_positions=float(getattr(self.args, "modest_stokes_shift_positions", 0.0)),
+            i_scale=float(getattr(self.args, "modest_stokes_i_scale", 1.0)),
+            v_scale=float(getattr(self.args, "modest_stokes_v_scale", 1.0)),
+            invert_direction=bool(getattr(self.args, "modest_stokes_invert_direction", False)),
+        )
         self.pred_nx, self.pred_ny = prediction_stokes["I"].shape[:2]
         norm_stokes = self.stokes_normalizer.transform(prediction_stokes)
         I_flat = norm_stokes["I"].reshape(self.pred_nx * self.pred_ny, -1)
@@ -729,10 +972,11 @@ class ModestDiagnosticPlots:
             if (np.isfinite(gt).any() and np.isfinite(pr).any())
             else np.array([0.0, 1.0])
         )
-        vmin, vmax = np.quantile(vals, [0.01, 0.99])
-        if np.nanmin(vals) < 0 < np.nanmax(vals):
-            vmax_abs = max(abs(vmin), abs(vmax))
-            vmin, vmax = -vmax_abs, vmax_abs
+        if param in ("Vz", "Bz"):
+            vmax = np.quantile(np.abs(vals), 0.99)
+            vmin = -vmax
+        else:
+            vmin, vmax = np.quantile(vals, [0.01, 0.99])
 
         fig, axes = plt.subplots(1, 3, figsize=(16, 5))
         im0 = axes[0].imshow(gt, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax)
@@ -848,7 +1092,79 @@ class ModestDiagnosticPlots:
         }
         return out_metrics, comparison
 
+    def _plot_stokes_mean_std(self, model_type: str, out_root: Path) -> None:
+        """Plot denormalized mean ± std Stokes I/V profiles from MODEST model-input stokes.
+        
+        Wavelength data is always extracted from MODEST metadata. No hardcoded defaults are used.
+        """
+        if self.modest_stokes_input is None:
+            return
+
+        arr = np.asarray(self.modest_stokes_input, dtype=np.float32)
+        if arr.ndim != 3 or arr.shape[1] != 2:
+            return
+
+        if self.modest_wavelength is None:
+            raise ValueError(
+                "MODEST wavelength metadata is required and must be set during prepare_snapshot(). "
+                "Cannot use hardcoded defaults."
+            )
+        
+        wl = np.asarray(self.modest_wavelength, dtype=np.float64)
+        if wl.ndim != 1 or wl.size != arr.shape[2]:
+            raise ValueError(
+                f"MODEST wavelength shape mismatch: expected (n_wavelengths={arr.shape[2]},), got {wl.shape}. "
+                "Ensure wavelength arrays are properly extracted from MODEST metadata."
+            )
+
+        I_norm = arr[:, 0, :]
+        V_norm = arr[:, 1, :]
+        I_mean_norm = np.mean(I_norm, axis=0)
+        I_std_norm = np.std(I_norm, axis=0)
+        V_mean_norm = np.mean(V_norm, axis=0)
+        V_std_norm = np.std(V_norm, axis=0)
+
+        I_mean = I_mean_norm
+        I_std = I_std_norm
+        V_mean = V_mean_norm
+        V_std = V_std_norm
+        stats = getattr(self.stokes_normalizer, "final_stats", None)
+        if isinstance(stats, dict):
+            stats_i = stats.get("I", {})
+            stats_v = stats.get("V", {})
+            mu_i = float(stats_i.get("mean", 0.0))
+            sd_i = float(stats_i.get("std", 1.0))
+            mu_v = float(stats_v.get("mean", 0.0))
+            sd_v = float(stats_v.get("std", 1.0))
+            I_mean = I_mean_norm * sd_i + mu_i
+            I_std = I_std_norm * abs(sd_i)
+            V_mean = V_mean_norm * sd_v + mu_v
+            V_std = V_std_norm * abs(sd_v)
+
+        fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+        fig.suptitle(f"{model_type} | MODEST Stokes Profiles: mean ± 1σ", fontsize=13, fontweight="bold")
+
+        axes[0].plot(wl, I_mean, color="tab:orange", linewidth=1.8, label="Mean I")
+        axes[0].fill_between(wl, I_mean - I_std, I_mean + I_std, color="tab:orange", alpha=0.25, label="±1σ")
+        axes[0].set_ylabel("Stokes I")
+        axes[0].grid(True, alpha=0.25)
+        axes[0].legend(loc="best", fontsize=9)
+
+        axes[1].plot(wl, V_mean, color="tab:purple", linewidth=1.8, label="Mean V")
+        axes[1].fill_between(wl, V_mean - V_std, V_mean + V_std, color="tab:purple", alpha=0.25, label="±1σ")
+        axes[1].set_xlabel("Wavelength [Angstrom]")
+        axes[1].set_ylabel("Stokes V")
+        axes[1].grid(True, alpha=0.25)
+        axes[1].legend(loc="best", fontsize=9)
+
+        out_root.mkdir(parents=True, exist_ok=True)
+        fig.tight_layout(rect=(0, 0, 1, 0.95))
+        fig.savefig(out_root / "stokes_mean_std_profiles.png", dpi=170, bbox_inches="tight")
+        plt.close(fig)
+
     def run(self, model_configs, models):
+        calibration_mode = self._temperature_calibration_mode()
+        print(f"Temperature calibration mode: {calibration_mode}")
         for name, model in models.items():
             model_type = model_configs[name]["experiment_key"]
             pred_tau = self.pipeline.get_model_logtau_values(model_configs[name])
@@ -870,7 +1186,43 @@ class ModestDiagnosticPlots:
                 pred_ny=self.pred_ny,
                 batch_size=self.args.inference_batch_size,
             )
+            if bool(getattr(self.args, "modest_pred_mhd_invert_sign", False)):
+                pred_mhd["Vz"] = -pred_mhd["Vz"]
+                pred_mhd["Bz"] = -pred_mhd["Bz"]
+                print(f"[{model_type}] Applied predicted MHD sign inversion for Vz and Bz.")
             out_root = self.modest_output_dir / model_type
+            self._plot_stokes_mean_std(model_type=model_type, out_root=out_root)
+            cal_path = self._temperature_calibration_path(model_type=model_type, out_root=out_root)
+
+            applied_by_tau_idx: dict[int, dict[str, float]] = {}
+            calibration_source = ""
+            if calibration_mode == "apply_fit":
+                cal_payload = self._load_temperature_calibration(cal_path)
+                if cal_payload is None:
+                    print(f"[{model_type}] No calibration file found — fitting now.")
+                    cal_payload = self._fit_temperature_affine_by_tau(
+                        model_type=model_type,
+                        matches=matches,
+                        true_cube=self.modest_mhd_data["T"],
+                        pred_cube=pred_mhd["T"],
+                    )
+                    n_coeff = len(cal_payload.get("coefficients", {}))
+                    if n_coeff > 0:
+                        self._save_temperature_calibration(cal_path, cal_payload)
+                        print(f"[{model_type}] Fitted and saved calibration ({n_coeff} taus) to: {cal_path}")
+                    else:
+                        print(f"[{model_type}] No calibration coefficients fitted (insufficient finite points). Proceeding without calibration.")
+                        cal_payload = None
+                else:
+                    print(f"[{model_type}] Loaded existing calibration from: {cal_path}")
+                if cal_payload is not None:
+                    pred_mhd["T"], applied_by_tau_idx = self._apply_temperature_calibration(
+                        pred_cube=pred_mhd["T"],
+                        matches=matches,
+                        payload=cal_payload,
+                    )
+                    calibration_source = str(cal_path)
+
             surface_dir = out_root / "surface"
             joint_dir = out_root / "jointplots"
             surface_dir.mkdir(parents=True, exist_ok=True)
@@ -885,23 +1237,29 @@ class ModestDiagnosticPlots:
                         continue
                     true_map = true_cube[:, :, i_mod]
                     pred_map = pred_cube[:, :, i_pred]
+                    plot_title = f"{model_type} | {param} | matched log(tau)={tau_val:.2f}"
+                    if param == "T" and calibration_mode == "apply_fit":
+                        if applied_by_tau_idx.get(i_pred) is not None:
+                            plot_title += " | post-calibrated (apply_fit)"
+                        else:
+                            plot_title += " | raw prediction (apply_fit requested, no coeff)"
                     self._plot_imshows(
                         true_2d=true_map,
                         pred_2d=pred_map,
-                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        title=plot_title,
                         save_path=surface_dir / f"{param}_tau_{tau_val:+.2f}_imshow.png",
                         param=param,
                         transpose=True,
-                        transpose_pred=not self.args.cropped_region,
                     )
                     metrics_out = self._plot_jointplot(
                         true_2d=true_map,
                         pred_2d=pred_map,
-                        title=f"{model_type} | {param} | matched log(tau)={tau_val:.2f}",
+                        title=plot_title,
                         save_path=joint_dir / f"{param}_tau_{tau_val:+.2f}_jointplot.png",
                     )
                     if metrics_out is not None:
                         metrics, comparison = metrics_out
+                        cal_info = applied_by_tau_idx.get(i_pred) if param == "T" else None
                         self.metrics_rows.append({
                             "model": model_type,
                             "param": param,
@@ -921,6 +1279,12 @@ class ModestDiagnosticPlots:
                             "w1_quantile": float(metrics["w1_quantile"]),
                             "jsd": float(metrics["jsd"]),
                             "overlap": float(metrics["overlap"]),
+                            "calibration_mode": calibration_mode,
+                            "calibration_applied": bool(cal_info is not None),
+                            "calibration_source": calibration_source,
+                            "calibration_a": float(cal_info["a"]) if cal_info is not None else np.nan,
+                            "calibration_b": float(cal_info["b"]) if cal_info is not None else np.nan,
+                            "calibration_n_fit": int(cal_info["n_points"]) if cal_info is not None else np.nan,
                         })
                     saved_any = True
             if saved_any:

@@ -13,6 +13,105 @@ from scipy.ndimage import uniform_filter1d
 from utils.cache_manage import ModestDataCache
 
 
+def transform_modest_stokes_profiles(
+	stokes: Dict[str, np.ndarray],
+	wavelength_angstrom: np.ndarray,
+	shift_positions: float = 0.0,
+	i_scale: float = 1.0,
+	v_scale: float = 1.0,
+	invert_direction: bool = False,
+	edge_extrapolation_points: int = 4,
+) -> Dict[str, np.ndarray]:
+	"""Apply optional spectral transformations to MODEST Stokes I/V profiles.
+
+	Transform order:
+	1) Optional spectral-axis inversion.
+	2) Optional spectral shift in sample positions with edge extrapolation.
+	3) Channel scaling (I and V independently).
+	"""
+	if "I" not in stokes or "V" not in stokes:
+		raise KeyError("stokes dictionary must contain 'I' and 'V' keys")
+
+	wl = np.asarray(wavelength_angstrom, dtype=np.float64)
+	if wl.ndim != 1:
+		raise ValueError(f"wavelength_angstrom must be 1D, got shape {wl.shape}")
+
+	I = np.asarray(stokes["I"], dtype=np.float32)
+	V = np.asarray(stokes["V"], dtype=np.float32)
+	if I.shape != V.shape:
+		raise ValueError(f"Stokes I/V shape mismatch: I{I.shape} vs V{V.shape}")
+	if I.ndim != 3:
+		raise ValueError(f"Expected Stokes cubes with shape (ny, nx, nwl), got {I.shape}")
+	if I.shape[2] != wl.size:
+		raise ValueError(
+			f"Wavelength size mismatch: nwl={I.shape[2]} in Stokes but {wl.size} wavelength points"
+		)
+
+	# Work on copies to keep the input dictionary unchanged.
+	I_out = np.array(I, copy=True)
+	V_out = np.array(V, copy=True)
+
+	if invert_direction:
+		I_out = I_out[:, :, ::-1]
+		V_out = V_out[:, :, ::-1]
+
+	def _fit_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+		if x.size < 2:
+			return 0.0, float(y[0]) if y.size > 0 else 0.0
+		a, b = np.polyfit(x, y, 1)
+		return float(a), float(b)
+
+	def _shift_cube(cube: np.ndarray, delta_positions: float) -> np.ndarray:
+		if abs(delta_positions) < 1e-14:
+			return cube
+
+		shifted = np.array(cube, copy=True)
+		nwl = shifted.shape[2]
+		grid = np.arange(nwl, dtype=np.float64)
+		query_grid = grid - float(delta_positions)
+		grid_min = 0.0
+		grid_max = float(nwl - 1)
+
+		ny, nx, _ = shifted.shape
+		for iy in range(ny):
+			for ix in range(nx):
+				spec = shifted[iy, ix, :]
+				finite = np.isfinite(spec)
+				if np.count_nonzero(finite) < 2:
+					continue
+
+				x = grid[finite]
+				y = spec[finite].astype(np.float64)
+
+				if x.size < 2:
+					continue
+
+				y_interp = np.interp(query_grid, x, y)
+
+				k = max(2, min(int(edge_extrapolation_points), x.size))
+				a_left, b_left = _fit_line(x[:k], y[:k])
+				a_right, b_right = _fit_line(x[-k:], y[-k:])
+
+				left_mask = query_grid < grid_min
+				right_mask = query_grid > grid_max
+				if np.any(left_mask):
+					y_interp[left_mask] = a_left * query_grid[left_mask] + b_left
+				if np.any(right_mask):
+					y_interp[right_mask] = a_right * query_grid[right_mask] + b_right
+
+				shifted[iy, ix, :] = y_interp.astype(np.float32)
+
+		return shifted
+
+	I_out = _shift_cube(I_out, shift_positions)
+	V_out = _shift_cube(V_out, shift_positions)
+
+	I_out = I_out * float(i_scale)
+	V_out = V_out * float(v_scale)
+
+	return {"I": I_out.astype(np.float32, copy=False), "V": V_out.astype(np.float32, copy=False)}
+
+
 class ModestData:
 	"""Load, process, and visualize MODEST Hinode/SP data products.
 
@@ -25,13 +124,17 @@ class ModestData:
 
 	def __init__(
 		self,
-		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/INV_560_AR11967/",
-		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
+		modest_dir: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/MUISCA/data/hinode-MODEST/INV_560_AR11967/",
+		psf_path: Union[Path, str] = "/scratchsan/observatorio/juagudeloo/MUISCA/data/hinode-MODEST/PSFs/hinode_psf_bin.0.16.fits",
 		circular_polarization_threshold: float = 1e-2,
+		stokes_v_multiplier: float = -1.0,
 	) -> None:
 		self.modest_dir = Path(modest_dir)
 		self.psf_path = Path(psf_path)
 		self.circular_polarization_threshold = circular_polarization_threshold
+		self.stokes_v_multiplier = float(stokes_v_multiplier)
+		if not np.isfinite(self.stokes_v_multiplier) or self.stokes_v_multiplier == 0.0:
+			raise ValueError("stokes_v_multiplier must be finite and non-zero")
 
 		# Data containers
 		self.continuum: Optional[np.ndarray] = None
@@ -69,7 +172,7 @@ class ModestData:
 		# Keep only I (0) and V (1) channels
 		self.obs_stokes = {
 			"I": cube[:, :, 0, :].astype(np.float32),
-			"V": cube[:, :, 1, :].astype(np.float32),
+			"V": (cube[:, :, 1, :].astype(np.float32) * self.stokes_v_multiplier),
 		}
 		return self.obs_stokes
 
@@ -79,9 +182,34 @@ class ModestData:
 			cube = hdul[0].data  # (ny, nx, 4, nwl_inv)
 		self.inverted_profs = {
 			"I": cube[:, :, 0, :].astype(np.float32),
-			"V": cube[:, :, 1, :].astype(np.float32),
+			"V": (cube[:, :, 1, :].astype(np.float32) * self.stokes_v_multiplier),
 		}
 		return self.inverted_profs
+
+	def _read_wavelength_metadata_from_inverted_profs(
+		self,
+		filename: str = "inverted_profs.1.fits",
+	) -> Optional[Tuple[float, float, float]]:
+		"""Return (wl_min_abs, wl_max_abs, wl_ref) in Angstrom from FITS header if present."""
+		path = self.modest_dir / filename
+		if not path.exists():
+			return None
+		try:
+			with fits.open(path) as hdul:
+				hdr = hdul[0].header
+			wl_ref = float(hdr["WLREF"])
+			wl_min = float(hdr["WLMIN"])
+			wl_max = float(hdr["WLMAX"])
+		except Exception:
+			return None
+
+		if not (np.isfinite(wl_ref) and np.isfinite(wl_min) and np.isfinite(wl_max)):
+			return None
+		wl_min_abs = wl_ref + wl_min
+		wl_max_abs = wl_ref + wl_max
+		if not (np.isfinite(wl_min_abs) and np.isfinite(wl_max_abs) and wl_max_abs > wl_min_abs):
+			return None
+		return wl_min_abs, wl_max_abs, wl_ref
 
 	def load_inverted_atmos(self, filename: str = "inverted_atmos.fits") -> np.ndarray:
 		path = self.modest_dir / filename
@@ -97,20 +225,31 @@ class ModestData:
 		return psf
 
 	def compute_wavelength_arrays(self) -> Tuple[u.Quantity, u.Quantity]:
-		# Observed Stokes: 112 points
-		naxis1 = 112
-		crval1 = 6302.0
-		cdelt1 = 0.0215
-		crpix1 = 57
-		wl_obs = crval1 + (np.arange(1, naxis1 + 1) - crpix1) * cdelt1
-		self.wl = wl_obs * u.Angstrom
+		obs_nwl = 112
+		inv_nwl = 250
+		# Use MODEST FITS metadata when available to avoid wavelength-offset bias.
+		meta = self._read_wavelength_metadata_from_inverted_profs()
+		if meta is not None:
+			wl_min_abs, wl_max_abs, wl_ref = meta
+			wl_obs = np.linspace(wl_min_abs, wl_max_abs, obs_nwl, dtype=np.float64)
+			wl_inv = np.linspace(wl_min_abs, wl_max_abs, inv_nwl, dtype=np.float64)
+			print(
+				f"MODEST wavelength axis from FITS header: [{wl_min_abs:.4f}, {wl_max_abs:.4f}] Å (WLREF={wl_ref:.4f})"
+			)
+		else:
+			crval1 = 6302.0
+			cdelt1 = 0.0215
+			crpix1 = 57
+			wl_obs = crval1 + (np.arange(1, obs_nwl + 1) - crpix1) * cdelt1
+			spectral_range = wl_obs[-1] - wl_obs[0]
+			cdelt1_inv = spectral_range / (inv_nwl - 1)
+			crpix1_inv = 125
+			wl_inv = crval1 + (np.arange(1, inv_nwl + 1) - crpix1_inv) * cdelt1_inv
+			print(
+				"MODEST wavelength metadata missing; using fallback Hinode grid assumptions."
+			)
 
-		# Inverted profiles: 250 points spanning observed range
-		naxis1_inv = 250
-		spectral_range = (self.wl[-1] - self.wl[0]).value
-		cdelt1_inv = spectral_range / (naxis1_inv - 1)
-		crpix1_inv = 125
-		wl_inv = crval1 + (np.arange(1, naxis1_inv + 1) - crpix1_inv) * cdelt1_inv
+		self.wl = wl_obs * u.Angstrom
 		self.wl_inv = wl_inv * u.Angstrom
 		return self.wl, self.wl_inv
 
@@ -204,7 +343,17 @@ class ModestData:
 
 				# Step 6: Inverse FFT
 				upsampled = np.real(ifft2(fftshift(dfc)))
-				upsampled_stokes[key][:, :, iw] = upsampled[:dn[0], :dn[1]]
+				result = upsampled[:dn[0], :dn[1]]
+
+				# Step 7: Normalize to preserve original mean intensity
+				# The upsampling and FFT operations distribute energy across more pixels
+				# This renormalization ensures the mean intensity is preserved
+				original_mean = np.nanmean(self.obs_stokes[key][:, :, iw])
+				result_mean = np.nanmean(result)
+				if result_mean != 0 and not np.isnan(result_mean):
+					result = result * (original_mean / result_mean)
+
+				upsampled_stokes[key][:, :, iw] = result
 
 		return upsampled_stokes
 
@@ -255,7 +404,7 @@ class ModestData:
 				)
 		return self.deconvolved_stokes
 
-	def smooth_stokes(self, window_size: int = 7, use_deconvolved: bool = True) -> Dict[str, np.ndarray]:
+	def smooth_stokes(self, window_size: int = 3, use_deconvolved: bool = True) -> Dict[str, np.ndarray]:
 		source = self.deconvolved_stokes if use_deconvolved else self.obs_stokes
 		if source is None:
 			raise ValueError("Stokes data not available for smoothing")
@@ -699,6 +848,8 @@ class ModestData:
 			"modest_dir": str(self.modest_dir.resolve()),
 			"psf_path": str(self.psf_path.resolve()),
 			"upsampling_factor": int(upsampling_factor),
+			"stokes_v_multiplier": float(self.stokes_v_multiplier),
+			"wavelength_axis_source": "inverted_profs_header_or_hinode_fallback",
 		}
 
 		cache_hash = None

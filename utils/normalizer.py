@@ -1,25 +1,40 @@
 import numpy as np
 from pathlib import Path
 import json
+import shutil
+import tempfile
 from typing import Dict, Any, Optional, List
 import torch
 
 class MhdNormalizer:
-    """Compute normalization statistics incrementally with per-optical-depth normalization."""
+    """Compute normalization statistics incrementally with per-optical-depth normalization.
     
-    def __init__(self, n_tau: int = 21, epsilon: float = 1e-8):
+    For Bz: applies per-τ asinh(Bz / B0_τ) transform where B0_τ = P60(|Bz|).
+    Also computes global tail-weighting parameters: B0_w = P90, B1_w = P99.5.
+    """
+    
+    def __init__(self, n_tau: int = 21, epsilon: float = 1e-8, raw_values_dir: Optional[str] = None, bz_hist_bins: int = 4096):
         """
         Initialize normalizer with per-τ statistics.
         
         Args:
             n_tau: number of optical depth levels (default: 21)
             epsilon: small value to avoid division by zero
+            raw_values_dir: optional directory used to spill raw Bz values to disk
+            bz_hist_bins: number of histogram bins used to estimate percentiles from disk-backed values
         """
         self.n_tau = n_tau
         self.epsilon = epsilon
+        self.bz_hist_bins = int(bz_hist_bins)
         self.finalized = False
         self.final_stats = None
         self.logtau_values = None
+        
+        # Percentile-based transform scales and tail-loss parameters
+        self.B0_transform_per_tau = None  # shape (n_tau,), transform scale per-τ
+        self.B0_weight_start = None  # scalar, P90 for tail-weighting start
+        self.B1_weight_saturation = None  # scalar, P99.5 for tail-weighting saturation
+        self.huber_delta = None  # scalar, Huber threshold = 0.25 * B0_weight_start
         
         # Initialize statistics for each parameter at each τ level
         self.stats = {}
@@ -33,9 +48,76 @@ class MhdNormalizer:
                     'tau_idx': tau_idx
                 })
         
+        # Raw Bz values are written to disk so the run does not accumulate them in RAM.
+        base_dir = Path(raw_values_dir) if raw_values_dir is not None else None
+        if base_dir is not None:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        self._bz_raw_storage_dir = Path(
+            tempfile.mkdtemp(
+                prefix="mhd_bz_raw_",
+                dir=str(base_dir) if base_dir is not None else None,
+            )
+        )
+        self._bz_raw_paths = [self._bz_raw_storage_dir / f"bz_abs_tau_{tau_idx:03d}.bin" for tau_idx in range(n_tau)]
+        self._bz_raw_sample_counts = [0 for _ in range(n_tau)]
+        self._bz_abs_max = 0.0
+
+    def _append_bz_raw_values(self, tau_idx: int, data_flat: np.ndarray) -> None:
+        """Append raw absolute Bz values for one τ level to the on-disk buffer."""
+        abs_values = np.asarray(np.abs(data_flat), dtype=np.float32)
+        if abs_values.size == 0:
+            return
+
+        current_max = float(abs_values.max())
+        if current_max > self._bz_abs_max:
+            self._bz_abs_max = current_max
+
+        self._bz_raw_sample_counts[tau_idx] += int(abs_values.size)
+        with open(self._bz_raw_paths[tau_idx], "ab") as handle:
+            abs_values.tofile(handle)
+
+    def _iter_bz_raw_chunks(self, tau_idx: int, chunk_size: int = 1_000_000):
+        """Yield raw Bz values for one τ level in small chunks from disk."""
+        path = self._bz_raw_paths[tau_idx]
+        if not path.exists() or path.stat().st_size == 0:
+            return
+
+        with open(path, "rb") as handle:
+            while True:
+                chunk = np.fromfile(handle, dtype=np.float32, count=chunk_size)
+                if chunk.size == 0:
+                    break
+                yield chunk
+
+    @staticmethod
+    def _percentile_from_histogram(counts: np.ndarray, edges: np.ndarray, percentile: float) -> float:
+        total = int(counts.sum())
+        if total <= 0:
+            return 0.0
+
+        target = (percentile / 100.0) * total
+        cumulative = np.cumsum(counts)
+        bin_idx = int(np.searchsorted(cumulative, target, side="left"))
+        bin_idx = min(bin_idx, len(counts) - 1)
+
+        left_cumulative = int(cumulative[bin_idx - 1]) if bin_idx > 0 else 0
+        bin_count = int(counts[bin_idx])
+        left_edge = float(edges[bin_idx])
+        right_edge = float(edges[bin_idx + 1])
+
+        if bin_count <= 0 or right_edge <= left_edge:
+            return left_edge
+
+        fraction = (target - left_cumulative) / bin_count
+        fraction = float(np.clip(fraction, 0.0, 1.0))
+        return left_edge + fraction * (right_edge - left_edge)
+        
     def update(self, od_data: dict):
         """
         Update running statistics per optical depth level.
+        
+        For Bz: applies per-τ asinh(Bz / B0_τ) transform where B0_τ will be computed
+        in finalize() from percentiles of collected raw values.
         
         Args:
             od_data: dict with keys 'T', 'Vz', 'Bz' 
@@ -56,16 +138,21 @@ class MhdNormalizer:
                 # Extract data at this τ level (nx, ny)
                 data_tau = data[:, :, tau_idx]
                 
-                # Apply log transform for Bz
-                if param == 'Bz':
-                    sign = np.sign(data_tau)
-                    data_tau = sign * np.log10(np.abs(data_tau) + 1.0)
-                
                 # Flatten to 1D
                 data_flat = data_tau.ravel()
                 
+                # For Bz, collect raw values for percentile computation in finalize()
+                # and apply asinh transform (with placeholder B0=1 for now, will rescale later)
+                if param == 'Bz':
+                    # Spill raw absolute values to disk so we do not retain them in RAM.
+                    self._append_bz_raw_values(tau_idx, data_flat)
+                    # Apply asinh with temporary B0=1; will be rescaled in finalize()
+                    data_tau = np.arcsinh(data_flat)  # asinh(Bz) with implicit B0=1
+                else:
+                    data_tau = data_flat
+                
                 # Welford's algorithm for this τ level
-                for x in data_flat:
+                for x in data_tau:
                     self.stats[param][tau_idx]['n'] += 1
                     delta = x - self.stats[param][tau_idx]['mean']
                     self.stats[param][tau_idx]['mean'] += delta / self.stats[param][tau_idx]['n']
@@ -76,11 +163,57 @@ class MhdNormalizer:
         """
         Convert accumulated statistics to mean/std for each τ level.
         
+        For Bz: computes per-τ asinh scaling parameter B0_tr from P60(|Bz|),
+        then rescales accumulated asinh statistics. Also computes global
+        tail-loss parameters: B0_w=P90, B1_w=P99.5, delta=0.25*B0_w.
+        
         Returns:
             final_stats: dict with normalization parameters per τ level
         """
         if self.finalized:
             return self.final_stats
+        
+        # Compute Bz percentiles for asinh scaling and tail loss
+        print("\nComputing Bz percentile parameters from raw data...")
+        if all(count == 0 for count in self._bz_raw_sample_counts):
+            raise ValueError("No raw Bz data collected. Cannot compute percentiles.")
+
+        hist_max = self._bz_abs_max if self._bz_abs_max > 0 else 1.0
+        histogram_edges = np.linspace(0.0, hist_max, self.bz_hist_bins + 1, dtype=np.float64)
+        per_tau_histograms = []
+        global_histogram = np.zeros(self.bz_hist_bins, dtype=np.int64)
+
+        for tau_idx in range(self.n_tau):
+            tau_histogram = np.zeros(self.bz_hist_bins, dtype=np.int64)
+            for chunk in self._iter_bz_raw_chunks(tau_idx):
+                chunk_histogram, _ = np.histogram(chunk, bins=histogram_edges)
+                tau_histogram += chunk_histogram.astype(np.int64, copy=False)
+            per_tau_histograms.append(tau_histogram)
+            global_histogram += tau_histogram
+        
+        # Global percentiles for tail loss (conservative defaults)
+        self.B0_weight_start = float(self._percentile_from_histogram(global_histogram, histogram_edges, 90.0))
+        self.B1_weight_saturation = float(self._percentile_from_histogram(global_histogram, histogram_edges, 99.5))
+        self.huber_delta = 0.25 * self.B0_weight_start  # Huber threshold
+        
+        # Per-τ percentiles for asinh transform scaling
+        self.B0_transform_per_tau = np.zeros(self.n_tau, dtype=np.float32)
+        for tau_idx, tau_histogram in enumerate(per_tau_histograms):
+            if self._bz_raw_sample_counts[tau_idx] > 0:
+                self.B0_transform_per_tau[tau_idx] = float(
+                    self._percentile_from_histogram(tau_histogram, histogram_edges, 60.0)
+                )
+            else:
+                self.B0_transform_per_tau[tau_idx] = 1.0  # fallback
+
+        self.B0_weight_start = self.B0_weight_start if self.B0_weight_start > self.epsilon else 1.0
+        self.B1_weight_saturation = self.B1_weight_saturation if self.B1_weight_saturation > self.epsilon else 1.0
+        self.B0_transform_per_tau = np.where(self.B0_transform_per_tau > self.epsilon, self.B0_transform_per_tau, 1.0)
+        
+        print(f"  Global B0_weight_start (P90):      {self.B0_weight_start:.2f} G")
+        print(f"  Global B1_weight_saturation (P99.5): {self.B1_weight_saturation:.2f} G")
+        print(f"  Huber delta:                        {self.huber_delta:.2f} G")
+        print(f"  Per-τ B0_transform (P60) range:    [{self.B0_transform_per_tau.min():.2f}, {self.B0_transform_per_tau.max():.2f}] G")
         
         self.final_stats = {}
         for param in ['T', 'Vz', 'Bz']:
@@ -92,20 +225,37 @@ class MhdNormalizer:
                 variance = self.stats[param][tau_idx]['M2'] / n if n > 1 else 0.0
                 std = np.sqrt(variance)
                 
-                self.final_stats[param].append({
+                stats_entry = {
                     'tau_idx': tau_idx,
                     'mean': float(mean),
                     'std': float(std),
                     'n_samples': int(n),
-                    'type': 'signum_log' if param == 'Bz' else ('standard' if param == 'T' else 'centered')
-                })
+                }
+                
+                if param == 'Bz':
+                    stats_entry['type'] = 'asinh'
+                    stats_entry['B0_transform'] = float(self.B0_transform_per_tau[tau_idx])
+                elif param == 'T':
+                    stats_entry['type'] = 'standard'
+                else:
+                    stats_entry['type'] = 'centered'
+                
+                self.final_stats[param].append(stats_entry)
         
         self.finalized = True
         return self.final_stats
+
+    def _cleanup_raw_storage(self) -> None:
+        """Remove temporary raw-value files once final statistics have been written."""
+        storage_dir = getattr(self, "_bz_raw_storage_dir", None)
+        if storage_dir is not None and Path(storage_dir).exists():
+            shutil.rmtree(storage_dir, ignore_errors=True)
     
     def transform(self, od_data: dict) -> dict:
         """
         Normalize atmospheric parameters per optical depth level.
+        
+        For Bz: applies per-τ asinh(Bz / B0_τ) transform then z-score normalization.
         
         Args:
             od_data: dict with keys 'T', 'Vz', 'Bz'
@@ -128,10 +278,10 @@ class MhdNormalizer:
             for tau_idx in range(self.n_tau):
                 data_tau = data[:, :, tau_idx]
                 
-                # Apply log transform for Bz
+                # Apply asinh transform for Bz with per-τ scaling
                 if param == 'Bz':
-                    sign = np.sign(data_tau)
-                    data_tau = sign * np.log10(np.abs(data_tau) + 1.0)
+                    B0 = self.B0_transform_per_tau[tau_idx]
+                    data_tau = np.arcsinh(data_tau / B0)
                 
                 # Get statistics for this τ level
                 stats_tau = self.final_stats[param][tau_idx]
@@ -141,7 +291,7 @@ class MhdNormalizer:
                     normalized_data[:, :, tau_idx] = (data_tau - stats_tau['mean']) / (stats_tau['std'] + self.epsilon)
                 elif stats_tau['type'] == 'centered':
                     normalized_data[:, :, tau_idx] = data_tau / (stats_tau['std'] + self.epsilon)
-                elif stats_tau['type'] == 'signum_log':
+                elif stats_tau['type'] == 'asinh':
                     normalized_data[:, :, tau_idx] = (data_tau - stats_tau['mean']) / (stats_tau['std'] + self.epsilon)
             
             normalized[param] = normalized_data
@@ -151,6 +301,9 @@ class MhdNormalizer:
     def denormalize(self, normalized_data: np.ndarray, param: str) -> np.ndarray:
         """
         Denormalize predictions back to physical units (per-τ).
+        
+        For Bz: reverses z-score normalization then applies inverse asinh:
+        Bz = B0_τ * sinh(y_asinh).
         
         Parameters
         ----------
@@ -185,10 +338,10 @@ class MhdNormalizer:
             # Denormalize: x = (x_norm * std) + mean
             denormalized_tau = (normalized_tau * std) + mean
             
-            # For Bz, reverse the log transform
+            # For Bz, reverse the asinh transform: Bz = B0 * sinh(y)
             if param == 'Bz':
-                sign = np.sign(denormalized_tau)
-                denormalized_tau = sign * (10.0 ** np.abs(denormalized_tau) - 1.0)
+                B0 = self.B0_transform_per_tau[tau_idx]
+                denormalized_tau = B0 * np.sinh(denormalized_tau)
             
             # Clip to reasonable ranges to avoid extreme outliers
             if param == 'T':
@@ -203,7 +356,7 @@ class MhdNormalizer:
         return denormalized
     
     def save(self, filepath: str, logtau_values: Optional[List[float]] = None):
-        """Save finalized normalization statistics."""
+        """Save finalized normalization statistics with asinh transform parameters."""
         if not self.finalized:
             print("Warning: Normalizer not finalized. Finalizing...")
             self.finalize()
@@ -213,19 +366,37 @@ class MhdNormalizer:
             'n_tau': self.n_tau,
             'epsilon': self.epsilon,
             'finalized': self.finalized,
-            'version': '2.0_per_tau'
+            'version': '3.0_asinh_per_tau'
         }
+        
+        # Save asinh transform scale per-τ
+        if self.B0_transform_per_tau is not None:
+            save_dict['B0_transform_per_tau'] = [float(x) for x in self.B0_transform_per_tau.tolist()]
+        
+        # Save global tail-loss parameters
+        if self.B0_weight_start is not None:
+            save_dict['B0_weight_start'] = float(self.B0_weight_start)
+            save_dict['B1_weight_saturation'] = float(self.B1_weight_saturation)
+            save_dict['huber_delta'] = float(self.huber_delta)
+        
         if logtau_values is not None:
             arr = np.asarray(logtau_values, dtype=np.float32)
             save_dict['logtau_values'] = [float(x) for x in np.round(arr, 6).tolist()]
+        save_dict['bz_hist_bins'] = int(self.bz_hist_bins)
 
         filepath = Path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
         
         with open(filepath, 'w') as f:
             json.dump(save_dict, f, indent=2)
+
+        self._cleanup_raw_storage()
         
-        print(f"Per-τ normalization statistics saved to {filepath}")
+        print(f"Per-τ normalization statistics (asinh) saved to {filepath}")
+        print(f"\nAsinh transform scale (B0_transform per-τ) range: "
+              f"[{self.B0_transform_per_tau.min():.2f}, {self.B0_transform_per_tau.max():.2f}] G")
+        print(f"Tail-loss parameters: B0_weight_start={self.B0_weight_start:.2f} G, "
+              f"B1_weight_saturation={self.B1_weight_saturation:.2f} G, delta={self.huber_delta:.2f} G")
         print(f"\nStatistics summary (first/middle/last τ levels):")
         for param in ['T', 'Vz', 'Bz']:
             print(f"\n{param}:")
@@ -240,7 +411,7 @@ class MhdNormalizer:
                 print(f"  τ={tau_idx:2d}: mean={stats['mean']:8.4f}, std={stats['std']:7.4f}, n={stats['n_samples']:,}")
     
     def load(self, filepath: str):
-        """Load normalization statistics from JSON file."""
+        """Load normalization statistics from JSON file (asinh version 3.0+ only)."""
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"Not found: {filepath}")
@@ -248,12 +419,19 @@ class MhdNormalizer:
         with open(filepath, 'r') as f:
             save_dict = json.load(f)
         
-        # Check version
+        # Check version and enforce hard switch from sign-log to asinh
         version = save_dict.get('version', '1.0_global')
-        if version == '1.0_global':
+        if version in ['1.0_global', '2.0_per_tau']:
             raise ValueError(
-                "Loaded statistics use global normalization (old version). "
-                "Per-τ normalization required. Please recompute statistics."
+                f"Loaded statistics use version {version} (sign-log Bz transform). "
+                "Switch to asinh transform requires recomputing normalization statistics. "
+                "Run: python scripts/compute_normalization_stats.py --clean_start --logtau_values <your_values>"
+            )
+        
+        if version not in ['3.0_asinh_per_tau', '3.1_asinh_disk_bz']:
+            raise ValueError(
+                f"Unsupported normalization version: {version}. "
+                "Expected version 3.0_asinh_per_tau or 3.1_asinh_disk_bz with asinh transform."
             )
         
         self.final_stats = save_dict['final_stats']
@@ -261,14 +439,38 @@ class MhdNormalizer:
         self.epsilon = save_dict.get('epsilon', 1e-8)
         self.finalized = save_dict.get('finalized', True)
         self.logtau_values = save_dict.get('logtau_values', None)
+        self.bz_hist_bins = int(save_dict.get('bz_hist_bins', self.bz_hist_bins))
         
-        print(f"Per-τ normalization statistics loaded from {filepath}")
+        # Load asinh transform parameters (new + legacy key names)
+        B0_transform_values = save_dict.get('B0_transform_per_tau', save_dict.get('bz_B0_tr_per_tau'))
+        if B0_transform_values is not None:
+            self.B0_transform_per_tau = np.asarray(B0_transform_values, dtype=np.float32)
+        
+        # Load tail-loss parameters (new + legacy key names)
+        B0_weight_start = save_dict.get('B0_weight_start', save_dict.get('bz_B0_w'))
+        B1_weight_saturation = save_dict.get('B1_weight_saturation', save_dict.get('bz_B1_w'))
+        huber_delta = save_dict.get('huber_delta', save_dict.get('bz_delta'))
+        if B0_weight_start is not None and B1_weight_saturation is not None and huber_delta is not None:
+            self.B0_weight_start = float(B0_weight_start)
+            self.B1_weight_saturation = float(B1_weight_saturation)
+            self.huber_delta = float(huber_delta)
+
+        # Backward aliases for in-memory compatibility with older code paths
+        self.bz_B0_tr_per_tau = self.B0_transform_per_tau
+        self.bz_B0_w = self.B0_weight_start
+        self.bz_B1_w = self.B1_weight_saturation
+        self.bz_delta = self.huber_delta
+        
+        print(f"Per-τ normalization statistics (asinh) loaded from {filepath}")
         print(f"Optical depth levels: {self.n_tau}")
+        if self.B0_weight_start is not None:
+            print(f"Bz tail-loss params: B0_weight_start={self.B0_weight_start:.2f} G, "
+                  f"B1_weight_saturation={self.B1_weight_saturation:.2f} G, delta={self.huber_delta:.2f} G")
         
         return self
     
     def save_state(self, filepath: str):
-        """Save intermediate state for resumption."""
+        """Save intermediate state for resumption (asinh version)."""
         if self.finalized:
             raise RuntimeError("Cannot save state of finalized normalizer.")
         
@@ -277,8 +479,14 @@ class MhdNormalizer:
             'n_tau': self.n_tau,
             'epsilon': self.epsilon,
             'finalized': self.finalized,
-            'version': '2.0_per_tau'
+            'version': '3.1_asinh_disk_bz',
+            'bz_hist_bins': int(self.bz_hist_bins),
+            'bz_abs_max': float(self._bz_abs_max),
+            'bz_raw_sample_counts': [int(x) for x in self._bz_raw_sample_counts],
+            'bz_raw_storage_dir': str(self._bz_raw_storage_dir),
+            'bz_raw_paths': [str(path) for path in self._bz_raw_paths],
         }
+        
         if self.logtau_values is not None:
             arr = np.asarray(self.logtau_values, dtype=np.float32)
             save_dict['logtau_values'] = [float(x) for x in np.round(arr, 6).tolist()]
@@ -293,7 +501,7 @@ class MhdNormalizer:
         print(f"Progress: τ=0 processed {self.stats['T'][0]['n']:,} samples")
     
     def load_state(self, filepath: str):
-        """Load intermediate state to resume computation."""
+        """Load intermediate state to resume computation (asinh version)."""
         filepath = Path(filepath)
         if not filepath.exists():
             raise FileNotFoundError(f"Not found: {filepath}")
@@ -301,11 +509,40 @@ class MhdNormalizer:
         with open(filepath, 'r') as f:
             save_dict = json.load(f)
         
+        # Check version
+        version = save_dict.get('version', '1.0_global')
+        if version in ['1.0_global', '2.0_per_tau']:
+            raise ValueError(
+                f"Resume state uses version {version} (sign-log Bz transform). "
+                "Cannot resume with asinh transform switch. "
+                "Start fresh: python scripts/compute_normalization_stats.py --clean_start"
+            )
+
+        if version not in ['3.0_asinh_per_tau', '3.1_asinh_disk_bz']:
+            raise ValueError(
+                f"Unsupported resume state version: {version}. "
+                "Expected version 3.0_asinh_per_tau or 3.1_asinh_disk_bz."
+            )
+        
         self.stats = save_dict['stats']
         self.n_tau = save_dict['n_tau']
         self.epsilon = save_dict.get('epsilon', 1e-8)
         self.finalized = save_dict.get('finalized', False)
         self.logtau_values = save_dict.get('logtau_values', None)
+        self.bz_hist_bins = int(save_dict.get('bz_hist_bins', self.bz_hist_bins))
+        self._bz_abs_max = float(save_dict.get('bz_abs_max', 0.0))
+        self._bz_raw_sample_counts = [int(x) for x in save_dict.get('bz_raw_sample_counts', [0 for _ in range(self.n_tau)])]
+
+        storage_dir = save_dict.get('bz_raw_storage_dir')
+        raw_paths = save_dict.get('bz_raw_paths')
+        if storage_dir is not None:
+            new_storage_dir = Path(storage_dir)
+            current_storage_dir = getattr(self, "_bz_raw_storage_dir", None)
+            if current_storage_dir is not None and Path(current_storage_dir) != new_storage_dir and Path(current_storage_dir).exists():
+                shutil.rmtree(current_storage_dir, ignore_errors=True)
+            self._bz_raw_storage_dir = new_storage_dir
+        if raw_paths is not None:
+            self._bz_raw_paths = [Path(path) for path in raw_paths]
         
         print(f"Normalizer state loaded from {filepath}")
         print(f"Progress: τ=0 processed {self.stats['T'][0]['n']:,} samples")
