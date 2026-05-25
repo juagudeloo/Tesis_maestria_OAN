@@ -326,7 +326,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--modest-cache-dir",
         type=str,
-        default="/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.modest_cache",
+        default="/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache",
         help="MODEST cache directory",
     )
     parser.add_argument("--clear-modest-cache", action="store_true", help="Clear MODEST cache before loading")
