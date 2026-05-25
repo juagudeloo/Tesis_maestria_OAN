@@ -25,7 +25,7 @@ def main(args):
     # Build the reusable analysis pipeline that finds models and manages inference.
     pipeline = AnalysisModelPipeline(
         device=device,
-        output_dir=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram"),
+        output_dir=Path("/scratchsan/observatorio/juagudeloo/MUISCA/images/analysis/muram"),
         experiment_root=args.experiment_root,
     )
     model_configs, models, n_tau = pipeline.prepare_models(args.model_types)
@@ -97,7 +97,7 @@ def main(args):
             config=cfg,
             model_name=model_type,
             step=args.step_to_plot,
-            output_dir=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/images/analysis/muram"),
+            output_dir=Path("/scratchsan/observatorio/juagudeloo/MUISCA/images/analysis/muram"),
             stokes_normalizer=stokes_normalizer,
         )
         plotter.generate(
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     parser.add_argument('--cache-dir', '--cache_dir', type=str,
                        default=os.environ.get(
                            "MURAM_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache",
+                           "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
                        ))
     parser.add_argument('--step-to-plot', type=int, default=90, help="Monitoring step to generate diagnostics for the trained models.")
     parser.add_argument(
