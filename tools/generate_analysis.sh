@@ -22,11 +22,14 @@ STEP_TO_PLOT="198"
 # MODEST analysis args
 CROPPED_REGION="0"                      # 1 => --cropped-region
 #sunspot
-CROP_BOUNDS=(100 300 250 450)             # X_MIN X_MAX Y_MIN Y_MAX
-CROP_LABEL="sunspot"                      # label for cropped region (used in plot titles and output paths)
+# CROP_BOUNDS=(100 300 250 450)             # X_MIN X_MAX Y_MIN Y_MAX
+# CROP_LABEL="sunspot"                      # label for cropped region (used in plot titles and output paths)
 #plage
 # CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
 # CROP_LABEL="plage"                      # label for cropped region (used in plot titles and output paths)
+#negative region
+CROP_BOUNDS=(0 80 0 200)             # X_MIN X_MAX Y_MIN Y_MAX
+CROP_LABEL="negative_region"      
 #quiet sun
 # CROP_BOUNDS=(0 100 600 700)             # X_MIN X_MAX Y_MIN Y_MAX
 # CROP_LABEL="quiet_sun"                      # label for cropped region (used in plot titles and output paths)

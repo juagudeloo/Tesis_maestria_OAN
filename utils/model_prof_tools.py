@@ -786,3 +786,76 @@ def read_model(filename, filetype, nx, ny, nz, ix, iy, sequential=0):
     else:
         print('Unknown file type')
         sys.exit(1)
+
+
+def write_ascii_model(
+    filepath,
+    logtau,
+    T,
+    v_los_kms,
+    b_long_G,
+    *,
+    v_mic_cms=1.0e5,
+    v_mac_cms=0.0,
+    stray_light=0.0,
+    b_x_G=0.0,
+    b_y_G=0.0,
+    el_p=None,
+    el_p_seed=1.0,
+):
+    # Write a NICOLE Format-version-1.0 ASCII .model file.
+    # MUISCA convention: logtau ascending (top -> bottom).
+    # NICOLE convention: rows ordered by descending logtau (deepest -> top).
+    # The function reverses internally and converts km/s -> cm/s for v_los.
+    # Columns written: log_tau, T(K), El_p(dyn/cm^2), v_mic(cm/s),
+    # B_long(G), v_los(cm/s), B_x(G), B_y(G).
+    import numpy as np
+    from pathlib import Path
+
+    logtau = np.asarray(logtau, dtype=np.float64).reshape(-1)
+    T = np.asarray(T, dtype=np.float64).reshape(-1)
+    v_los_kms = np.asarray(v_los_kms, dtype=np.float64).reshape(-1)
+    b_long_G = np.asarray(b_long_G, dtype=np.float64).reshape(-1)
+
+    n = logtau.size
+    if not (T.size == n and v_los_kms.size == n and b_long_G.size == n):
+        raise ValueError(
+            f"logtau, T, v_los_kms, b_long_G must have the same length "
+            f"(got {n}, {T.size}, {v_los_kms.size}, {b_long_G.size})"
+        )
+
+    v_mic = np.broadcast_to(np.asarray(v_mic_cms, dtype=np.float64), (n,))
+    b_x = np.broadcast_to(np.asarray(b_x_G, dtype=np.float64), (n,))
+    b_y = np.broadcast_to(np.asarray(b_y_G, dtype=np.float64), (n,))
+
+    if el_p is None:
+        # Constant seed; NICOLE recomputes via hydrostatic equilibrium when
+        # Impose hydrostatic equilibrium = Y in NICOLE.input.
+        el_p_arr = np.full(n, float(el_p_seed), dtype=np.float64)
+    else:
+        el_p_arr = np.asarray(el_p, dtype=np.float64).reshape(-1)
+        if el_p_arr.size != n:
+            raise ValueError(f"el_p must have length {n} (got {el_p_arr.size})")
+
+    # Reverse to descending log tau (NICOLE convention)
+    order = np.argsort(logtau)[::-1]
+    logtau_d = logtau[order]
+    T_d = T[order]
+    el_p_d = el_p_arr[order]
+    v_mic_d = v_mic[order]
+    b_long_d = b_long_G[order]
+    v_los_d = v_los_kms[order] * 1.0e5  # km/s -> cm/s
+    b_x_d = b_x[order]
+    b_y_d = b_y[order]
+
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(filepath, "w") as f:
+        f.write("Format version: 1.0\n")
+        f.write(f"  {v_mac_cms:.3E}    {stray_light:.3f}\n")
+        for i in range(n):
+            f.write(
+                f"  {logtau_d[i]:6.2f}  {T_d[i]:7.1f}  {el_p_d[i]:.3E}  "
+                f"{v_mic_d[i]:.3E}  {b_long_d[i]:8.2f}  {v_los_d[i]:.3E}  "
+                f"{b_x_d[i]:8.2f}  {b_y_d[i]:8.2f}\n"
+            )

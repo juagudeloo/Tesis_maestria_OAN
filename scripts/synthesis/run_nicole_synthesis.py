@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Drive NICOLE in synthesis mode on a set of pre-exported MUISCA predictions."""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import h5py
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+from utils.synthesis import NicoleRunner, SynthesisConfig
+
+
+def parse_pixel(value: str) -> tuple[int, int]:
+    parts = value.split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(f"--pixel expects 'ix,iy' (got {value!r})")
+    return int(parts[0]), int(parts[1])
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--predictions-h5", type=Path, required=True,
+                   help="HDF5 produced by scripts/synthesis/export_predictions.py")
+    p.add_argument("--pixel", type=parse_pixel, action="append",
+                   help="Pixel to synthesize (repeatable). Omit to run all exported pixels.")
+    p.add_argument("--nicole-root", type=Path,
+                   default=Path("/scratchsan/observatorio/juagudeloo/NICOLE"))
+    p.add_argument("--nicole-assets", type=Path,
+                   default=Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/nicole_assets"))
+    p.add_argument("--wl-first", type=float, default=6300.796)
+    p.add_argument("--wl-step-mA", type=float, default=21.5)
+    p.add_argument("--n-wl", type=int, default=112)
+    p.add_argument("--v-mic-cms", type=float, default=1.0e5)
+    p.add_argument("--v-mac-cms", type=float, default=0.0)
+    p.add_argument("--el-p-seed", type=float, default=1.0)
+    args = p.parse_args()
+
+    with h5py.File(args.predictions_h5, "r") as h5:
+        source = h5.attrs.get("source", "modest")
+        experiment_root = h5.attrs.get("experiment_root", "")
+        model_type = h5.attrs.get("model_type", "")
+        region_label = h5.attrs.get("region_label", "whole")
+
+    cfg = SynthesisConfig(
+        source=str(source),
+        experiment_root=str(experiment_root),
+        model_type=str(model_type),
+        region_label=str(region_label),
+        output_root=args.predictions_h5.resolve().parent.parent.parent.parent,
+        nicole_root=args.nicole_root,
+        nicole_assets=args.nicole_assets,
+        wl_first=args.wl_first,
+        wl_step_mA=args.wl_step_mA,
+        n_wl=args.n_wl,
+        v_mic_cms=args.v_mic_cms,
+        v_mac_cms=args.v_mac_cms,
+        el_p_seed=args.el_p_seed,
+    )
+
+    runner = NicoleRunner(cfg)
+    out = runner.run_pixels_from_h5(args.predictions_h5, pixels=args.pixel)
+    print(f"\nWrote {out}")
+
+
+if __name__ == "__main__":
+    main()
