@@ -39,6 +39,17 @@ from utils.normalizer import MhdNormalizer, StokesNormalizer
 
 
 @dataclass
+class WholeRegionPrediction:
+    """Result of running MUISCA inference over a whole cropped/uncropped region."""
+    pred_mhd: dict[str, np.ndarray]          # {"T", "Vz", "Bz"}, each (pred_nx, pred_ny, n_tau)
+    prediction_stokes: dict[str, np.ndarray] # {"I", "V"}, each (pred_nx, pred_ny, n_wl)
+    wavelength: np.ndarray                    # (n_wl,)
+    logtau: np.ndarray                        # (n_tau,)
+    pred_nx: int
+    pred_ny: int
+
+
+@dataclass
 class SynthesisConfig:
     source: str  # "modest" (v1) or "muram" (v2, stub)
     experiment_root: str
@@ -100,7 +111,14 @@ class PredictionExporter:
         self.cfg = cfg
         self.device = device
 
-    def export(self, pixels: Sequence[tuple[int, int]]) -> Path:
+    def predict_whole_region(self) -> WholeRegionPrediction:
+        """Run the trained model over the entire cropped/uncropped region.
+
+        Returns a WholeRegionPrediction containing denormalized T/Vz/Bz cubes
+        of shape (pred_nx, pred_ny, n_tau) plus matched observed Stokes and
+        wavelength/logtau arrays. This is the core inference step that both
+        export() and external sampling scripts (e.g., pixel_sampling.py) reuse.
+        """
         cfg = self.cfg
         out_dir = cfg.out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -179,6 +197,28 @@ class PredictionExporter:
             batch_size=cfg.inference_batch_size,
         )
 
+        return WholeRegionPrediction(
+            pred_mhd=pred_mhd,
+            prediction_stokes=prediction_stokes,
+            wavelength=wavelength,
+            logtau=pred_tau_arr,
+            pred_nx=pred_nx,
+            pred_ny=pred_ny,
+        )
+
+    def export(self, pixels: Sequence[tuple[int, int]]) -> Path:
+        cfg = self.cfg
+
+        # Run inference over the whole region once
+        region = self.predict_whole_region()
+        pred_mhd = region.pred_mhd
+        prediction_stokes = region.prediction_stokes
+        wavelength = region.wavelength
+        logtau = region.logtau
+        pred_nx = region.pred_nx
+        pred_ny = region.pred_ny
+        n_tau = len(logtau)
+
         # Subselect the requested pixels.
         pixels_arr = np.asarray(pixels, dtype=np.int64).reshape(-1, 2)
         for (ix, iy) in pixels_arr:
@@ -208,7 +248,7 @@ class PredictionExporter:
             h5.create_dataset("Vz", data=Vz_out)
             h5.create_dataset("Bz", data=Bz_out)
             h5.create_dataset("pixels", data=pixels_arr)
-            h5.create_dataset("logtau", data=pred_tau_arr)
+            h5.create_dataset("logtau", data=logtau)
             h5.create_dataset("wavelengths", data=wavelength)
             h5.create_dataset("stokes_obs", data=stokes_obs)
             h5.attrs["source"] = cfg.source

@@ -55,6 +55,7 @@ MUISCA/
 ├── scripts/
 │   └── synthesis/                           ← (new) CLI drivers
 │       ├── __init__.py
+│       ├── sample_pixels.py                 ← step 0 (optional): stratify a region by |B_LOS|, pick test pixels
 │       ├── export_predictions.py            ← step 1: run model → predictions.h5
 │       ├── run_nicole_synthesis.py          ← step 2: predictions.h5 → NICOLE → syntheses.h5
 │       └── compare_synthesis.py             ← step 3: overlay PNGs + χ²
@@ -62,13 +63,18 @@ MUISCA/
 │   └── run_nicole_synthesis.sh              ← (new) sbatch front for the three-step flow
 └── utils/
     ├── model_prof_tools.py                  ← (modified) added write_ascii_model()
-    └── synthesis.py                         ← (new) SynthesisConfig / Exporter / Runner / Comparator
+    ├── pixel_sampling.py                    ← (new) stratified-by-|B_LOS| pixel sampler + diagnostic plot
+    └── synthesis.py                         ← (new) SynthesisConfig / WholeRegionPrediction / Exporter / Runner / Comparator
 ```
 
-The data flow is three sequential steps:
+The data flow is three sequential steps, plus an optional step 0 for picking
+which pixels to run when you want more than one hand-picked coordinate:
 
 ```
 [Trained checkpoint] + [MODEST observation]
+        │
+        ▼   scripts/synthesis/sample_pixels.py            (optional)
+selected_pixels.json + abs_bz_map_selected_pixels.png
         │
         ▼   scripts/synthesis/export_predictions.py
 predictions.h5 (denormalized T, V_LOS, B_LOS + matched observed Stokes)
@@ -82,9 +88,10 @@ syntheses.h5 (NICOLE-synthesized IQUV per pixel)
 overlay PNGs + chi2.json
 ```
 
-Each script is a thin wrapper around the four classes in
-[utils/synthesis.py](../utils/synthesis.py), so the same workflow can be
-driven from a notebook or a SLURM array if you prefer.
+Each script is a thin wrapper around the classes in
+[utils/synthesis.py](../utils/synthesis.py) and
+[utils/pixel_sampling.py](../utils/pixel_sampling.py), so the same workflow
+can be driven from a notebook or a SLURM array if you prefer.
 
 ---
 
@@ -169,7 +176,16 @@ consistent. The interesting fields:
 
 This is step 1. It reuses the existing analysis machinery so the bridge
 cannot drift out of sync with how the rest of MUISCA produces predictions.
-Reused symbols:
+Internally, `export(pixels)` first calls `predict_whole_region()` — a
+method that runs inference once over the full cropped region and returns a
+`WholeRegionPrediction` (the denormalized `pred_mhd` dict, `prediction_stokes`,
+`wavelength`, `logtau`, and the region's pixel-grid shape) — then subselects
+the requested pixels out of that cube and writes them to HDF5.
+`predict_whole_region()` is also the method [`utils/pixel_sampling.py`](../utils/pixel_sampling.py)
+calls to drive stratified sampling (see "Stratified pixel sampling" below);
+factoring it out means the sampler and the exporter share one inference pass
+and one `(ix, iy)` indexing convention, instead of each script loading the
+model and indexing pixels independently. Reused symbols:
 
 - `utils.analysis.AnalysisModelPipeline.prepare_models()` — loads the
   checkpoint and figures out `n_tau` (the number of optical-depth nodes the
@@ -351,9 +367,80 @@ sampled dataset), pass `--wl-first / --wl-step-mA / --n-wl` to
 
 ---
 
+## Stratified pixel sampling (step 0)
+
+A single hand-picked pixel can't tell you whether a finding (e.g. "Stokes V
+amplitude is too small") is a local quirk or systematic across field-strength
+regimes. [`scripts/synthesis/sample_pixels.py`](../scripts/synthesis/sample_pixels.py)
+and [`utils/pixel_sampling.py`](../utils/pixel_sampling.py) add an optional
+step 0 that runs inference once over a cropped region, stratifies pixels by
+predicted `|B_LOS|` at the deepest optical-depth level, and samples a few
+pixels per field-strength bin — guaranteeing the test set spans quiet-Sun,
+plage, and strong-field (pore/sunspot) regimes instead of leaving that to
+chance. NICOLE synthesis is fast (≈1 s/pixel), so 15–20 pixels is cheap.
+
+`sample_pixels_by_abs_bz(cfg, device, n_bins=5, n_per_bin=3, seed=0)`:
+
+1. Calls `PredictionExporter(cfg, device).predict_whole_region()` and takes
+   `|pred_mhd["Bz"][:, :, -1]|` (the deepest τ level).
+2. Builds **log-spaced bin edges** — `np.logspace(log10(floor), log10(max), n_bins+1)`,
+   i.e. equal-width intervals in log₁₀(Gauss) space — rather than
+   percentile/quantile edges. The two strategies were both tried:
+   - *Quantile edges* (`np.quantile(vals, linspace(0,1,n_bins+1))`) guarantee
+     equal **pixel count** per bin. On the `negative_region` test crop this
+     produced `[0, 5.9, 11.2, 22.0, 79.8, 10000]` G — the first four bins
+     squeezed into 0–80 G and the last bin spanning 80–10000 G. That's the
+     expected signature of quantile binning on a heavily right-skewed
+     |B_LOS| distribution (quiet-Sun pixels dominate the pixel count), but it
+     meant a 90 G plage pixel and a 788 G sunspot pixel landed in the same
+     bin — poor resolution exactly where the model's WFA accuracy is most in
+     question.
+   - **Log-spaced edges** (current behavior) instead guarantee equal
+     **decade width** per bin, so each bin is a physically meaningful
+     order-of-magnitude regime (e.g. ~0.03–0.7 G, 0.7–16 G, 16–400 G,
+     400–10000 G). Pixel *counts* per bin are no longer equal — a strong-field
+     bin may have few or zero candidates on a quiet-Sun-dominated crop — but
+     the sampling loop already tolerates sparse/empty bins.
+   - The floor for the log scale is derived from the data (`min` of the
+     positive values in the map, not a hardcoded constant), since `|B_LOS|`
+     legitimately hits exact `0.0` G for some pixels and `log(0)` is
+     undefined. Pixels are clipped to this floor only for bin *assignment*;
+     the recorded `|B_LOS|` value for a zero pixel stays `0.0`, not the floor.
+3. Samples up to `n_per_bin` pixels per non-empty bin via
+   `np.random.default_rng(seed).choice(..., replace=False)`.
+
+`write_pixel_selection_outputs(...)` writes, under
+`<region output dir>/pixel_selection/`:
+
+- `selected_pixels.json` — pixels, bin index, `|B_LOS|` value, log-spaced bin
+  edges, log τ value, crop bounds.
+- `pixel_selection_snippets.txt` — ready-to-paste `--pixel ix,iy ...` args for
+  `export_predictions.py`/`run_nicole_synthesis.py`, and a `PIXELS=(...)` bash
+  array matching `tools/run_nicole_synthesis.sh`'s format.
+- `abs_bz_map_selected_pixels.png` — the `|B_LOS|` map for the whole crop,
+  colored with `LogNorm` (so the color resolution matches the log-spaced
+  bins; a linear scale would wash out everything below ~100 G), with sampled
+  pixels overlaid as scatter points color-coded by bin.
+
+```bash
+python scripts/synthesis/sample_pixels.py \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --model-type wfa_only \
+    --region-label negative_region \
+    --crop-bounds 0 80 0 200 \
+    --n-bins 5 --n-per-bin 3 --seed 0
+# → output/synthesis/.../pixel_selection/{selected_pixels.json, pixel_selection_snippets.txt, abs_bz_map_selected_pixels.png}
+```
+
+The printed snippet's `--pixel` args feed directly into step 1
+(`export_predictions.py`), which accepts the flag repeatably.
+
+---
+
 ## How to use it
 
-Three steps. Each step can be run independently.
+Three steps (plus the optional step 0 above). Each step can be run
+independently.
 
 ```bash
 # 1. Run the trained model on a region of MODEST and persist the predictions
@@ -464,6 +551,8 @@ itself, and the symlink pattern matches all in-tree `test/*` examples.
 
 ## Verification result
 
+### Single-pixel verification
+
 A single MODEST pixel ((ix, iy) = (40, 100) of the `negative_region` crop of
 `experiment_81_to_181-step_size_5-normal/wfa_only`) was driven end-to-end
 through all three steps. NICOLE wall time per pixel is roughly one second.
@@ -494,6 +583,38 @@ not about the bridge):
   construction (assumption 5), and the comparator does not attempt to
   match them.
 
+### Multi-pixel, stratified verification
+
+The same crop was re-tested using `sample_pixels.py` (`--n-bins 5
+--n-per-bin 3 --seed 0`), which selected 15 pixels across 5 log-spaced
+`|B_LOS|` bins (deepest level, log τ ≈ 1.40):
+
+| bin | `|B_LOS|` range (G) | pixels (examples) |
+|-----|----------------------|--------------------|
+| 0   | 0.001 – 0.026        | weakest quiet-Sun  |
+| 1   | 0.026 – 0.65         | quiet-Sun          |
+| 2   | 0.65 – 16            | weak plage         |
+| 3   | 16 – 402             | plage / pore       |
+| 4   | 402 – 10000          | sunspot-level      |
+
+All 15 were run through `export_predictions.py` → `run_nicole_synthesis.py`
+→ `compare_synthesis.py` without errors, producing 15 `overlay_pix_*.png`
+files and a `chi2.json` with 15 entries. The χ² pattern confirms the
+single-pixel finding is systematic, not local:
+
+- **χ²(Stokes V) is flat at ~10²–10⁴ across bins 0–3** (weak through
+  moderately-strong field, `|B_LOS|` up to ~80 G).
+- **χ²(Stokes V) jumps ~2 orders of magnitude in bin 4** (`|B_LOS|` ≈
+  440–850 G): from ~10²–10⁴ to ~2×10⁵–9×10⁵. The WFA-only model's Stokes V
+  reconstruction degrades sharply specifically in the strong-field regime —
+  exactly where the single-pixel run's "10× too small" Stokes V amplitude
+  was first spotted, now confirmed across multiple independent pixels rather
+  than one coordinate.
+- χ²(Stokes I) does not show the same bin-4 jump (it ranges ~3×10⁶–1.8×10⁷
+  across all bins with no clear trend with field strength), suggesting the
+  degradation is specific to the magnetic-sensitive Stokes V channel and
+  not a general synthesis-quality issue that scales with field strength.
+
 ---
 
 ## Current limitations and open follow-ups
@@ -504,9 +625,11 @@ These are not bugs — they are tradeoffs documented for awareness:
    path (which would give us a three-way comparison: MURaM ground-truth
    atmosphere vs. MUISCA prediction vs. NICOLE-synthesized Stokes) is in
    `SynthesisConfig` as a `NotImplementedError` placeholder.
-2. **Single-pixel by default.** v1 expects an explicit `--pixel` list. A
-   SLURM-array driver that fans out across a full crop region is item 8 in
-   the original plan and is the natural v2 extension.
+2. **Explicit pixel list required.** `export_predictions.py` still expects
+   an explicit `--pixel` list — `sample_pixels.py` (step 0) picks a
+   representative handful for you, but there is no driver that fans out
+   across *every* pixel in a crop region. A SLURM-array driver for full-region
+   coverage is item 8 in the original plan and is the natural v2 extension.
 3. **Stokes-I normalization mismatch.** The MODEST loader returns
    "continuum-normalized" Stokes I, but the empirical range in a sample
    pixel is ≈ 0.44–0.80 rather than ≈ 0.0–1.0 (the line core sits at 0.44,
