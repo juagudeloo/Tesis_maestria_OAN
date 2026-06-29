@@ -12,12 +12,17 @@ model-independent), this script:
   2. Joins the per-model chi2 by pixel into cross_model_chi2.json.
   3. Aggregates chi2 by mean and median per |B_LOS| bin per model into
      bin_summary.json (the bin assignment comes from sample_pixels.py's
-     selected_pixels.json).
-  4. Plots one combined overlay PNG per pixel: one observed Stokes I/V curve
+     selected_pixels.json). These two cover the full pixel set sample_pixels.py
+     selected (the "violin/aggregate tier").
+  4. Plots one combined overlay PNG per pixel, but only for the small
+     "overlay tier" subset flagged by sample_pixels.py's --n-overlay-per-bin
+     (a strict subset of the full pixel set) -- one observed Stokes I/V curve
      plus one synthesized curve per model variant, on the same axes.
 
-Output goes to output_root/experiment_root/region_label/cross_model_comparison/,
-a path that isn't owned by any single model variant.
+Output goes to output_root/experiment_root/region_label/pixel_comparison/,
+a path that isn't owned by any single model variant. (For aggregate
+distribution plots over the full violin tier, see aggregate_comparison.py,
+which writes to .../region_label/aggregate_plots/ instead.)
 """
 from __future__ import annotations
 
@@ -192,6 +197,7 @@ def main():
     # against the others if present).
     bin_of_pixel: dict[tuple[int, int], int] = {}
     abs_bz_of_pixel: dict[tuple[int, int], float] = {}
+    overlay_flag: dict[tuple[int, int], bool] = {}
     bin_edges: list[float] = []
     for i, mt in enumerate(model_types):
         selection_json = cfg_by_model[mt].out_dir() / "pixel_selection" / "selected_pixels.json"
@@ -204,6 +210,9 @@ def main():
             for entry in selection["pixels"]:
                 bin_of_pixel[(entry["ix"], entry["iy"])] = entry["bin"]
                 abs_bz_of_pixel[(entry["ix"], entry["iy"])] = entry["abs_bz_gauss"]
+                # .get(..., False) so selected_pixels.json files predating the
+                # overlay-tier feature degrade gracefully instead of erroring.
+                overlay_flag[(entry["ix"], entry["iy"])] = entry.get("is_overlay_example", False)
         else:
             if selection["bin_edges_gauss"] != bin_edges:
                 print(
@@ -212,7 +221,7 @@ def main():
                     "consistently across models"
                 )
 
-    out_dir = args.output_root / args.experiment_root / args.region_label / "cross_model_comparison"
+    out_dir = args.output_root / args.experiment_root / args.region_label / "pixel_comparison"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # cross_model_chi2.json
@@ -280,10 +289,22 @@ def main():
                 f"chi2_V mean={ms['chi2_V_mean']:.3g} median={ms['chi2_V_median']:.3g}"
             )
 
-    # Combined overlay PNGs.
+    # Combined overlay PNGs -- only for the small overlay-tier subset (strict
+    # subset of common_pixels), so individual PNGs stay visually manageable
+    # while cross_model_chi2.json/bin_summary.json above keep covering the
+    # full (larger) violin/aggregate tier.
+    overlay_pixels = [p for p in common_pixels if overlay_flag.get(p, False)]
+    if not overlay_pixels:
+        print(
+            "\n  WARNING: no pixels flagged is_overlay_example in selected_pixels.json "
+            "(stale file predating the overlay-tier feature?) -- falling back to "
+            "plotting all common_pixels"
+        )
+        overlay_pixels = common_pixels
+
     model_colors = dict(zip(model_types, cycle(DEFAULT_COLORS)))
-    print(f"\nWriting {len(common_pixels)} combined overlay PNGs...")
-    for ix, iy in common_pixels:
+    print(f"\nWriting {len(overlay_pixels)} combined overlay PNGs...")
+    for ix, iy in overlay_pixels:
         b = bin_of_pixel.get((ix, iy))
         bin_range = (bin_edges[b], bin_edges[b + 1]) if b is not None and bin_edges else None
         abs_b_los = abs_bz_of_pixel.get((ix, iy))

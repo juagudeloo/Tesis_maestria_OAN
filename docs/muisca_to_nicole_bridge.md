@@ -433,16 +433,32 @@ chance. NICOLE synthesis is fast (≈1 s/pixel), so 15–20 pixels is cheap.
      undefined. Pixels are clipped to this floor only for bin *assignment*;
      the recorded `|B_LOS|` value for a zero pixel stays `0.0`, not the floor.
 3. Samples up to `n_per_bin` pixels per non-empty bin via
-   `np.random.default_rng(seed).choice(..., replace=False)`.
+   `np.random.default_rng(seed).choice(..., replace=False)` — this is the
+   **violin/aggregate tier**, used for χ² statistics and distribution plots
+   (see "Aggregate distribution comparison" below). It's deliberately a
+   large *bounded* sample, not literally every pixel in the region: past a
+   few hundred pixels a violin/box plot stops getting meaningfully sharper,
+   while NICOLE's ~0.1–1s/pixel sequential synthesis cost would balloon into
+   hours for true exhaustive coverage of a heavily right-skewed `|B_LOS|`
+   population.
+4. `mark_overlay_subset(result, n_overlay_per_bin, seed)` then draws a
+   *second, smaller* sample of `n_overlay_per_bin` pixels per bin (default 3)
+   — but drawn from *within* step 3's already-selected pixels for that bin,
+   not a fresh independent draw, so this **overlay tier** is always a strict
+   subset of the violin tier. It's used only for individual per-pixel Stokes
+   I/V overlay PNGs (`compare_models.py`), which stay visually manageable at
+   a handful per bin even though the violin tier might have dozens.
 
 `write_pixel_selection_outputs(...)` writes, under
 `<region output dir>/pixel_selection/`:
 
-- `selected_pixels.json` — pixels, bin index, `|B_LOS|` value, log-spaced bin
-  edges, log τ value, crop bounds.
+- `selected_pixels.json` — pixels, bin index, `|B_LOS|` value, an
+  `is_overlay_example` flag per pixel (marking the overlay-tier subset),
+  log-spaced bin edges, log τ value, crop bounds.
 - `pixel_selection_snippets.txt` — ready-to-paste `--pixel ix,iy ...` args for
-  `export_predictions.py`/`run_nicole_synthesis.py`, and a `PIXELS=(...)` bash
-  array matching `tools/run_nicole_synthesis.sh`'s format.
+  `export_predictions.py`/`run_nicole_synthesis.py` (covering the full violin
+  tier), and a `PIXELS=(...)` bash array matching
+  `tools/run_nicole_synthesis.sh`'s format.
 - `abs_bz_map_selected_pixels.png` — the `|B_LOS|` map for the whole crop,
   colored with `LogNorm` (so the color resolution matches the log-spaced
   bins; a linear scale would wash out everything below ~100 G), with sampled
@@ -454,7 +470,7 @@ python scripts/synthesis/sample_pixels.py \
     --model-type wfa_only \
     --region-label negative_region \
     --crop-bounds 0 80 0 200 \
-    --n-bins 5 --n-per-bin 3 --seed 0
+    --n-bins 5 --n-per-bin 20 --n-overlay-per-bin 3 --seed 0
 # → output/synthesis/.../pixel_selection/{selected_pixels.json, pixel_selection_snippets.txt, abs_bz_map_selected_pixels.png}
 ```
 
@@ -480,7 +496,7 @@ python scripts/synthesis/compare_models.py \
     --experiment-root experiment_81_to_181-step_size_5-normal \
     --region-label negative_region \
     --model-type wfa_only --model-type no_physics
-# → output/synthesis/<experiment_root>/<region_label>/cross_model_comparison/
+# → output/synthesis/<experiment_root>/<region_label>/pixel_comparison/
 ```
 
 This output directory sits one level up from any single model's directory
@@ -488,25 +504,62 @@ This output directory sits one level up from any single model's directory
 the comparison isn't owned by any one model variant. It contains:
 
 - `cross_model_chi2.json` — per-pixel χ² for every requested model, keyed
-  `"ix,iy"` → `{model_type: {chi2_I, chi2_V, n_wl}}`.
+  `"ix,iy"` → `{model_type: {chi2_I, chi2_V, n_wl}}`. Covers the full
+  violin/aggregate tier (all of `sample_pixels.py`'s `--n-per-bin` pixels),
+  which only makes this aggregate stronger.
 - `bin_summary.json` — χ² aggregated by **mean and median** per `|B_LOS|`
   bin per model (not raw sum, since bins can have unequal pixel counts; not
   profile averaging, since Stokes V is sign-sensitive to B_LOS polarity and
   a bin can mix polarities, which would partially cancel a literal average
-  of V profiles).
-- `<bin_lo>-<bin_hi>/overlay_pix_<ix>_<iy>.png` — one PNG per pixel showing
-  the observed Stokes I/V curve (solid black, taken from one model's
-  `predictions.h5` after a sanity check that it agrees with the others —
-  it should, since they all reference the same underlying MODEST
-  observation) plus one dashed, distinctly-colored synthesized curve per
-  model variant, on the same axes. Mirrors `SynthesisComparator.plot_overlay`'s
-  layout (`figsize=(12,4)`, same titles/labels/save convention) for visual
-  consistency with the single-model overlays.
+  of V profiles). Also covers the full violin tier.
+- `<bin_lo>-<bin_hi>/overlay_pix_<ix>_<iy>.png` — one PNG per pixel, but only
+  for the small **overlay tier** (`selected_pixels.json`'s
+  `is_overlay_example` pixels — a strict subset of the violin tier, see step
+  0 above), so the PNG count stays a handful per bin even when the violin
+  tier has dozens. Each PNG shows the observed Stokes I/V curve (solid
+  black, taken from one model's `predictions.h5` after a sanity check that
+  it agrees with the others — it should, since they all reference the same
+  underlying MODEST observation) plus one dashed, distinctly-colored
+  synthesized curve per model variant, on the same axes. Mirrors
+  `SynthesisComparator.plot_overlay`'s layout (`figsize=(12,4)`, same
+  titles/labels/save convention) for visual consistency with the
+  single-model overlays. If `selected_pixels.json` predates the overlay-tier
+  feature (no pixel has `is_overlay_example`), the script warns and falls
+  back to plotting every common pixel instead of producing zero PNGs.
 
 If the requested models' pixel sets don't actually match (e.g. step 0 was
 run with mismatched seeds, or wasn't re-run after this fix), the script
 warns and proceeds on the intersection rather than failing outright — useful
 as a diagnostic that step 0 wasn't applied consistently.
+
+### Aggregate distribution comparison
+
+[`scripts/synthesis/aggregate_comparison.py`](../scripts/synthesis/aggregate_comparison.py)
+takes the same inputs as `compare_models.py` but, instead of per-pixel
+overlays, builds a statistical view across the **full violin tier** —
+useful for a conference-poster figure where a handful of example spectra
+isn't convincing evidence of a representative comparison. It independently
+recomputes χ² via `SynthesisComparator.chi_square()` (cheap pure-numpy, so
+this duplication costs nothing and keeps the two scripts runnable in either
+order or alone):
+
+```bash
+python scripts/synthesis/aggregate_comparison.py \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --region-label negative_region \
+    --model-type wfa_only --model-type no_physics
+# → output/synthesis/<experiment_root>/<region_label>/aggregate_plots/
+```
+
+- `aggregate_chi2_long.json` — long-format table, one record per
+  `(pixel, model_type)`: `{ix, iy, bin, bin_lo, bin_hi, abs_bz_gauss,
+  model_type, chi2_I, chi2_V}`. Ready to load straight into a
+  `pandas.DataFrame`.
+- `violin_chi2_I.png` / `violin_chi2_V.png` — seaborn `catplot` violin plots,
+  faceted by `|B_LOS|` bin (`col`) and colored by model variant (`hue`),
+  log-y (χ² spans orders of magnitude), `cut=0` (clamps each violin's KDE to
+  the observed data range — χ² is strictly non-negative, and an unclamped
+  KDE can visually extend below zero, misrepresenting the metric).
 
 ---
 
@@ -541,8 +594,8 @@ python scripts/synthesis/compare_synthesis.py \
 ```
 
 Or use the sbatch front, which chains steps 0-3 for one or more `MODEL_TYPES`
-(running step 4, `compare_models.py`, automatically at the end if 2 or more
-are listed):
+(running step 4, `compare_models.py`, and step 5, `aggregate_comparison.py`,
+automatically at the end if 2 or more are listed):
 
 ```bash
 sbatch tools/run_nicole_synthesis.sh

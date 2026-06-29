@@ -10,6 +10,11 @@ export_predictions.py. Because the binning is model-independent, running this
 script once per --model-type with the same --seed/--crop-bounds produces an
 identical pixel selection across model variants, which is what makes
 compare_models.py's cross-model comparison fair.
+
+Sampling is two-tiered: --n-per-bin pixels per bin form the larger
+violin/aggregate tier (used for chi2 statistics and distribution plots, see
+aggregate_comparison.py), and --n-overlay-per-bin pixels -- a strict subset of
+that tier -- are flagged for individual overlay PNGs (compare_models.py).
 """
 from __future__ import annotations
 
@@ -21,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from utils.pixel_sampling import (
+    mark_overlay_subset,
     sample_pixels_by_abs_bz,
     write_pixel_selection_outputs,
 )
@@ -92,7 +98,17 @@ def main():
         "--n-per-bin",
         type=int,
         default=3,
-        help="Target number of pixels per bin",
+        help="Target number of pixels per bin (the violin/aggregate tier)",
+    )
+    p.add_argument(
+        "--n-overlay-per-bin",
+        type=int,
+        default=3,
+        help=(
+            "Target number of pixels per bin to flag for individual overlay PNGs "
+            "(compare_models.py). Drawn from within --n-per-bin's selection, so "
+            "the overlay tier is always a strict subset of the violin/aggregate tier."
+        ),
     )
     p.add_argument(
         "--seed",
@@ -132,6 +148,10 @@ def main():
             bin_hi = float(result.bin_edges[b + 1])
             print(f"  bin {b}: {len(pixels_in_bin)} pixels in [{bin_lo:.1f}, {bin_hi:.1f}] G")
 
+    # Mark the overlay-PNG subset (strict subset of the violin/aggregate tier above)
+    is_overlay = mark_overlay_subset(result, n_overlay_per_bin=args.n_overlay_per_bin, seed=args.seed)
+    print(f"Flagged {sum(is_overlay.values())} of those as the overlay-PNG subset")
+
     # Write outputs
     out_dir = cfg.out_dir() / "pixel_selection"
     outputs = write_pixel_selection_outputs(
@@ -140,6 +160,7 @@ def main():
         experiment_root=cfg.experiment_root,
         model_type=cfg.model_type,
         crop_bounds=cfg.crop_bounds,
+        is_overlay=is_overlay,
     )
 
     print(f"\nOutputs:")

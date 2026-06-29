@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=nicole_syn
-#SBATCH --partition=gpu.cecc
+#SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
+#SBATCH -wmaxwell               #Nombre del nodo a usar (configurable via CLUSTER_NODE variable)
+#SBATCH --partition=gpu.cecc            #Particion a usar(puede ser: cpu.cecc o gpu.cecc)
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
-#SBATCH --output=output/synthesis/nicole_syn_%j.out
-#SBATCH --error=output/synthesis/nicole_syn_%j.err
+#SBATCH --mail-type=begin             #Send email when job begins
+#SBATCH --mail-type=end               #Send email when job ends
+#SBATCH --mail-user=juagudeloo@unal.edu.co
+#SBATCH --output=/scratchsan/observatorio/juagudeloo/MUISCA/output/synthesis/nicole_syn_%j.out
+#SBATCH --error=/scratchsan/observatorio/juagudeloo/MUISCA/output/synthesis/nicole_syn_%j.err
 
 set -euo pipefail
 
@@ -26,8 +31,9 @@ CROP_BOUNDS=(0 80 0 200)   # Y0 Y1 X0 X1 (matches ModestData.extract_region orde
 # Pixel selection. Either let step 0 auto-select a stratified-by-|B_LOS| sample
 # spanning weak/mid/strong field regimes, or pin an explicit manual list.
 USE_STRATIFIED_SAMPLING=true
-N_BINS=5                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
-N_PER_BIN=3                 # pixels sampled per bin
+N_BINS=10                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
+N_PER_BIN=200                 # pixels sampled per bin (violin/aggregate tier -- step 5)
+N_OVERLAY_PER_BIN=10          # subset of N_PER_BIN flagged for individual overlay PNGs (step 4 only)
 SAMPLING_SEED=0
 PIXELS=("40,100")           # used only when USE_STRATIFIED_SAMPLING=false
 
@@ -57,6 +63,7 @@ for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
       --crop-bounds "${CROP_BOUNDS[@]}" \
       --n-bins "${N_BINS}" \
       --n-per-bin "${N_PER_BIN}" \
+      --n-overlay-per-bin "${N_OVERLAY_PER_BIN}" \
       --seed "${SAMPLING_SEED}" \
       --output-root "${OUTPUT_ROOT}" \
       --modest-cache-dir "${MODEST_CACHE_DIR}"
@@ -111,13 +118,23 @@ done
 
 if [ "${#MODEL_TYPES[@]}" -ge 2 ]; then
   echo "################################################################"
-  echo "# Step 4: cross-model comparison"
+  echo "# Step 4: cross-model comparison (pixel_comparison/, overlay tier)"
   echo "################################################################"
   MODEL_TYPE_ARGS=()
   for mt in "${MODEL_TYPES[@]}"; do
     MODEL_TYPE_ARGS+=(--model-type "${mt}")
   done
   python scripts/synthesis/compare_models.py \
+    --experiment-root "${EXPERIMENT_ROOT}" \
+    --region-label "${REGION_LABEL}" \
+    --output-root "${OUTPUT_ROOT}" \
+    "${MODEL_TYPE_ARGS[@]}"
+
+  echo
+  echo "################################################################"
+  echo "# Step 5: aggregate distribution comparison (aggregate_plots/, violin tier)"
+  echo "################################################################"
+  python scripts/synthesis/aggregate_comparison.py \
     --experiment-root "${EXPERIMENT_ROOT}" \
     --region-label "${REGION_LABEL}" \
     --output-root "${OUTPUT_ROOT}" \

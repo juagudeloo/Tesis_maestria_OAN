@@ -176,6 +176,50 @@ def sample_pixels_by_abs_bz(
     )
 
 
+def mark_overlay_subset(
+    result: PixelSamplingResult,
+    n_overlay_per_bin: int = 3,
+    seed: int = 0,
+) -> dict[tuple[int, int], bool]:
+    """Pick a small subset of `result.pixels` per bin for individual overlay PNGs.
+
+    The subset is drawn from *within* each bin's already-selected pixels (not a
+    fresh, independent draw), so the overlay tier is always a strict subset of
+    the larger violin/aggregate tier -- every pixel shown in a detailed overlay
+    PNG is also part of the population the aggregate chi2 statistics summarize.
+
+    Parameters
+    ----------
+    result : PixelSamplingResult
+        Result from sample_pixels_by_abs_bz().
+    n_overlay_per_bin : int, default 3
+        Target number of overlay-tier pixels per bin.
+    seed : int, default 0
+        Random seed for reproducible sub-sampling.
+
+    Returns
+    -------
+    dict[tuple[int, int], bool]
+        True for pixels in the overlay subset, False otherwise. Covers every
+        pixel in result.pixels.
+    """
+    rng = np.random.default_rng(seed)
+
+    pixels_by_bin: dict[int, list[tuple[int, int]]] = {}
+    for pix, b in result.bin_of_pixel.items():
+        pixels_by_bin.setdefault(b, []).append(pix)
+
+    is_overlay: dict[tuple[int, int], bool] = {pix: False for pix in result.pixels}
+    for b, candidates in pixels_by_bin.items():
+        n_sample = min(n_overlay_per_bin, len(candidates))
+        if n_sample > 0:
+            sampled = rng.choice(len(candidates), size=n_sample, replace=False)
+            for idx in sampled:
+                is_overlay[candidates[idx]] = True
+
+    return is_overlay
+
+
 def plot_pixel_selection(
     result: PixelSamplingResult,
     out_path: Path,
@@ -283,6 +327,7 @@ def write_pixel_selection_outputs(
     experiment_root: str,
     model_type: str,
     crop_bounds: Optional[tuple[int, int, int, int]] = None,
+    is_overlay: Optional[dict[tuple[int, int], bool]] = None,
 ) -> dict[str, Path]:
     """Write JSON and text snippets for the selected pixels.
 
@@ -298,6 +343,10 @@ def write_pixel_selection_outputs(
         Model type (included in JSON).
     crop_bounds : tuple[int, int, int, int], optional
         Crop bounds (y0, y1, x0, x1) to include in JSON.
+    is_overlay : dict[tuple[int, int], bool], optional
+        Result of mark_overlay_subset(), marking which pixels are in the small
+        overlay-PNG subset (vs. the full violin/aggregate tier). If omitted,
+        every pixel is marked False.
 
     Returns
     -------
@@ -307,17 +356,20 @@ def write_pixel_selection_outputs(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Prepare JSON data
+    n_overlay_pixels = sum(is_overlay.values()) if is_overlay is not None else 0
     json_data = {
         "experiment_root": experiment_root,
         "model_type": model_type,
         "n_pixels": len(result.pixels),
+        "n_overlay_pixels": n_overlay_pixels,
         "n_bins": len(result.bin_edges) - 1,
         "tau_index": result.tau_index,
         "logtau": result.logtau_value,
         "crop_bounds": crop_bounds,
         "bin_edges_gauss": result.bin_edges.tolist(),
         "pixels": [{"ix": ix, "iy": iy, "bin": result.bin_of_pixel[(ix, iy)],
-                    "abs_bz_gauss": val}
+                    "abs_bz_gauss": val,
+                    "is_overlay_example": bool(is_overlay.get((ix, iy), False)) if is_overlay is not None else False}
                    for (ix, iy), val in zip(result.pixels, result.bin_values)],
     }
 

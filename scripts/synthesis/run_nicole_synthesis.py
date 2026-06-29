@@ -37,6 +37,17 @@ def main():
     p.add_argument("--v-mic-cms", type=float, default=1.0e5)
     p.add_argument("--v-mac-cms", type=float, default=0.0)
     p.add_argument("--el-p-seed", type=float, default=1.0)
+    p.add_argument(
+        "--keep-workdirs",
+        action="store_true",
+        help=(
+            "Keep each pixel's pix_<ix>_<iy>/ working directory (NICOLE's ASCII/binary "
+            "inputs, logs, output model) after syntheses.h5 is written. Default is to "
+            "delete them -- the synthesized profile is already captured in syntheses.h5, "
+            "and the workdirs are regenerable by re-running this script. Pass this to "
+            "keep them around for debugging a specific pixel."
+        ),
+    )
     args = p.parse_args()
 
     with h5py.File(args.predictions_h5, "r") as h5:
@@ -62,7 +73,9 @@ def main():
     )
 
     runner = NicoleRunner(cfg)
-    out = runner.run_pixels_from_h5(args.predictions_h5, pixels=args.pixel)
+    out = runner.run_pixels_from_h5(
+        args.predictions_h5, pixels=args.pixel, cleanup_workdirs=not args.keep_workdirs
+    )
     print(f"\nWrote {out}")
 
 
