@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Stratified pixel sampling by |B_LOS| magnitude for NICOLE synthesis testing.
 
-This is "step 0" of the MUISCA→NICOLE bridge: given a trained model and a
-cropped MODEST region, run inference to get a full-region |B_LOS| map at the
-deepest optical-depth level, stratify pixels into magnitude bins, sample
-representative pixels per bin, and output both machine-readable JSON and
-ready-to-paste CLI snippets for feeding into export_predictions.py.
+This is "step 0" of the MUISCA→NICOLE bridge: given a cropped MODEST region,
+get a full-region |B_LOS| map at the deepest level from the SPINOR inversion
+already bundled with the MODEST data (model-independent), stratify pixels
+into magnitude bins, sample representative pixels per bin, and output both
+machine-readable JSON and ready-to-paste CLI snippets for feeding into
+export_predictions.py. Because the binning is model-independent, running this
+script once per --model-type with the same --seed/--crop-bounds produces an
+identical pixel selection across model variants, which is what makes
+compare_models.py's cross-model comparison fair.
 """
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
-
-import torch
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -35,7 +37,12 @@ def main():
     p.add_argument(
         "--model-type",
         required=True,
-        help="Single model variation, e.g. 'wfa_only'",
+        help=(
+            "Single model variation, e.g. 'wfa_only'. Only affects the output "
+            "path -- the pixel selection itself is model-independent (SPINOR-sourced), "
+            "so re-running with a different --model-type and the same --seed/"
+            "--crop-bounds yields an identical pixel selection."
+        ),
     )
     p.add_argument(
         "--region-label",
@@ -69,11 +76,6 @@ def main():
         "--polarization-threshold",
         type=float,
         default=1e-2,
-    )
-    p.add_argument(
-        "--inference-batch-size",
-        type=int,
-        default=4096,
     )
     p.add_argument(
         "--output-root",
@@ -111,16 +113,12 @@ def main():
         apply_polarization_mask=args.polarization_mask,
         polarization_threshold=args.polarization_threshold,
         output_root=args.output_root,
-        inference_batch_size=args.inference_batch_size,
     )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
 
-    # Run stratified sampling
+    # Run stratified sampling (SPINOR-sourced, no model loading needed)
     print(f"\nSampling {args.n_bins} bins × {args.n_per_bin} pixels (seed={args.seed})...")
     result = sample_pixels_by_abs_bz(
         cfg=cfg,
-        device=device,
         n_bins=args.n_bins,
         n_per_bin=args.n_per_bin,
         seed=args.seed,

@@ -1,9 +1,12 @@
 """Stratified pixel sampling for NICOLE synthesis testing.
 
-Given a cropped MODEST region and a trained MUISCA model, stratifies pixels
-by predicted |B_LOS| at the deepest optical-depth level (logτ = 0), samples
-representative pixels per magnitude bin, and produces a diagnostic PNG showing
-where on the map those pixels sit.
+Given a cropped MODEST region, stratifies pixels by |B_LOS| from the SPINOR
+inversion already bundled with the MODEST data (model-independent — the same
+ground-truth Bz reference used for MODEST comparisons elsewhere in this
+codebase), samples representative pixels per magnitude bin, and produces a
+diagnostic PNG showing where on the map those pixels sit. Being
+model-independent means the same pixel selection can be reused fairly across
+different trained model variants when comparing them against each other.
 """
 from __future__ import annotations
 
@@ -14,9 +17,10 @@ from typing import Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
-from utils.synthesis import PredictionExporter, SynthesisConfig, WholeRegionPrediction
+from utils.cache_manage import ModestDataCache
+from utils.modest_data import ModestData
+from utils.synthesis import SynthesisConfig
 
 
 @dataclass
@@ -25,23 +29,26 @@ class PixelSamplingResult:
 
     pixels: list[tuple[int, int]]       # Selected (ix, iy) tuples
     bin_of_pixel: dict[tuple[int, int], int]  # Maps each pixel to its bin index
-    bin_edges: np.ndarray               # (n_bins+1,) quantile boundaries in Gauss
-    bin_values: list[float]             # Per-bin |B_LOS| values for selected pixels
-    tau_index: int                      # Deepest level (-1)
-    logtau_value: float                 # logtau[tau_index]
-    abs_bz_map: np.ndarray              # (pred_nx, pred_ny) |B_LOS| map at tau_index
+    bin_edges: np.ndarray               # (n_bins+1,) log-spaced bin boundaries in Gauss
+    bin_values: list[float]             # Per-pixel true |B_LOS| values for selected pixels
+    tau_index: int                      # Index of the deepest level in the SPINOR tau grid
+    logtau_value: float                 # SPINOR tau value at tau_index (not a model's grid)
+    abs_bz_map: np.ndarray              # (pred_nx, pred_ny) |B_LOS| map, upsampled from SPINOR
     pred_nx: int
     pred_ny: int
 
 
 def sample_pixels_by_abs_bz(
     cfg: SynthesisConfig,
-    device: torch.device,
     n_bins: int = 5,
     n_per_bin: int = 3,
     seed: int = 0,
 ) -> PixelSamplingResult:
     """Stratify a region by |B_LOS| at the deepest level and sample pixels per bin.
+
+    The |B_LOS| map comes from the SPINOR inversion bundled with the MODEST data
+    (model-independent), not from any trained model's own prediction — this is
+    what lets the same pixel selection be reused fairly across model variants.
 
     Bin edges are log-spaced (equal-width in log₁₀(|B_LOS|) space) to give each bin
     a physically meaningful order-of-magnitude field regime. Pixel counts per bin will
@@ -50,9 +57,9 @@ def sample_pixels_by_abs_bz(
     Parameters
     ----------
     cfg : SynthesisConfig
-        Configuration specifying experiment, model, region, crop bounds.
-    device : torch.device
-        Torch device for model inference.
+        Configuration specifying experiment, region, crop bounds. `cfg.model_type`
+        is not used by this function (no model is loaded) — it only affects where
+        callers write their output.
     n_bins : int, default 5
         Number of log-spaced bins for |B_LOS|.
     n_per_bin : int, default 3
@@ -67,15 +74,43 @@ def sample_pixels_by_abs_bz(
     """
     rng = np.random.default_rng(seed)
 
-    # Run inference over the whole region
-    exporter = PredictionExporter(cfg, device)
-    region = exporter.predict_whole_region()
+    # Load MODEST data (auto-builds the SPINOR atmosphere) — no model inference needed.
+    modest = ModestData(
+        circular_polarization_threshold=cfg.polarization_threshold,
+        stokes_v_multiplier=cfg.stokes_v_multiplier,
+    )
+    modest_cache = ModestDataCache(cache_dir=cfg.modest_cache_dir)
+    modest_data = modest.load_all(
+        region_bounds=tuple(cfg.crop_bounds) if cfg.crop_bounds is not None else None,
+        apply_mask=cfg.apply_polarization_mask,
+        cache=modest_cache,
+        use_cache=cfg.use_modest_cache,
+        prediction_input_mode=cfg.prediction_input_mode,
+    )
 
-    # Extract the |B_LOS| map at the deepest optical-depth level (logtau=0, index -1)
-    tau_index = -1
-    logtau_value = float(region.logtau[tau_index])
-    bz_deep = region.pred_mhd["Bz"][:, :, tau_index]
-    abs_bz_map = np.abs(bz_deep)
+    # Deepest SPINOR tau level (its grid is coarser than a model's prediction grid,
+    # e.g. 3 levels at -2.0/-0.8/0.0 by default — tau_index/logtau below refer to
+    # this SPINOR grid, not any model's).
+    tau_values = sorted(modest_data.get("tau_values", modest_data["spinor_atm"]["T"].keys()))
+    deepest_tau = tau_values[-1]
+    tau_index = len(tau_values) - 1
+    logtau_value = float(deepest_tau)
+    blos_native = modest_data["spinor_atm"]["Blos"][deepest_tau]
+
+    # Upsample the native-resolution SPINOR map to match the model's prediction grid
+    # (e.g. 2x per axis under the default upsampling_factor) — no transpose needed,
+    # axis 0 <-> axis 0 and axis 1 <-> axis 1 already align between the two grids.
+    pred_nx, pred_ny = modest_data["prediction_stokes"]["I"].shape[:2]
+    sy, sx = blos_native.shape
+    if (sy, sx) != (pred_nx, pred_ny):
+        if pred_nx % sy or pred_ny % sx:
+            raise ValueError(
+                f"Cannot upsample SPINOR Blos grid {(sy, sx)} to prediction grid "
+                f"{(pred_nx, pred_ny)}: not an integer ratio"
+            )
+        fy, fx = pred_nx // sy, pred_ny // sx
+        blos_native = np.repeat(np.repeat(blos_native, fy, axis=0), fx, axis=1)
+    abs_bz_map = np.abs(blos_native)
 
     # Extract finite values and derive log-space floor
     valid_vals = abs_bz_map[np.isfinite(abs_bz_map)]
@@ -136,8 +171,8 @@ def sample_pixels_by_abs_bz(
         tau_index=tau_index,
         logtau_value=logtau_value,
         abs_bz_map=abs_bz_map,
-        pred_nx=region.pred_nx,
-        pred_ny=region.pred_ny,
+        pred_nx=pred_nx,
+        pred_ny=pred_ny,
     )
 
 

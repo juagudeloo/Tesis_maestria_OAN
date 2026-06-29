@@ -55,10 +55,11 @@ MUISCA/
 ├── scripts/
 │   └── synthesis/                           ← (new) CLI drivers
 │       ├── __init__.py
-│       ├── sample_pixels.py                 ← step 0 (optional): stratify a region by |B_LOS|, pick test pixels
+│       ├── sample_pixels.py                 ← step 0 (optional): stratify a region by SPINOR |B_LOS|, pick test pixels
 │       ├── export_predictions.py            ← step 1: run model → predictions.h5
 │       ├── run_nicole_synthesis.py          ← step 2: predictions.h5 → NICOLE → syntheses.h5
-│       └── compare_synthesis.py             ← step 3: overlay PNGs + χ²
+│       ├── compare_synthesis.py             ← step 3: overlay PNGs + χ² (single model)
+│       └── compare_models.py                ← (new) cross-model comparison: joined χ², bin summary, combined overlays
 ├── tools/
 │   └── run_nicole_synthesis.sh              ← (new) sbatch front for the three-step flow
 └── utils/
@@ -379,10 +380,35 @@ pixels per field-strength bin — guaranteeing the test set spans quiet-Sun,
 plage, and strong-field (pore/sunspot) regimes instead of leaving that to
 chance. NICOLE synthesis is fast (≈1 s/pixel), so 15–20 pixels is cheap.
 
-`sample_pixels_by_abs_bz(cfg, device, n_bins=5, n_per_bin=3, seed=0)`:
+`sample_pixels_by_abs_bz(cfg, n_bins=5, n_per_bin=3, seed=0)`:
 
-1. Calls `PredictionExporter(cfg, device).predict_whole_region()` and takes
-   `|pred_mhd["Bz"][:, :, -1]|` (the deepest τ level).
+1. Loads MODEST data via `ModestData.load_all()` (no model/GPU needed) and
+   takes `|spinor_atm["Blos"][deepest_tau]|` — the **SPINOR inversion already
+   bundled with the MODEST data**, not either candidate model's own
+   prediction. This is a deliberate fix for a real bug: stratifying by a
+   model's own `|B_LOS|` prediction is circular when the goal is comparing
+   that model against another one — whichever model defines the bins gets a
+   built-in home-field advantage, and on the `negative_region` crop the two
+   model variants' own predictions produced *completely different* bin edges
+   and pixel sets for the identical seed/crop. SPINOR's `Blos` is
+   model-independent — it's the same ground-truth reference already used for
+   MODEST comparisons in `utils/analysis.py` — so the resulting pixel
+   selection no longer depends on `cfg.model_type` at all (which is now only
+   used to choose the output path, not the sampling pool). Running this
+   script once per `--model-type` with the same `--seed`/`--crop-bounds`
+   therefore produces an *identical* pixel list across model variants, which
+   is the prerequisite for `compare_models.py` (below) to be a fair
+   comparison.
+   SPINOR's tau grid is coarser than a model's prediction grid (3 levels at
+   log τ = −2.0, −0.8, 0.0 by default vs. e.g. 95 levels for the example
+   checkpoint) — "deepest level" here means SPINOR's own deepest level
+   (0.0), not the model's. SPINOR's native pixel grid is also coarser than
+   the model's (un-upsampled — e.g. `(80,200)` vs. the model's `(160,400)`
+   for the same crop under the default 2× upsampling), so the map is
+   upsampled via integer repeat (`np.repeat` along both axes, factor derived
+   dynamically from the two grids' shapes, not hardcoded) before binning —
+   no transpose is needed since both grids share the same axis order, just
+   differing by the upsampling factor.
 2. Builds **log-spaced bin edges** — `np.logspace(log10(floor), log10(max), n_bins+1)`,
    i.e. equal-width intervals in log₁₀(Gauss) space — rather than
    percentile/quantile edges. The two strategies were both tried:
@@ -437,6 +463,53 @@ The printed snippet's `--pixel` args feed directly into step 1
 
 ---
 
+## Cross-model comparison
+
+[`scripts/synthesis/compare_models.py`](../scripts/synthesis/compare_models.py)
+compares two or more trained model variants (e.g. `wfa_only` vs `no_physics`)
+against each other on the same pixels, given they were each run through
+steps 0–2 independently (sharing a pixel list, per the SPINOR-sourced step 0
+above). It does **not** duplicate any chi² logic — it instantiates one
+`SynthesisComparator` per `--model-type` and calls the existing, unmodified
+`chi_square()` on each (verified bit-for-bit identical to running
+`compare_synthesis.py` on each model alone), then joins the results by
+pixel and by bin:
+
+```bash
+python scripts/synthesis/compare_models.py \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --region-label negative_region \
+    --model-type wfa_only --model-type no_physics
+# → output/synthesis/<experiment_root>/<region_label>/cross_model_comparison/
+```
+
+This output directory sits one level up from any single model's directory
+(`output/synthesis/<experiment_root>/<model_type>/<region_label>/...`) since
+the comparison isn't owned by any one model variant. It contains:
+
+- `cross_model_chi2.json` — per-pixel χ² for every requested model, keyed
+  `"ix,iy"` → `{model_type: {chi2_I, chi2_V, n_wl}}`.
+- `bin_summary.json` — χ² aggregated by **mean and median** per `|B_LOS|`
+  bin per model (not raw sum, since bins can have unequal pixel counts; not
+  profile averaging, since Stokes V is sign-sensitive to B_LOS polarity and
+  a bin can mix polarities, which would partially cancel a literal average
+  of V profiles).
+- `<bin_lo>-<bin_hi>/overlay_pix_<ix>_<iy>.png` — one PNG per pixel showing
+  the observed Stokes I/V curve (solid black, taken from one model's
+  `predictions.h5` after a sanity check that it agrees with the others —
+  it should, since they all reference the same underlying MODEST
+  observation) plus one dashed, distinctly-colored synthesized curve per
+  model variant, on the same axes. Mirrors `SynthesisComparator.plot_overlay`'s
+  layout (`figsize=(12,4)`, same titles/labels/save convention) for visual
+  consistency with the single-model overlays.
+
+If the requested models' pixel sets don't actually match (e.g. step 0 was
+run with mismatched seeds, or wasn't re-run after this fix), the script
+warns and proceeds on the intersection rather than failing outright — useful
+as a diagnostic that step 0 wasn't applied consistently.
+
+---
+
 ## How to use it
 
 Three steps (plus the optional step 0 above). Each step can be run
@@ -467,14 +540,20 @@ python scripts/synthesis/compare_synthesis.py \
 # → output/synthesis/.../comparison/{chi2.json, overlay_pix_*.png}
 ```
 
-Or use the sbatch front, which chains all three:
+Or use the sbatch front, which chains steps 0-3 for one or more `MODEL_TYPES`
+(running step 4, `compare_models.py`, automatically at the end if 2 or more
+are listed):
 
 ```bash
 sbatch tools/run_nicole_synthesis.sh
 ```
 
 Edit the constants at the top of [tools/run_nicole_synthesis.sh](../tools/run_nicole_synthesis.sh)
-to pick the experiment, model variation, region, and pixel list.
+to pick the experiment, model variations, region, and pixel list. Listing
+multiple `MODEL_TYPES` is the easiest way to run a full cross-model
+comparison end-to-end: step 0's SPINOR-sourced sampling gives every listed
+variant the same pixel list, steps 1-3 run for each variant in turn, and
+step 4 joins them.
 
 ---
 
