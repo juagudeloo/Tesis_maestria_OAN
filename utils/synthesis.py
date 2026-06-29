@@ -448,6 +448,10 @@ class NicoleRunner:
         return out_path
 
 
+def _format_bin_range(lo: float, hi: float) -> str:
+    return f"{lo:.4g}-{hi:.4g}"
+
+
 class SynthesisComparator:
     """Overlay synthesized vs observed Stokes I and V, compute chi-square."""
 
@@ -460,6 +464,8 @@ class SynthesisComparator:
         self._stokes_obs = None
         self._stokes_synth = None
         self._wavelengths = None
+        self._bz = None
+        self._bin_info: dict[tuple[int, int], dict] = {}
 
     def load(self, predictions_h5: Path, syntheses_h5: Path) -> None:
         self.predictions_h5 = predictions_h5
@@ -468,9 +474,38 @@ class SynthesisComparator:
             self._pred_pixels = h5["pixels"][...]
             self._stokes_obs = h5["stokes_obs"][...]
             self._wavelengths = h5["wavelengths"][...]
+            self._bz = h5["Bz"][...]
         with h5py.File(syntheses_h5, "r") as h5:
             self._synth_pixels = h5["pixels"][...]
             self._stokes_synth = h5["stokes_synth"][...]
+
+        # Pick up the |B_LOS| stratification bins from sample_pixels.py, if that
+        # step was run for this experiment/model/region (utils/pixel_sampling.py).
+        self._bin_info = {}
+        selection_json = self.cfg.out_dir() / "pixel_selection" / "selected_pixels.json"
+        if selection_json.exists():
+            with open(selection_json) as f:
+                selection = json.load(f)
+            bin_edges = selection["bin_edges_gauss"]
+            for entry in selection["pixels"]:
+                b = entry["bin"]
+                self._bin_info[(entry["ix"], entry["iy"])] = {
+                    "bin_lo": bin_edges[b],
+                    "bin_hi": bin_edges[b + 1],
+                    "abs_bz_gauss": entry["abs_bz_gauss"],
+                }
+
+    def _abs_b_los(self, ix: int, iy: int) -> float:
+        info = self._bin_info.get((ix, iy))
+        if info is not None:
+            return info["abs_bz_gauss"]
+        return float(np.abs(self._bz[self._pred_row(ix, iy), -1]))
+
+    def _bin_range(self, ix: int, iy: int) -> Optional[tuple[float, float]]:
+        info = self._bin_info.get((ix, iy))
+        if info is None:
+            return None
+        return info["bin_lo"], info["bin_hi"]
 
     def _pred_row(self, ix: int, iy: int) -> int:
         for i, (a, b) in enumerate(self._pred_pixels.tolist()):
@@ -507,12 +542,16 @@ class SynthesisComparator:
     def plot_overlay(self, ix: int, iy: int, out_dir: Path) -> Path:
         import matplotlib.pyplot as plt
 
-        out_dir.mkdir(parents=True, exist_ok=True)
+        bin_range = self._bin_range(ix, iy)
+        target_dir = out_dir / _format_bin_range(*bin_range) if bin_range is not None else out_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+
         i_obs = self._stokes_obs[self._pred_row(ix, iy), 0]
         v_obs = self._stokes_obs[self._pred_row(ix, iy), 1]
         synth_row = self._stokes_synth[self._synth_row(ix, iy)]
         i_syn, q_syn, u_syn, v_syn = synth_row[0], synth_row[1], synth_row[2], synth_row[3]
         wl = self._wavelengths
+        abs_b_los = self._abs_b_los(ix, iy)
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         axes[0].plot(wl, i_obs, color="k", label="Observed")
@@ -529,8 +568,9 @@ class SynthesisComparator:
         axes[1].set_ylabel("V / I_c")
         axes[1].legend()
 
+        fig.suptitle(f"|B_LOS| = {abs_b_los:.3g} G")
         plt.tight_layout()
-        out_path = out_dir / f"overlay_pix_{ix:05d}_{iy:05d}.png"
+        out_path = target_dir / f"overlay_pix_{ix:05d}_{iy:05d}.png"
         fig.savefig(out_path, dpi=150, bbox_inches="tight")
         plt.close(fig)
         return out_path
