@@ -130,6 +130,8 @@ class SynthesisConfig:
             if self.add_gt_pressure:
                 step_label += "-gt-pressure"
             root = root / "muram" / step_label
+        else:
+            root = root / "modest"
         return root
 
     def out_dir(self) -> Path:

@@ -185,15 +185,16 @@ internally consistent. The interesting fields:
 
 `out_dir()`/`region_dir()` branch on `source`:
 
-- `source="modest"`: `output_root/experiment_root/model_type/region_label/...`
-  (unchanged from the original design — no `"modest"` path segment).
+- `source="modest"`: `output_root/experiment_root/modest/model_type/region_label/...`
 - `source="muram"`: `output_root/experiment_root/muram/step-N[-gt-pressure]/model_type/...`
   — `step-N` (optionally suffixed `-gt-pressure`) occupies the same path
   *level* `region_label` occupies for MODEST, not an extra nested layer on
   top of it, since MURaM has no region-cropping concept. `region_dir()`
   (the level `compare_models.py`/`aggregate_comparison.py` write into, shared
-  across model variants) is `.../region_label/` for modest and `.../step-N/`
-  for muram.
+  across model variants) is `.../modest/region_label/` for modest and
+  `.../muram/step-N/` for muram — the `"modest"`/`"muram"` segment makes the
+  two sources' trees siblings under `experiment_root/`, symmetric with how
+  `tools/generate_analysis.sh` nests `images/analysis/{muram,modest}/...`.
 
 ### `PredictionExporter`
 
@@ -590,7 +591,7 @@ python scripts/synthesis/sample_pixels.py \
     --region-label negative_region \
     --crop-bounds 0 80 0 200 \
     --n-bins 5 --n-per-bin 20 --n-overlay-per-bin 3 --seed 0
-# → output/synthesis/.../wfa_only/negative_region/pixel_selection/{...}
+# → output/synthesis/.../modest/wfa_only/negative_region/pixel_selection/{...}
 
 # muram (no --crop-bounds/--region-label -- MURaM has no cropping concept)
 python scripts/synthesis/sample_pixels.py \

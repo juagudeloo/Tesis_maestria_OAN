@@ -20,7 +20,7 @@ model-independent), this script:
      plus one synthesized curve per model variant, on the same axes.
 
 Output goes to SynthesisConfig.region_dir()/pixel_comparison/ -- for modest,
-that's output_root/experiment_root/region_label/pixel_comparison/; for muram,
+that's output_root/experiment_root/modest/region_label/pixel_comparison/; for muram,
 output_root/experiment_root/muram/step-N[-gt-pressure]/pixel_comparison/
 (step-N plays the role region_label plays for modest). Either way it's a path
 that isn't owned by any single model variant. (For aggregate distribution

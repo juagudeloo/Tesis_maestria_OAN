@@ -45,9 +45,9 @@ CROP_BOUNDS=(0 80 0 200)        # modest only -- Y0 Y1 X0 X1 (matches ModestData
 # Pixel selection. Either let step 0 auto-select a stratified-by-|B_LOS| sample
 # spanning weak/mid/strong field regimes, or pin an explicit manual list.
 USE_STRATIFIED_SAMPLING=true
-N_BINS=10                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
-N_PER_BIN=200                 # pixels sampled per bin (violin/aggregate tier -- step 5)
-N_OVERLAY_PER_BIN=10          # subset of N_PER_BIN flagged for individual overlay PNGs (step 4 only)
+N_BINS=3                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
+N_PER_BIN=3                # pixels sampled per bin (violin/aggregate tier -- step 5)
+N_OVERLAY_PER_BIN=2          # subset of N_PER_BIN flagged for individual overlay PNGs (step 4 only)
 SAMPLING_SEED=0
 PIXELS=("40,100")           # used only when USE_STRATIFIED_SAMPLING=false
 
@@ -141,7 +141,7 @@ for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
     [[ "${ADD_GT_PRESSURE}" == true ]] && STEP_LABEL="${STEP_LABEL}-gt-pressure"
     REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/muram/${STEP_LABEL}/${MODEL_TYPE}"
   else
-    REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/${MODEL_TYPE}/${REGION_LABEL}"
+    REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/modest/${MODEL_TYPE}/${REGION_LABEL}"
   fi
   RUN_PIXELS=("${PIXELS[@]}")
 

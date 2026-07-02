@@ -16,7 +16,7 @@ plots individual PNGs for), this script:
      model variant (hue), log-y, one for Stokes I and one for Stokes V.
 
 Output goes to SynthesisConfig.region_dir()/aggregate_plots/ -- for modest,
-that's output_root/experiment_root/region_label/aggregate_plots/; for muram,
+that's output_root/experiment_root/modest/region_label/aggregate_plots/; for muram,
 output_root/experiment_root/muram/step-N[-gt-pressure]/aggregate_plots/.
 """
 from __future__ import annotations
