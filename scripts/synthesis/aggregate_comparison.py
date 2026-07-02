@@ -15,7 +15,9 @@ plots individual PNGs for), this script:
   3. Plots seaborn violin plots faceted by |B_LOS| bin (col) and colored by
      model variant (hue), log-y, one for Stokes I and one for Stokes V.
 
-Output goes to output_root/experiment_root/region_label/aggregate_plots/.
+Output goes to SynthesisConfig.region_dir()/aggregate_plots/ -- for modest,
+that's output_root/experiment_root/region_label/aggregate_plots/; for muram,
+output_root/experiment_root/muram/step-N[-gt-pressure]/aggregate_plots/.
 """
 from __future__ import annotations
 
@@ -36,14 +38,20 @@ from utils.synthesis import SynthesisComparator, SynthesisConfig
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--source", choices=["modest", "muram"], default="modest")
     p.add_argument("--experiment-root", required=True)
-    p.add_argument("--region-label", default="whole")
+    p.add_argument("--region-label", default="whole",
+                    help="modest only -- ignored when --source muram")
     p.add_argument(
         "--model-type",
         action="append",
         required=True,
         help="Repeat for each model variant to compare, e.g. --model-type wfa_only --model-type no_physics",
     )
+    p.add_argument("--muram-step", type=int, default=None,
+                    help="MURaM simulation step number (required when --source muram)")
+    p.add_argument("--add-gt-pressure", action="store_true",
+                    help="Compare the ground-truth-pressure run (--source muram only)")
     p.add_argument(
         "--output-root",
         type=Path,
@@ -52,6 +60,11 @@ def main():
     p.add_argument("--sigma-i", type=float, default=1e-3)
     p.add_argument("--sigma-v", type=float, default=1e-3)
     args = p.parse_args()
+
+    if args.source == "muram" and args.muram_step is None:
+        p.error("--muram-step is required when --source muram")
+    if args.add_gt_pressure and args.source != "muram":
+        p.error("--add-gt-pressure requires --source muram")
 
     model_types = args.model_type
     if len(model_types) < 2:
@@ -64,10 +77,12 @@ def main():
 
     for model_type in model_types:
         cfg_m = SynthesisConfig(
-            source="modest",
+            source=args.source,
             experiment_root=args.experiment_root,
             model_type=model_type,
             region_label=args.region_label,
+            muram_step=args.muram_step,
+            add_gt_pressure=args.add_gt_pressure,
             output_root=args.output_root,
         )
         cfg_by_model[model_type] = cfg_m
@@ -111,7 +126,7 @@ def main():
         bin_of_pixel[(entry["ix"], entry["iy"])] = entry["bin"]
         abs_bz_of_pixel[(entry["ix"], entry["iy"])] = entry["abs_bz_gauss"]
 
-    out_dir = args.output_root / args.experiment_root / args.region_label / "aggregate_plots"
+    out_dir = cfg_by_model[model_types[0]].region_dir() / "aggregate_plots"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Long-format records: one row per (pixel, model_type).

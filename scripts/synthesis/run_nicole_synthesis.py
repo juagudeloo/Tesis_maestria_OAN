@@ -55,13 +55,30 @@ def main():
         experiment_root = h5.attrs.get("experiment_root", "")
         model_type = h5.attrs.get("model_type", "")
         region_label = h5.attrs.get("region_label", "whole")
+        muram_step = h5.attrs.get("muram_step", None)
+        add_gt_pressure = h5.attrs.get("add_gt_pressure", False)
+        # output_root is read directly when present (added alongside muram
+        # support) rather than climbing a fixed number of parents from
+        # predictions_h5 -- out_dir()'s depth now varies by source (muram
+        # inserts a muram/step-N segment, modest doesn't), so a fixed climb
+        # is no longer reliable. The climb stays only as a fallback for
+        # predictions.h5 files written before this attr existed.
+        output_root_attr = h5.attrs.get("output_root", None)
+
+    output_root = (
+        Path(str(output_root_attr))
+        if output_root_attr is not None
+        else args.predictions_h5.resolve().parent.parent.parent.parent
+    )
 
     cfg = SynthesisConfig(
         source=str(source),
         experiment_root=str(experiment_root),
         model_type=str(model_type),
         region_label=str(region_label),
-        output_root=args.predictions_h5.resolve().parent.parent.parent.parent,
+        muram_step=int(muram_step) if muram_step is not None else None,
+        add_gt_pressure=bool(add_gt_pressure),
+        output_root=output_root,
         nicole_root=args.nicole_root,
         nicole_assets=args.nicole_assets,
         wl_first=args.wl_first,

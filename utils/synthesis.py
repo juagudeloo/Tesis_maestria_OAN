@@ -9,7 +9,9 @@ Implements the components designed in the plan:
   - SynthesisComparator: overlays synthesized vs observed Stokes and reports
     per-line chi-square.
 
-v1 ships the MODEST source path; MURaM is left for v2.
+Supports two sources: "modest" (real Hinode/SOT-SP observations) and "muram"
+(synthetic MURaM simulation steps, e.g. one outside the model's training
+window, for an out-of-distribution generalization check).
 """
 from __future__ import annotations
 
@@ -23,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence
 
+import astropy.units as u
 import h5py
 import numpy as np
 import torch
@@ -35,6 +38,7 @@ from scripts.base_training import TrainingConfig
 from utils.analysis import AnalysisModelPipeline
 from utils.cache_manage import ModestDataCache
 from utils.modest_data import ModestData, transform_modest_stokes_profiles
+from utils.muram_data import MhdData, StokesData
 import utils.model_prof_tools as model_prof_tools
 from utils.model_prof_tools import check_prof, read_prof, write_ascii_model
 from utils.normalizer import MhdNormalizer, StokesNormalizer
@@ -71,15 +75,23 @@ class WholeRegionPrediction:
     logtau: np.ndarray                        # (n_tau,)
     pred_nx: int
     pred_ny: int
+    # Ground-truth gas pressure (muram source, --add-gt-pressure only), remapped
+    # onto the SAME grid as `logtau` (the model's own predicted tau grid) so it
+    # can sit alongside T/Vz/Bz in one NICOLE .model file per pixel. dyn/cm^2.
+    gt_pressure: Optional[np.ndarray] = None  # (pred_nx, pred_ny, n_tau) or None
 
 
 @dataclass
 class SynthesisConfig:
-    source: str  # "modest" (v1) or "muram" (v2, stub)
+    source: str  # "modest" or "muram"
     experiment_root: str
     model_type: str
-    region_label: str = "whole"
-    crop_bounds: Optional[tuple[int, int, int, int]] = None  # passed verbatim to ModestData
+    region_label: str = "whole"  # modest only; ignored when source == "muram"
+    crop_bounds: Optional[tuple[int, int, int, int]] = None  # passed verbatim to ModestData; modest only
+
+    # MURaM loader (ignored when source == "modest")
+    muram_step: Optional[int] = None
+    add_gt_pressure: bool = False  # feed NICOLE the true MURaM gas pressure instead of a hydrostatic seed
 
     # Filesystem layout
     output_root: Path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/output/synthesis")
@@ -111,8 +123,28 @@ class SynthesisConfig:
     # Inference
     inference_batch_size: int = 4096
 
+    def _source_root(self) -> Path:
+        root = self.output_root / self.experiment_root
+        if self.source == "muram":
+            step_label = f"step-{self.muram_step}"
+            if self.add_gt_pressure:
+                step_label += "-gt-pressure"
+            root = root / "muram" / step_label
+        return root
+
     def out_dir(self) -> Path:
-        return self.output_root / self.experiment_root / self.model_type / self.region_label
+        root = self._source_root()
+        if self.source == "muram":
+            return root / self.model_type  # no region_label segment: step-N plays that role
+        return root / self.model_type / self.region_label
+
+    def region_dir(self) -> Path:
+        """Directory shared across model variants (no model_type segment) --
+        what compare_models.py / aggregate_comparison.py write into."""
+        root = self._source_root()
+        if self.source == "muram":
+            return root  # step-N *is* the shared level
+        return root / self.region_label
 
     def predictions_h5(self) -> Path:
         return self.out_dir() / "predictions.h5"
@@ -127,11 +159,15 @@ class PredictionExporter:
     """
 
     def __init__(self, cfg: SynthesisConfig, device: torch.device):
-        if cfg.source != "modest":
+        if cfg.source not in ("modest", "muram"):
             raise NotImplementedError(
-                f"PredictionExporter v1 supports source='modest' only "
-                f"(got {cfg.source!r}); MURaM path is on the v2 backlog"
+                f"PredictionExporter supports source in ('modest', 'muram') "
+                f"(got {cfg.source!r})"
             )
+        if cfg.source == "muram" and cfg.muram_step is None:
+            raise ValueError("cfg.muram_step must be set when source='muram'")
+        if cfg.add_gt_pressure and cfg.source != "muram":
+            raise ValueError("add_gt_pressure is only supported for source='muram'")
         self.cfg = cfg
         self.device = device
 
@@ -174,37 +210,14 @@ class PredictionExporter:
         mhd_normalizer.load(filepath=str(Path(default_cfg.data_path) / default_cfg.mhd_normalizer_path))
         stokes_normalizer.load(filepath=str(Path(default_cfg.data_path) / default_cfg.stokes_normalizer_path))
 
-        # Load MODEST observations and build the prediction-ready Stokes cube.
-        modest = ModestData(
-            circular_polarization_threshold=cfg.polarization_threshold,
-            stokes_v_multiplier=cfg.stokes_v_multiplier,
-        )
-        modest_cache = ModestDataCache(cache_dir=cfg.modest_cache_dir)
-        modest_data = modest.load_all(
-            region_bounds=tuple(cfg.crop_bounds) if cfg.crop_bounds is not None else None,
-            apply_mask=cfg.apply_polarization_mask,
-            cache=modest_cache,
-            use_cache=cfg.use_modest_cache,
-            prediction_input_mode=cfg.prediction_input_mode,
-        )
+        gt_pressure = None
+        if cfg.source == "modest":
+            prediction_stokes, wavelength = self._load_modest_stokes(cfg)
+        else:  # cfg.source == "muram"
+            prediction_stokes, wavelength, gt_pressure = self._load_muram_stokes(
+                cfg, pipeline, model_cfg, pred_tau_arr
+            )
 
-        # Wavelength axis (continuum-normalized prediction-ready Stokes).
-        prediction_stokes = modest_data.get("prediction_stokes", modest_data["smoothed_stokes"])
-        wl_raw = modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1]))
-        wavelength = np.asarray(
-            wl_raw.value if hasattr(wl_raw, "value") else wl_raw,
-            dtype=np.float64,
-        )
-        # No spectral transforms in v1 — defaults match the analysis script's
-        # no-shift, no-scale, no-invert path.
-        prediction_stokes = transform_modest_stokes_profiles(
-            stokes=prediction_stokes,
-            wavelength_angstrom=wavelength,
-            shift_positions=0.0,
-            i_scale=1.0,
-            v_scale=1.0,
-            invert_direction=False,
-        )
         pred_nx, pred_ny = prediction_stokes["I"].shape[:2]
         norm_stokes = stokes_normalizer.transform(prediction_stokes)
         I_flat = norm_stokes["I"].reshape(pred_nx * pred_ny, -1)
@@ -228,7 +241,112 @@ class PredictionExporter:
             logtau=pred_tau_arr,
             pred_nx=pred_nx,
             pred_ny=pred_ny,
+            gt_pressure=gt_pressure,
         )
+
+    @staticmethod
+    def _load_modest_stokes(cfg: SynthesisConfig) -> tuple[dict[str, np.ndarray], np.ndarray]:
+        """Load MODEST observations and build the prediction-ready Stokes cube.
+
+        Returns (prediction_stokes, wavelength) -- the raw, continuum-normalized
+        (but not stats-normalized) {"I","V"} dict and its wavelength axis.
+        """
+        modest = ModestData(
+            circular_polarization_threshold=cfg.polarization_threshold,
+            stokes_v_multiplier=cfg.stokes_v_multiplier,
+        )
+        modest_cache = ModestDataCache(cache_dir=cfg.modest_cache_dir)
+        modest_data = modest.load_all(
+            region_bounds=tuple(cfg.crop_bounds) if cfg.crop_bounds is not None else None,
+            apply_mask=cfg.apply_polarization_mask,
+            cache=modest_cache,
+            use_cache=cfg.use_modest_cache,
+            prediction_input_mode=cfg.prediction_input_mode,
+        )
+
+        prediction_stokes = modest_data.get("prediction_stokes", modest_data["smoothed_stokes"])
+        wl_raw = modest_data.get("wl", np.arange(prediction_stokes["I"].shape[-1]))
+        wavelength = np.asarray(
+            wl_raw.value if hasattr(wl_raw, "value") else wl_raw,
+            dtype=np.float64,
+        )
+        # No spectral transforms in v1 -- defaults match the analysis script's
+        # no-shift, no-scale, no-invert path.
+        prediction_stokes = transform_modest_stokes_profiles(
+            stokes=prediction_stokes,
+            wavelength_angstrom=wavelength,
+            shift_positions=0.0,
+            i_scale=1.0,
+            v_scale=1.0,
+            invert_direction=False,
+        )
+        return prediction_stokes, wavelength
+
+    @staticmethod
+    def _load_muram_stokes(
+        cfg: SynthesisConfig,
+        pipeline: AnalysisModelPipeline,
+        model_cfg: dict,
+        pred_tau_arr: np.ndarray,
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, Optional[np.ndarray]]:
+        """Load a MURaM simulation step and build the prediction-ready Stokes cube.
+
+        Returns (prediction_stokes, wavelength, gt_pressure). prediction_stokes
+        is the raw, continuum-normalized (but not stats-normalized) {"I","V"}
+        dict, mirroring what _load_modest_stokes returns -- deliberately not
+        reusing scripts.base_training.load_and_prepare_step()/MuramStepDataset,
+        since that helper normalizes Stokes I/V inside its own __init__ and
+        never retains this raw intermediate. gt_pressure is only computed when
+        cfg.add_gt_pressure is set, and only remapped onto pred_tau_arr (the
+        model's own predicted tau grid), never onto a stratification grid.
+        """
+        # Reuse the exact per-model config (LSF path, continuum-normalization
+        # mode, stokes_mult_factor, ...) the checkpoint was actually trained
+        # with -- same call scripts/analysis/muram_analysis.py makes.
+        train_cfg = pipeline.build_runtime_training_config(model_cfg)
+        data_path = Path(train_cfg.data_path)
+
+        mhd = MhdData(
+            data_path=data_path / "muram-simulation",
+            nx=train_cfg.nx,
+            ny=train_cfg.ny,
+            nz=train_cfg.nz,
+        )
+        mhd.load_step(step=cfg.muram_step, z_max=train_cfg.z_max)
+
+        stokes = StokesData(
+            data_dir=data_path / "muram-simulation",
+            step=cfg.muram_step,
+            wavelength_range=(6300.5, 6303.5),
+            wavelength_step=0.01,
+        )
+        stokes.load_stokes()
+        stokes_cont_indices = train_cfg.stokes_cont_indices or [0, 1, 2, 3]
+        fixed_ic = (
+            float(train_cfg.stokes_fixed_ic) if train_cfg.stokes_ic_mode == "fixed_global" else None
+        )
+        stokes.continuum_normalization(cont_indices=stokes_cont_indices, fixed_ic=fixed_ic)
+        if train_cfg.stokes_mult_factor != 1.0:
+            stokes.data["I"] = stokes.data["I"] * train_cfg.stokes_mult_factor
+            stokes.data["V"] = stokes.data["V"] * train_cfg.stokes_mult_factor
+        stokes.load_hinode_lsf(data_path / train_cfg.lsf_path)
+        stokes.apply_spectral_convolution()
+        stokes.resample_to_hinode()
+
+        prediction_stokes = {"I": stokes.data["I"], "V": stokes.data["V"]}
+        wavelength = np.asarray(stokes.hinode_wl, dtype=np.float64)
+
+        gt_pressure = None
+        if cfg.add_gt_pressure:
+            mhd.load_opacity_table(kappa_path=data_path / train_cfg.kappa_path)
+            mhd.compute_optical_depth(dz=train_cfg.dz_km * u.km)
+            mhd.remap_to_optical_depth(pred_tau_arr, quantities=["P"])
+            p_arr = mhd.od_data["P"]
+            gt_pressure = np.asarray(
+                p_arr.value if hasattr(p_arr, "value") else p_arr, dtype=np.float64
+            )
+
+        return prediction_stokes, wavelength, gt_pressure
 
     def export(self, pixels: Sequence[tuple[int, int]]) -> Path:
         cfg = self.cfg
@@ -257,12 +375,15 @@ class PredictionExporter:
         Vz_out = np.empty((n, n_tau), dtype=np.float64)
         Bz_out = np.empty((n, n_tau), dtype=np.float64)
         stokes_obs = np.empty((n, 2, prediction_stokes["I"].shape[-1]), dtype=np.float32)
+        Pgas_gt_out = np.empty((n, n_tau), dtype=np.float64) if region.gt_pressure is not None else None
         for k, (ix, iy) in enumerate(pixels_arr):
             T_out[k] = pred_mhd["T"][ix, iy, :n_tau]
             Vz_out[k] = pred_mhd["Vz"][ix, iy, :n_tau]
             Bz_out[k] = pred_mhd["Bz"][ix, iy, :n_tau]
             stokes_obs[k, 0] = prediction_stokes["I"][ix, iy, :]
             stokes_obs[k, 1] = prediction_stokes["V"][ix, iy, :]
+            if Pgas_gt_out is not None:
+                Pgas_gt_out[k] = region.gt_pressure[ix, iy, :n_tau]
 
         out_path = cfg.predictions_h5()
         if out_path.exists():
@@ -275,13 +396,19 @@ class PredictionExporter:
             h5.create_dataset("logtau", data=logtau)
             h5.create_dataset("wavelengths", data=wavelength)
             h5.create_dataset("stokes_obs", data=stokes_obs)
+            if Pgas_gt_out is not None:
+                h5.create_dataset("Pgas_gt", data=Pgas_gt_out)
             h5.attrs["source"] = cfg.source
             h5.attrs["experiment_root"] = cfg.experiment_root
             h5.attrs["model_type"] = cfg.model_type
             h5.attrs["region_label"] = cfg.region_label
             h5.attrs["pred_grid"] = np.array([pred_nx, pred_ny], dtype=np.int64)
+            h5.attrs["output_root"] = str(cfg.output_root)
             if cfg.crop_bounds is not None:
                 h5.attrs["crop_bounds"] = np.asarray(cfg.crop_bounds, dtype=np.int64)
+            if cfg.source == "muram":
+                h5.attrs["muram_step"] = int(cfg.muram_step)
+                h5.attrs["add_gt_pressure"] = bool(cfg.add_gt_pressure)
         return out_path
 
 
@@ -320,23 +447,41 @@ class NicoleRunner:
         T: np.ndarray,
         v_los_kms: np.ndarray,
         b_long_G: np.ndarray,
+        gt_pressure: Optional[np.ndarray] = None,
     ) -> Path:
         workdir = self._pixel_workdir(ix, iy)
         workdir.mkdir(parents=True, exist_ok=True)
 
-        # Write the per-pixel atmosphere
+        # Write the per-pixel atmosphere. When gt_pressure is supplied (true
+        # MURaM gas pressure, --add-gt-pressure), use it verbatim instead of a
+        # flat hydrostatic seed, and tell NICOLE not to override it.
         model_path = workdir / "model.model"
-        write_ascii_model(
-            model_path,
-            logtau=logtau,
-            T=T,
-            v_los_kms=v_los_kms,
-            b_long_G=b_long_G,
-            v_mic_cms=self.cfg.v_mic_cms,
-            v_mac_cms=self.cfg.v_mac_cms,
-            stray_light=self.cfg.stray_light,
-            el_p_seed=self.cfg.el_p_seed,
-        )
+        if gt_pressure is not None:
+            write_ascii_model(
+                model_path,
+                logtau=logtau,
+                T=T,
+                v_los_kms=v_los_kms,
+                b_long_G=b_long_G,
+                v_mic_cms=self.cfg.v_mic_cms,
+                v_mac_cms=self.cfg.v_mac_cms,
+                stray_light=self.cfg.stray_light,
+                el_p=gt_pressure,
+            )
+            hydrostatic_eq, input_density = "N", "PGas"
+        else:
+            write_ascii_model(
+                model_path,
+                logtau=logtau,
+                T=T,
+                v_los_kms=v_los_kms,
+                b_long_G=b_long_G,
+                v_mic_cms=self.cfg.v_mic_cms,
+                v_mac_cms=self.cfg.v_mac_cms,
+                stray_light=self.cfg.stray_light,
+                el_p_seed=self.cfg.el_p_seed,
+            )
+            hydrostatic_eq, input_density = "Y", "Pel"
 
         # Substitute placeholders in NICOLE.input template
         template = self.template_path.read_text()
@@ -348,6 +493,8 @@ class NicoleRunner:
             WL_FIRST=f"{self.cfg.wl_first:.4f}",
             WL_STEP_MA=f"{self.cfg.wl_step_mA:g}",
             N_WL=int(self.cfg.n_wl),
+            HYDROSTATIC_EQ=hydrostatic_eq,
+            INPUT_DENSITY=input_density,
         )
         (workdir / "NICOLE.input").write_text(rendered)
 
@@ -439,6 +586,7 @@ class NicoleRunner:
             Vz_all = h5["Vz"][...]
             Bz_all = h5["Bz"][...]
             wavelengths = h5["wavelengths"][...]
+            Pgas_gt_all = h5["Pgas_gt"][...] if "Pgas_gt" in h5 else None
 
         if pixels is None:
             target_pixels = [tuple(p) for p in pred_pixels.tolist()]
@@ -465,6 +613,7 @@ class NicoleRunner:
                 T=T_all[row],
                 v_los_kms=Vz_all[row],
                 b_long_G=Bz_all[row],
+                gt_pressure=Pgas_gt_all[row] if Pgas_gt_all is not None else None,
             )
             iquv = self.run_pixel(workdir)
             if iquv.shape[1] != self.cfg.n_wl:
@@ -488,6 +637,10 @@ class NicoleRunner:
             h5.attrs["experiment_root"] = self.cfg.experiment_root
             h5.attrs["model_type"] = self.cfg.model_type
             h5.attrs["region_label"] = self.cfg.region_label
+            h5.attrs["output_root"] = str(self.cfg.output_root)
+            if self.cfg.source == "muram":
+                h5.attrs["muram_step"] = int(self.cfg.muram_step)
+                h5.attrs["add_gt_pressure"] = bool(self.cfg.add_gt_pressure)
 
         if cleanup_workdirs:
             for ix, iy in target_pixels:

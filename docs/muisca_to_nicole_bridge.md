@@ -11,7 +11,6 @@ The bridge is purely additive. No training, analysis, or fine-tuning code is
 touched.
 
 ---
-https://astronomia.unam.mx/journals/rmxac/article/view/ia.14052059p.2026.60.59
 ## Why a bridge is needed
 
 MUISCA's analysis pipeline never persists its predictions. It runs the model
@@ -55,30 +54,36 @@ MUISCA/
 ├── scripts/
 │   └── synthesis/                           ← (new) CLI drivers
 │       ├── __init__.py
-│       ├── sample_pixels.py                 ← step 0 (optional): stratify a region by SPINOR |B_LOS|, pick test pixels
-│       ├── export_predictions.py            ← step 1: run model → predictions.h5
+│       ├── sample_pixels.py                 ← step 0 (optional): stratify a region by model-independent |B_LOS|, pick test pixels
+│       ├── export_predictions.py            ← step 1: run model → predictions.h5 (source=modest or muram)
 │       ├── run_nicole_synthesis.py          ← step 2: predictions.h5 → NICOLE → syntheses.h5
 │       ├── compare_synthesis.py             ← step 3: overlay PNGs + χ² (single model)
-│       └── compare_models.py                ← (new) cross-model comparison: joined χ², bin summary, combined overlays
+│       ├── compare_models.py                ← step 4: cross-model comparison: joined χ², bin summary, combined overlays
+│       └── aggregate_comparison.py          ← step 5: statistical view (violin plots) across the full sampled tier
 ├── tools/
-│   └── run_nicole_synthesis.sh              ← (new) sbatch front for the three-step flow
+│   └── run_nicole_synthesis.sh              ← (new) sbatch front for the whole flow; --source/--step/--add-gt-pressure CLI flags
 └── utils/
     ├── model_prof_tools.py                  ← (modified) added write_ascii_model()
-    ├── pixel_sampling.py                    ← (new) stratified-by-|B_LOS| pixel sampler + diagnostic plot
+    ├── pixel_sampling.py                    ← (new) stratified-by-|B_LOS| pixel sampler + diagnostic plot (modest- or muram-sourced)
     └── synthesis.py                         ← (new) SynthesisConfig / WholeRegionPrediction / Exporter / Runner / Comparator
 ```
 
 The data flow is three sequential steps, plus an optional step 0 for picking
-which pixels to run when you want more than one hand-picked coordinate:
+which pixels to run when you want more than one hand-picked coordinate. The
+same flow works from **two sources**: `--source modest` (real Hinode/SOT-SP
+observations, region-cropped) or `--source muram --muram-step N` (a MURaM
+simulation step, e.g. one outside the model's training window, for an
+out-of-distribution generalization check):
 
 ```
-[Trained checkpoint] + [MODEST observation]
+[Trained checkpoint] + [MODEST observation | MURaM simulation step]
         │
         ▼   scripts/synthesis/sample_pixels.py            (optional)
 selected_pixels.json + abs_bz_map_selected_pixels.png
         │
         ▼   scripts/synthesis/export_predictions.py
-predictions.h5 (denormalized T, V_LOS, B_LOS + matched observed Stokes)
+predictions.h5 (denormalized T, V_LOS, B_LOS + matched observed Stokes
+                [+ ground-truth gas pressure, muram --add-gt-pressure only])
         │
         ▼   scripts/synthesis/run_nicole_synthesis.py
         │   (one workdir per pixel: model.model, NICOLE.input, LINES)
@@ -154,24 +159,41 @@ their shared configuration.
 ### `SynthesisConfig`
 
 A dataclass that pins all the knobs of one synthesis run: which experiment
-and model variation to use, where MODEST data lives, the wavelength grid that
-NICOLE should sample, the missing-column defaults, and the output root. It is
-passed to all three of the other classes so the flow stays internally
-consistent. The interesting fields:
+and model variation to use, where MODEST/MURaM data lives, the wavelength
+grid that NICOLE should sample, the missing-column defaults, and the output
+root. It is passed to all three of the other classes so the flow stays
+internally consistent. The interesting fields:
 
 | Field                | Default              | Why this default                                                                                                        |
 |----------------------|----------------------|-------------------------------------------------------------------------------------------------------------------------|
-| `source`             | (required)           | `"modest"` in v1. `"muram"` raises `NotImplementedError` for now.                                                        |
+| `source`             | (required)           | `"modest"` (real Hinode/SOT-SP observations) or `"muram"` (a MURaM simulation step).                                    |
+| `muram_step`         | `None`               | MURaM simulation step number; required when `source="muram"`. Ignored for `"modest"`.                                  |
+| `add_gt_pressure`    | `False`              | `source="muram"` only — feed NICOLE the true MURaM gas pressure instead of a hydrostatic-equilibrium seed (see "Ground-truth pressure" below). Raises `ValueError` if set together with `source="modest"`. |
+| `region_label`       | `"whole"`             | MODEST region-cropping label. Ignored when `source="muram"` — `step-N` occupies that position in the output path instead (see "Output layout" below). |
 | `wl_first`           | `6300.796`           | First wavelength of the MODEST/Hinode SP Fe I 6301.5/6302.5 window.                                                     |
 | `wl_step_mA`         | `21.5`               | Hinode SP spectral sampling (≈21.5 mÅ per pixel).                                                                       |
 | `n_wl`               | `112`                | Number of MODEST wavelength samples per Stokes profile.                                                                 |
 | `v_mic_cms`          | `1.0e5` (= 1 km·s⁻¹) | Standard photospheric value (see "Assumption 2").                                                                       |
 | `v_mac_cms`          | `0.0`                | No macroturbulent broadening assumed (see "Assumption 3").                                                               |
 | `stray_light`        | `0.0`                | No stray-light fraction assumed (see "Assumption 4").                                                                   |
-| `el_p_seed`          | `1.0`                | dyn·cm⁻² seed for NICOLE's hydrostatic integration; close to HSRA at log τ = −2 (see "Assumption 1").                   |
+| `el_p_seed`          | `1.0`                | dyn·cm⁻² seed for NICOLE's hydrostatic integration; close to HSRA at log τ = −2 (see "Assumption 1"). Superseded per-pixel when `add_gt_pressure=True`.  |
 | `nicole_assets`      | `data/nicole_assets` | Where the `LINES` and `NICOLE.input.template` live.                                                                     |
 | `nicole_root`        | `../NICOLE_v16.06`   | Location of the NICOLE Fortran tree (`main/nicole`, `run/run_nicole.py`). See "Operational prerequisite" below.          |
 | `python_for_nicole`  | `"python2"`          | Interpreter used to invoke `run_nicole.py`. v16.06's driver is Python 2; set to `"python3"` or `sys.executable` if you switch to a Python-3 NICOLE. |
+
+#### Output layout
+
+`out_dir()`/`region_dir()` branch on `source`:
+
+- `source="modest"`: `output_root/experiment_root/model_type/region_label/...`
+  (unchanged from the original design — no `"modest"` path segment).
+- `source="muram"`: `output_root/experiment_root/muram/step-N[-gt-pressure]/model_type/...`
+  — `step-N` (optionally suffixed `-gt-pressure`) occupies the same path
+  *level* `region_label` occupies for MODEST, not an extra nested layer on
+  top of it, since MURaM has no region-cropping concept. `region_dir()`
+  (the level `compare_models.py`/`aggregate_comparison.py` write into, shared
+  across model variants) is `.../region_label/` for modest and `.../step-N/`
+  for muram.
 
 ### `PredictionExporter`
 
@@ -180,13 +202,40 @@ cannot drift out of sync with how the rest of MUISCA produces predictions.
 Internally, `export(pixels)` first calls `predict_whole_region()` — a
 method that runs inference once over the full cropped region and returns a
 `WholeRegionPrediction` (the denormalized `pred_mhd` dict, `prediction_stokes`,
-`wavelength`, `logtau`, and the region's pixel-grid shape) — then subselects
-the requested pixels out of that cube and writes them to HDF5.
-`predict_whole_region()` is also the method [`utils/pixel_sampling.py`](../utils/pixel_sampling.py)
-calls to drive stratified sampling (see "Stratified pixel sampling" below);
-factoring it out means the sampler and the exporter share one inference pass
-and one `(ix, iy)` indexing convention, instead of each script loading the
-model and indexing pixels independently. Reused symbols:
+`wavelength`, `logtau`, the region's pixel-grid shape, and an optional
+`gt_pressure` cube) — then subselects the requested pixels out of that cube
+and writes them to HDF5. `predict_whole_region()` is also the method
+[`utils/pixel_sampling.py`](../utils/pixel_sampling.py) calls to drive
+stratified sampling (see "Stratified pixel sampling" below); factoring it out
+means the sampler and the exporter share one inference pass and one
+`(ix, iy)` indexing convention, instead of each script loading the model and
+indexing pixels independently.
+
+`predict_whole_region()` branches internally on `cfg.source` for the
+data-loading step only — everything else (`AnalysisModelPipeline`, normalizer
+loading, the actual `predict_and_denormalize()` inference call, the returned
+`WholeRegionPrediction` shape) is shared, unbranched code:
+
+- **`source="modest"`** (`PredictionExporter._load_modest_stokes`): the
+  original MODEST path, unchanged.
+- **`source="muram"`** (`PredictionExporter._load_muram_stokes`): loads the
+  requested `cfg.muram_step` via the exact raw `MhdData`+`StokesData`
+  sequence used elsewhere in the codebase for MURaM ingestion (`load_step` →
+  `load_opacity_table` → `compute_optical_depth` → `remap_to_optical_depth`
+  for `T`/`Vz`/`Bz`; `load_stokes` → `continuum_normalization` →
+  `load_hinode_lsf` → `apply_spectral_convolution` → `resample_to_hinode`),
+  using `pipeline.build_runtime_training_config(model_cfg)` so the LSF path,
+  continuum-normalization mode, and `stokes_mult_factor` match what the
+  checkpoint was actually trained with (the same config
+  `scripts/analysis/muram_analysis.py` builds). Deliberately does **not**
+  reuse `scripts.base_training.load_and_prepare_step()`/`MuramStepDataset`,
+  since that helper normalizes Stokes I/V *inside* its own `__init__` and
+  never retains the raw (continuum-normalized-only) profile the bridge needs
+  for the `stokes_obs`/comparison-target field. MURaM's own spatial grid
+  already matches the grid the model's Stokes input is built on, so — unlike
+  MODEST — no upsample-to-a-finer-prediction-grid step is needed.
+
+Reused symbols:
 
 - `utils.analysis.AnalysisModelPipeline.prepare_models()` — loads the
   checkpoint and figures out `n_tau` (the number of optical-depth nodes the
@@ -194,12 +243,30 @@ model and indexing pixels independently. Reused symbols:
 - `AnalysisModelPipeline.predict_and_denormalize()` — the canonical inference
   routine. This is the single source of truth for unit conversion (Kelvin,
   km·s⁻¹, Gauss); the bridge does not re-implement the denormalizer.
+- `AnalysisModelPipeline.build_runtime_training_config()` — muram only; the
+  same per-model `TrainingConfig` reconstruction `muram_analysis.py` uses.
 - `utils.normalizer.{MhdNormalizer, StokesNormalizer}` — loaded from the
   default `data/normalization_stats/` JSONs configured by `TrainingConfig`.
-- `utils.modest_data.ModestData.load_all()` and `ModestDataCache` — the same
-  MODEST loader that `scripts/analysis/modest_analysis.py` uses, so the
-  observed Stokes that gets stored next to the predictions in `predictions.h5`
-  is identical to what the model actually saw at inference time.
+- `utils.modest_data.ModestData.load_all()` and `ModestDataCache` — modest
+  only; the same MODEST loader that `scripts/analysis/modest_analysis.py`
+  uses, so the observed Stokes that gets stored next to the predictions in
+  `predictions.h5` is identical to what the model actually saw at inference
+  time.
+- `utils.muram_data.{MhdData, StokesData}` — muram only.
+
+#### Ground-truth pressure (`--add-gt-pressure`, muram only)
+
+When `cfg.add_gt_pressure=True`, `predict_whole_region()` does a **second**
+`mhd.remap_to_optical_depth(...)` call — this time for `"P"` (MURaM's gas
+pressure, already dyn·cm⁻²) — onto `pred_tau_arr`, the *model's own predicted
+tau grid* (`pipeline.get_model_logtau_values(model_cfg)`), **not** the fixed
+canonical grid `sample_pixels_by_abs_bz()` uses for stratification (those are
+two unrelated grids serving unrelated purposes; mixing them up would
+misalign the pressure column against the T/Vz/Bz predictions it needs to sit
+alongside in one `.model` file per pixel). The result is stored as
+`WholeRegionPrediction.gt_pressure` and, when present, exported per-pixel to
+`predictions.h5` as an additional `Pgas_gt` dataset — see "Assumption 1"
+below for how `NicoleRunner` consumes it.
 
 What the exporter writes (`predictions.h5`):
 
@@ -211,23 +278,36 @@ What the exporter writes (`predictions.h5`):
 | `pixels`      | `(n_pixels, 2)`        | `(ix, iy)` of each row in the prediction grid |
 | `logtau`      | `(n_tau,)`             | ascending log τ (MUISCA convention)      |
 | `wavelengths` | `(112,)`               | Å                                        |
-| `stokes_obs`  | `(n_pixels, 2, 112)`   | matched observed Stokes I and V (already continuum-normalized in the MODEST loader path) |
+| `stokes_obs`  | `(n_pixels, 2, 112)`   | matched observed/reference Stokes I and V (continuum-normalized) |
+| `Pgas_gt`     | `(n_pixels, n_tau)`    | *(only when `add_gt_pressure=True`)* true MURaM gas pressure, dyn·cm⁻², on the model's own tau grid |
 
-HDF5 string attrs `source`, `experiment_root`, `model_type`, `region_label`
-let the downstream steps reconstruct the original configuration from the file
-alone.
+HDF5 attrs `source`, `experiment_root`, `model_type`, `region_label`,
+`pred_grid`, `output_root` (added so `run_nicole_synthesis.py`/
+`compare_synthesis.py` can reconstruct the config without assuming a fixed
+path depth, since muram's path is one segment deeper than modest's) and, for
+`source="muram"`, `muram_step` and `add_gt_pressure`, let the downstream
+steps reconstruct the original configuration from the file alone.
 
 ### `NicoleRunner`
 
 Step 2. For each pixel, it materializes a self-contained working directory
-under `output/synthesis/<experiment>/<model>/<region>/pix_<ix>_<iy>/`
-containing exactly the three files NICOLE needs:
+under `<out_dir()>/pix_<ix>_<iy>/` (see "Output layout" above for how
+`out_dir()` differs between modest and muram) containing exactly the three
+files NICOLE needs:
 
-- `model.model` — written via `write_ascii_model`.
+- `model.model` — written via `write_ascii_model`. When `run_pixels_from_h5()`
+  finds a `Pgas_gt` dataset in `predictions.h5` (i.e. the export step ran with
+  `--add-gt-pressure`), it passes that pixel's row through `prepare_workdir()`
+  as `write_ascii_model(..., el_p=gt_pressure_row)` instead of the default
+  `el_p_seed=cfg.el_p_seed` — using the writer's pre-existing full-array
+  `el_p=` parameter, which was already supported but unused before this
+  feature.
 - `NICOLE.input` — built from `data/nicole_assets/NICOLE.input.template` by
-  substituting six placeholders (`{NICOLE_COMMAND}`, `{INPUT_MODEL}`,
+  substituting eight placeholders (`{NICOLE_COMMAND}`, `{INPUT_MODEL}`,
   `{OUTPUT_PROFILE}`, `{OUTPUT_MODEL}`, `{WL_FIRST}`, `{WL_STEP_MA}`,
-  `{N_WL}`).
+  `{N_WL}`, and two governing the pressure treatment: `{HYDROSTATIC_EQ}` /
+  `{INPUT_DENSITY}`, `"Y"`/`"Pel"` by default or `"N"`/`"PGas"` when a
+  ground-truth pressure row is present — see "Assumption 1" below).
 - `LINES` — copied verbatim from `data/nicole_assets/LINES`.
 
 It then runs NICOLE by invoking its own driver:
@@ -294,6 +374,30 @@ The limitation is that NICOLE's hydrostatic integration assumes negligible
 inertial terms, while the MURaM atmospheres MUISCA was trained on are fully
 convective. There will be systematic discrepancies in the deepest layers
 (τ ≳ 0). This is documented but not mitigated in v1.
+
+#### Overriding this assumption: `--add-gt-pressure` (muram only)
+
+For MURaM sources the true gas pressure is directly available (`MhdData`
+already loads it via the EOS files), so this assumption can be tested
+directly rather than debated: `export_predictions.py --add-gt-pressure`
+remaps MURaM's real `P` onto the model's own tau grid and feeds it to NICOLE
+verbatim, flipping the two keywords above to
+
+```
+Impose hydrostatic equilibrium= N
+Input density= PGas
+```
+
+— a configuration NICOLE already ships and tests itself
+(`NICOLE_v16.06/test/conv2/NICOLE.input`), not a new capability being relied
+on unverified. `Input density` accepts `Pgas|Pel|Nel|Dens`; MURaM's `P` is
+already gas pressure in the exact unit (dyn·cm⁻²) `PGas` expects, so no
+conversion is needed beyond stripping the `astropy` unit. Runs land in a
+sibling `step-N-gt-pressure/` output tree (see "Output layout" above) rather
+than overwriting the plain run, specifically so the two can be diffed
+directly — `chi2.json`/`bin_summary.json` before vs. after — to see whether
+real pressure support changes the synthesis match at all. See "Verification
+result" below for the round-trip check and a first data point.
 
 ### Assumption 2 — Microturbulence is a fixed constant (1 km·s⁻¹)
 
@@ -382,33 +486,47 @@ chance. NICOLE synthesis is fast (≈1 s/pixel), so 15–20 pixels is cheap.
 
 `sample_pixels_by_abs_bz(cfg, n_bins=5, n_per_bin=3, seed=0)`:
 
-1. Loads MODEST data via `ModestData.load_all()` (no model/GPU needed) and
-   takes `|spinor_atm["Blos"][deepest_tau]|` — the **SPINOR inversion already
-   bundled with the MODEST data**, not either candidate model's own
-   prediction. This is a deliberate fix for a real bug: stratifying by a
-   model's own `|B_LOS|` prediction is circular when the goal is comparing
-   that model against another one — whichever model defines the bins gets a
-   built-in home-field advantage, and on the `negative_region` crop the two
-   model variants' own predictions produced *completely different* bin edges
-   and pixel sets for the identical seed/crop. SPINOR's `Blos` is
-   model-independent — it's the same ground-truth reference already used for
-   MODEST comparisons in `utils/analysis.py` — so the resulting pixel
-   selection no longer depends on `cfg.model_type` at all (which is now only
-   used to choose the output path, not the sampling pool). Running this
-   script once per `--model-type` with the same `--seed`/`--crop-bounds`
-   therefore produces an *identical* pixel list across model variants, which
-   is the prerequisite for `compare_models.py` (below) to be a fair
-   comparison.
-   SPINOR's tau grid is coarser than a model's prediction grid (3 levels at
-   log τ = −2.0, −0.8, 0.0 by default vs. e.g. 95 levels for the example
-   checkpoint) — "deepest level" here means SPINOR's own deepest level
-   (0.0), not the model's. SPINOR's native pixel grid is also coarser than
-   the model's (un-upsampled — e.g. `(80,200)` vs. the model's `(160,400)`
-   for the same crop under the default 2× upsampling), so the map is
-   upsampled via integer repeat (`np.repeat` along both axes, factor derived
-   dynamically from the two grids' shapes, not hardcoded) before binning —
-   no transpose is needed since both grids share the same axis order, just
-   differing by the upsampling factor.
+1. Gets a model-independent `|B_LOS|` map. The source depends on `cfg.source`
+   (`_abs_bz_map_from_modest`/`_abs_bz_map_from_muram` in
+   `utils/pixel_sampling.py`), but the principle is the same for both: bin on
+   ground truth, never on either candidate model's own prediction — stratifying
+   by a model's own `|B_LOS|` prediction is circular when the goal is comparing
+   that model against another one, since whichever model defines the bins gets
+   a built-in home-field advantage (confirmed on the `negative_region` crop:
+   the two model variants' own predictions produced *completely different* bin
+   edges and pixel sets for the identical seed/crop, before this fix). Running
+   this script once per `--model-type` with the same `--seed` therefore
+   produces an *identical* pixel list across model variants, which is the
+   prerequisite for `compare_models.py` (below) to be a fair comparison.
+
+   - **`source="modest"`**: loads MODEST data via `ModestData.load_all()` (no
+     model/GPU needed) and takes `|spinor_atm["Blos"][deepest_tau]|` — the
+     **SPINOR inversion already bundled with the MODEST data**. SPINOR's `Blos`
+     is the same ground-truth reference already used for MODEST comparisons in
+     `utils/analysis.py`. Its tau grid is coarser than a model's prediction
+     grid (3 levels at log τ = −2.0, −0.8, 0.0 by default vs. e.g. 95 levels
+     for the example checkpoint) — "deepest level" here means SPINOR's own
+     deepest level (0.0), not the model's. SPINOR's native pixel grid is also
+     coarser than the model's (un-upsampled — e.g. `(80,200)` vs. the model's
+     `(160,400)` for the same crop under the default 2× upsampling), so the
+     map is upsampled via integer repeat (`np.repeat` along both axes, factor
+     derived dynamically from the two grids' shapes, not hardcoded) before
+     binning — no transpose is needed since both grids share the same axis
+     order, just differing by the upsampling factor.
+   - **`source="muram"`**: loads `MhdData` for `cfg.muram_step` (again, no
+     model/GPU needed — this is a pure data-processing step) and remaps `Bz`
+     onto a **fixed, model-independent canonical tau grid**
+     (`np.arange(-2.0, 0.05, 0.1)`, `TrainingConfig`'s own default — the same
+     grid used for the poster's MURaM atmosphere figures), taking the deepest
+     level (log τ = 0). This grid is deliberately *not* the model's own
+     predicted tau grid — using each model's own grid would reintroduce the
+     exact circularity issue above, since two model variants can have
+     different predicted grids. It is also *not* the grid `--add-gt-pressure`
+     remaps pressure onto (which *does* need to be the model's own grid) —
+     these are two independent grids used for two independent purposes; mixing
+     them up would be a real bug. MURaM's own spatial grid already matches the
+     model's prediction grid, so — unlike MODEST/SPINOR — no upsample step is
+     needed here either.
 2. Builds **log-spaced bin edges** — `np.logspace(log10(floor), log10(max), n_bins+1)`,
    i.e. equal-width intervals in log₁₀(Gauss) space — rather than
    percentile/quantile edges. The two strategies were both tried:
@@ -465,17 +583,28 @@ chance. NICOLE synthesis is fast (≈1 s/pixel), so 15–20 pixels is cheap.
   pixels overlaid as scatter points color-coded by bin.
 
 ```bash
+# modest
 python scripts/synthesis/sample_pixels.py \
     --experiment-root experiment_81_to_181-step_size_5-normal \
     --model-type wfa_only \
     --region-label negative_region \
     --crop-bounds 0 80 0 200 \
     --n-bins 5 --n-per-bin 20 --n-overlay-per-bin 3 --seed 0
-# → output/synthesis/.../pixel_selection/{selected_pixels.json, pixel_selection_snippets.txt, abs_bz_map_selected_pixels.png}
+# → output/synthesis/.../wfa_only/negative_region/pixel_selection/{...}
+
+# muram (no --crop-bounds/--region-label -- MURaM has no cropping concept)
+python scripts/synthesis/sample_pixels.py \
+    --source muram --muram-step 198 \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --model-type wfa_only \
+    --n-bins 5 --n-per-bin 20 --n-overlay-per-bin 3 --seed 0
+# → output/synthesis/.../muram/step-198/wfa_only/pixel_selection/{...}
 ```
 
-The printed snippet's `--pixel` args feed directly into step 1
-(`export_predictions.py`), which accepts the flag repeatably.
+Both write `{selected_pixels.json, pixel_selection_snippets.txt,
+abs_bz_map_selected_pixels.png}`. The printed snippet's `--pixel` args feed
+directly into step 1 (`export_predictions.py`), which accepts the flag
+repeatably.
 
 ---
 
@@ -484,24 +613,36 @@ The printed snippet's `--pixel` args feed directly into step 1
 [`scripts/synthesis/compare_models.py`](../scripts/synthesis/compare_models.py)
 compares two or more trained model variants (e.g. `wfa_only` vs `no_physics`)
 against each other on the same pixels, given they were each run through
-steps 0–2 independently (sharing a pixel list, per the SPINOR-sourced step 0
-above). It does **not** duplicate any chi² logic — it instantiates one
+steps 0–2 independently (sharing a pixel list, per the model-independent
+step 0 above). It does **not** duplicate any chi² logic — it instantiates one
 `SynthesisComparator` per `--model-type` and calls the existing, unmodified
 `chi_square()` on each (verified bit-for-bit identical to running
 `compare_synthesis.py` on each model alone), then joins the results by
 pixel and by bin:
 
 ```bash
+# modest
 python scripts/synthesis/compare_models.py \
     --experiment-root experiment_81_to_181-step_size_5-normal \
     --region-label negative_region \
     --model-type wfa_only --model-type no_physics
 # → output/synthesis/<experiment_root>/<region_label>/pixel_comparison/
+
+# muram
+python scripts/synthesis/compare_models.py \
+    --source muram --muram-step 198 \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --model-type wfa_only --model-type no_physics
+# → output/synthesis/<experiment_root>/muram/step-198/pixel_comparison/
 ```
 
-This output directory sits one level up from any single model's directory
-(`output/synthesis/<experiment_root>/<model_type>/<region_label>/...`) since
-the comparison isn't owned by any one model variant. It contains:
+This output directory (`SynthesisConfig.region_dir()/pixel_comparison`) sits
+one level up from any single model's directory since the comparison isn't
+owned by any one model variant — for modest that's
+`output/synthesis/<experiment_root>/<region_label>/...` (`step-198`
+occupying the `region_label` position for muram, so `region_dir()` for
+muram is `output/synthesis/<experiment_root>/muram/step-198/...` directly,
+not nested one level deeper under a region label). It contains:
 
 - `cross_model_chi2.json` — per-pixel χ² for every requested model, keyed
   `"ix,iy"` → `{model_type: {chi2_I, chi2_V, n_wl}}`. Covers the full
@@ -551,6 +692,10 @@ python scripts/synthesis/aggregate_comparison.py \
 # → output/synthesis/<experiment_root>/<region_label>/aggregate_plots/
 ```
 
+Same `--source`/`--muram-step`/`--add-gt-pressure` flags as `compare_models.py`
+apply here too, writing to the `region_dir()`-relative sibling
+`.../aggregate_plots/` directory.
+
 - `aggregate_chi2_long.json` — long-format table, one record per
   `(pixel, model_type)`: `{ix, iy, bin, bin_lo, bin_hi, abs_bz_gauss,
   model_type, chi2_I, chi2_V}`. Ready to load straight into a
@@ -565,8 +710,8 @@ python scripts/synthesis/aggregate_comparison.py \
 
 ## How to use it
 
-Three steps (plus the optional step 0 above). Each step can be run
-independently.
+Three steps (plus the optional step 0 above, and steps 4-5 when comparing
+2+ model variants). Each step can be run independently.
 
 ```bash
 # 1. Run the trained model on a region of MODEST and persist the predictions
@@ -593,20 +738,43 @@ python scripts/synthesis/compare_synthesis.py \
 # → output/synthesis/.../comparison/{chi2.json, overlay_pix_*.png}
 ```
 
+For a MURaM source (e.g. a step outside the training window, for an
+out-of-distribution generalization check), step 1 becomes:
+
+```bash
+python scripts/synthesis/export_predictions.py \
+    --source muram --muram-step 198 \
+    --experiment-root experiment_81_to_181-step_size_5-normal \
+    --model-type wfa_only \
+    --pixel 152,449
+# → output/synthesis/<experiment_root>/muram/step-198/wfa_only/predictions.h5
+```
+
+— no `--region-label`/`--crop-bounds` (MURaM has no cropping concept in this
+feature); steps 2-3 are unchanged (they're fully source-agnostic, driven by
+attrs already in `predictions.h5`). Add `--add-gt-pressure` to feed NICOLE
+MURaM's real gas pressure instead of a hydrostatic-equilibrium seed (see
+"Ground-truth pressure" above) — output lands in a sibling
+`muram/step-198-gt-pressure/` tree so it can be diffed against the plain run.
+
 Or use the sbatch front, which chains steps 0-3 for one or more `MODEL_TYPES`
 (running step 4, `compare_models.py`, and step 5, `aggregate_comparison.py`,
 automatically at the end if 2 or more are listed):
 
 ```bash
-sbatch tools/run_nicole_synthesis.sh
+sbatch tools/run_nicole_synthesis.sh                                     # modest (edit-in-file config)
+sbatch tools/run_nicole_synthesis.sh --source muram --step 198           # muram
+sbatch tools/run_nicole_synthesis.sh --source muram --step 198 --add-gt-pressure
 ```
 
 Edit the constants at the top of [tools/run_nicole_synthesis.sh](../tools/run_nicole_synthesis.sh)
-to pick the experiment, model variations, region, and pixel list. Listing
-multiple `MODEL_TYPES` is the easiest way to run a full cross-model
-comparison end-to-end: step 0's SPINOR-sourced sampling gives every listed
-variant the same pixel list, steps 1-3 run for each variant in turn, and
-step 4 joins them.
+to pick the experiment, model variations, region, and pixel list; `--source`/
+`--step`/`--add-gt-pressure` are the only settings exposed on the command
+line (everything else stays edit-in-file, deliberately — see the script's
+own `--help`). Listing multiple `MODEL_TYPES` is the easiest way to run a
+full cross-model comparison end-to-end: step 0's model-independent sampling
+gives every listed variant the same pixel list, steps 1-3 run for each
+variant in turn, and steps 4-5 join them.
 
 ---
 
@@ -747,21 +915,80 @@ single-pixel finding is systematic, not local:
   degradation is specific to the magnetic-sensitive Stokes V channel and
   not a general synthesis-quality issue that scales with field strength.
 
+### MURaM source verification
+
+The full pipeline (steps 0-5) was run end-to-end against MURaM step 198 —
+**outside** the model's training window (`experiment_81_to_181-step_size_5-normal`
+trains on steps 81-181), so this is a genuine out-of-distribution
+generalization check rather than a held-out-but-similar test set — for both
+`wfa_only` and `no_physics`:
+
+- Step 0 confirmed the ground-truth-Bz stratification is model-independent:
+  both model variants produced an **identical** pixel list for the same
+  seed (verified programmatically, not just by inspection), the same
+  guarantee already established for the SPINOR/MODEST case.
+- Step 1's export produced real, physically sensible field-strength bins
+  (e.g. `[0.0003, 0.05]`, `[0.05, 11]`, `[11, 2129]` G at log τ = 0 for one
+  run), and `predictions.h5`'s `pred_grid` came out as MURaM's native
+  `(480, 480)` — confirming no upsampling step was mistakenly triggered
+  (MURaM's grid already matches the model's prediction grid, unlike MODEST).
+- A single-pixel overlay showed the expected Fe I 6301.5/6302.5 line shapes
+  and, notably, a **much tighter** Stokes V match than the MODEST
+  single-pixel case above (this makes sense: the comparison target here is
+  MURaM's own synthesized Stokes, which the model has at least partially
+  learned the structure of, vs. real independently-observed Hinode data).
+- Steps 4-5 correctly wrote `pixel_comparison/`/`aggregate_plots/` directly
+  under `muram/step-198/` (sibling to the per-model-type directories, not
+  nested under an extra region-label level), and "Comparing 2 models on N
+  common pixels" confirmed the pixel sets matched exactly between the two
+  model variants.
+- One incidental finding worth flagging: on this out-of-distribution step,
+  `wfa_only` and `no_physics` came out much closer to each other in χ²(V)
+  than on real MODEST data (where WFA showed a clear regularization
+  advantage — see "Multi-pixel, stratified verification" above). This is an
+  open generalization question, not something this bridge investigates
+  further on its own.
+
+### Ground-truth pressure verification (`--add-gt-pressure`)
+
+Run against the same MURaM step 198, `wfa_only`:
+
+- The remapped `Pgas_gt` dataset was cross-checked against an independent
+  recomputation of MURaM's `P` on the same pixel and the same tau grid
+  (`pred_tau_arr`, not the stratification grid) — **bit-for-bit identical**
+  (`np.allclose(..., rtol=1e-8)` → `True`, max relative difference `0.0`).
+- The generated `NICOLE.input` for a ground-truth-pressure pixel correctly
+  substituted `Impose hydrostatic equilibrium= N` / `Input density= PGas`;
+  the plain (no-flag) run correctly kept `Y`/`Pel`.
+- The generated `model.model`'s pressure column matched the corresponding
+  `Pgas_gt` value exactly (e.g. deepest level, log τ = 1.40: `2.087E+05`
+  dyn·cm⁻² in the file vs. `208685.46` dyn·cm⁻² in the HDF5 dataset).
+- On the one pixel tested, the ground-truth-pressure run produced
+  measurably different χ² than the plain run at the same pixel
+  (χ²_I: 3.64×10⁶ → 3.44×10⁶; χ²_V: 62.3 → 67.1) — confirming the effect
+  propagates all the way through NICOLE rather than being silently ignored,
+  but this is a single-pixel smoke test, not a claim about whether
+  ground-truth pressure systematically helps or hurts. That comparison is
+  exactly what running the aggregate/cross-model steps with and without
+  `--add-gt-pressure` and diffing `bin_summary.json` is for.
+
 ---
 
 ## Current limitations and open follow-ups
 
 These are not bugs — they are tradeoffs documented for awareness:
 
-1. **MURaM source path.** Only `--source modest` is wired in v1. The MURaM
-   path (which would give us a three-way comparison: MURaM ground-truth
-   atmosphere vs. MUISCA prediction vs. NICOLE-synthesized Stokes) is in
-   `SynthesisConfig` as a `NotImplementedError` placeholder.
+1. **No region-cropping for MURaM.** `--source muram` always runs on the
+   full simulation domain (matching `scripts/analysis/muram_analysis.py`'s
+   own behavior) — there is no MODEST-style `--crop-bounds` equivalent.
+   `region_label` stays a `SynthesisConfig` field for dataclass simplicity
+   but is silently ignored for `source="muram"`; `step-N` occupies that
+   position in the output path instead.
 2. **Explicit pixel list required.** `export_predictions.py` still expects
    an explicit `--pixel` list — `sample_pixels.py` (step 0) picks a
    representative handful for you, but there is no driver that fans out
-   across *every* pixel in a crop region. A SLURM-array driver for full-region
-   coverage is item 8 in the original plan and is the natural v2 extension.
+   across *every* pixel in a region. A SLURM-array driver for full-region
+   coverage is the natural next extension.
 3. **Stokes-I normalization mismatch.** The MODEST loader returns
    "continuum-normalized" Stokes I, but the empirical range in a sample
    pixel is ≈ 0.44–0.80 rather than ≈ 0.0–1.0 (the line core sits at 0.44,
@@ -774,7 +1001,9 @@ These are not bugs — they are tradeoffs documented for awareness:
    its own. For the 95-level example checkpoint this is moot (max log τ =
    +1.4 already), but for the canonical 21-level [−2.0, 0.0] grid it may
    matter. Padding with HSRA was discussed in the plan and rejected for v1
-   on the basis that NICOLE's extrapolation is generally well-behaved.
+   on the basis that NICOLE's extrapolation is generally well-behaved. This
+   also does not apply when `--add-gt-pressure` is used, since NICOLE no
+   longer integrates hydrostatic equilibrium in that mode at all.
 5. **`data/` is gitignored.** The bridge places its templates at
    `data/nicole_assets/`, which lives inside the gitignored `data/` tree.
    The files work at runtime, but to commit them add an override to
@@ -787,3 +1016,10 @@ These are not bugs — they are tradeoffs documented for awareness:
 
    or move the directory under `scripts/synthesis/templates/` and update the
    default `nicole_assets` path in `SynthesisConfig`.
+6. **`--add-gt-pressure` is a targeted diagnostic, not a general feature.**
+   It only remaps and feeds the MURaM `P` column that already exists on
+   disk; it does not attempt to derive or predict pressure for MODEST
+   sources (which have none), and it does not change any other assumption
+   (microturbulence, macroturbulence, stray light, transverse field all stay
+   as in Assumptions 2–5). Treat it as a one-off "does real pressure change
+   anything" test, not a new default mode.

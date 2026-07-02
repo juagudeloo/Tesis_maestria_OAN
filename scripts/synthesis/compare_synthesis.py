@@ -33,13 +33,25 @@ def main():
         experiment_root = h5.attrs.get("experiment_root", "")
         model_type = h5.attrs.get("model_type", "")
         region_label = h5.attrs.get("region_label", "whole")
+        muram_step = h5.attrs.get("muram_step", None)
+        add_gt_pressure = h5.attrs.get("add_gt_pressure", False)
+        # output_root: read directly when present (added alongside muram support).
+        # Previously this was never passed through at all, silently relying on
+        # SynthesisConfig's default matching whatever --output-root the caller
+        # actually used upstream -- reading the attr closes that latent gap too.
+        output_root_attr = h5.attrs.get("output_root", None)
 
-    cfg = SynthesisConfig(
+    cfg_kwargs = dict(
         source=str(source),
         experiment_root=str(experiment_root),
         model_type=str(model_type),
         region_label=str(region_label),
+        muram_step=int(muram_step) if muram_step is not None else None,
+        add_gt_pressure=bool(add_gt_pressure),
     )
+    if output_root_attr is not None:
+        cfg_kwargs["output_root"] = Path(str(output_root_attr))
+    cfg = SynthesisConfig(**cfg_kwargs)
     comp = SynthesisComparator(cfg)
     comp.load(args.predictions_h5, args.syntheses_h5)
 

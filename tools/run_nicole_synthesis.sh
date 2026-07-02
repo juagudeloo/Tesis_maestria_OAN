@@ -21,12 +21,26 @@ set -euo pipefail
 EXPERIMENT_ROOT="experiment_81_to_181-step_size_5-normal"
 MODEL_TYPES=("wfa_only" "no_physics")   # one or more model variations to run.
                                           # Step 0's sampling is model-independent
-                                          # (SPINOR-sourced), so every variant here gets
-                                          # the SAME pixel selection automatically. With
-                                          # 2+ entries, step 4 (cross-model comparison)
-                                          # also runs at the end.
-REGION_LABEL="negative_region"
-CROP_BOUNDS=(0 80 0 200)   # Y0 Y1 X0 X1 (matches ModestData.extract_region order)
+                                          # (SPINOR- or MURaM-ground-truth-sourced),
+                                          # so every variant here gets the SAME pixel
+                                          # selection automatically. With 2+ entries,
+                                          # steps 4-5 (cross-model comparison) also
+                                          # run at the end.
+
+# Source: modest (real Hinode/SOT-SP observations, region-cropped) or muram
+# (a MURaM simulation step, e.g. one outside the model's training window, for
+# an out-of-distribution generalization check). Overridable via --source/--step/
+# --add-gt-pressure on the command line; everything else below stays edit-in-file.
+SOURCE="modest"                 # modest | muram
+MURAM_STEP=""                   # muram only; e.g. 198
+ADD_GT_PRESSURE=false           # muram only -- feed NICOLE the true MURaM gas
+                                 # pressure instead of a hydrostatic-equilibrium
+                                 # seed. Runs land in a sibling step-N-gt-pressure/
+                                 # tree, so a plain run and this one can be diffed.
+
+REGION_LABEL="negative_region"  # modest only -- ignored for muram (step-N plays
+                                 # that role in the output path instead)
+CROP_BOUNDS=(0 80 0 200)        # modest only -- Y0 Y1 X0 X1 (matches ModestData.extract_region order)
 
 # Pixel selection. Either let step 0 auto-select a stratified-by-|B_LOS| sample
 # spanning weak/mid/strong field regimes, or pin an explicit manual list.
@@ -43,30 +57,114 @@ OUTPUT_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA/output/synthesis"
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
 
 # ==============================================================================
+# CLI (overrides the CONFIGURATION defaults above)
+# ==============================================================================
+usage() {
+  cat <<'EOF'
+Usage: tools/run_nicole_synthesis.sh [--source modest|muram] [--step N] [--add-gt-pressure]
+
+Options:
+  --source modest|muram   Prediction source (default: modest)
+  --step N                MURaM simulation step number (required with --source muram)
+  --add-gt-pressure       Feed NICOLE the true MURaM gas pressure instead of a
+                          hydrostatic seed (--source muram only). Output lands in
+                          a sibling step-N-gt-pressure/ tree.
+  -h, --help              Show this help
+
+Everything else (EXPERIMENT_ROOT, MODEL_TYPES, N_BINS, ...) is configured by
+editing the CONFIGURATION block at the top of this script.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --source)
+      SOURCE="${2:-}"
+      shift 2
+      ;;
+    --step)
+      MURAM_STEP="${2:-}"
+      shift 2
+      ;;
+    --add-gt-pressure)
+      ADD_GT_PRESSURE=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "${SOURCE}" != "modest" && "${SOURCE}" != "muram" ]]; then
+  echo "Invalid --source: ${SOURCE} (use: modest|muram)" >&2
+  exit 1
+fi
+if [[ "${SOURCE}" == "muram" ]]; then
+  if [[ -z "${MURAM_STEP}" || ! "${MURAM_STEP}" =~ ^[0-9]+$ ]]; then
+    echo "--step N (integer) is required when --source muram" >&2
+    exit 1
+  fi
+else
+  if [[ "${ADD_GT_PRESSURE}" == true ]]; then
+    echo "--add-gt-pressure requires --source muram" >&2
+    exit 1
+  fi
+fi
+
+# ==============================================================================
 
 cd /scratchsan/observatorio/juagudeloo/MUISCA
 
+SOURCE_ARGS=(--source "${SOURCE}")
+if [[ "${SOURCE}" == "muram" ]]; then
+  SOURCE_ARGS+=(--muram-step "${MURAM_STEP}")
+fi
+GT_PRESSURE_ARGS=()
+if [[ "${ADD_GT_PRESSURE}" == true ]]; then
+  GT_PRESSURE_ARGS+=(--add-gt-pressure)
+fi
+
 for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
   echo "################################################################"
-  echo "# Model variant: ${MODEL_TYPE}"
+  echo "# Model variant: ${MODEL_TYPE}  (source=${SOURCE}$( [[ "${SOURCE}" == "muram" ]] && echo ", step=${MURAM_STEP}, gt_pressure=${ADD_GT_PRESSURE}" ))"
   echo "################################################################"
 
-  REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/${MODEL_TYPE}/${REGION_LABEL}"
+  if [[ "${SOURCE}" == "muram" ]]; then
+    STEP_LABEL="step-${MURAM_STEP}"
+    [[ "${ADD_GT_PRESSURE}" == true ]] && STEP_LABEL="${STEP_LABEL}-gt-pressure"
+    REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/muram/${STEP_LABEL}/${MODEL_TYPE}"
+  else
+    REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/${MODEL_TYPE}/${REGION_LABEL}"
+  fi
   RUN_PIXELS=("${PIXELS[@]}")
 
   if [ "${USE_STRATIFIED_SAMPLING}" = true ]; then
-    echo "=== Step 0: stratified pixel sampling by |B_LOS| (SPINOR-sourced, model-independent) ==="
-    python scripts/synthesis/sample_pixels.py \
-      --experiment-root "${EXPERIMENT_ROOT}" \
-      --model-type "${MODEL_TYPE}" \
-      --region-label "${REGION_LABEL}" \
-      --crop-bounds "${CROP_BOUNDS[@]}" \
-      --n-bins "${N_BINS}" \
-      --n-per-bin "${N_PER_BIN}" \
-      --n-overlay-per-bin "${N_OVERLAY_PER_BIN}" \
-      --seed "${SAMPLING_SEED}" \
-      --output-root "${OUTPUT_ROOT}" \
-      --modest-cache-dir "${MODEST_CACHE_DIR}"
+    echo "=== Step 0: stratified pixel sampling by |B_LOS| (model-independent) ==="
+    SAMPLE_ARGS=(
+      "${SOURCE_ARGS[@]}"
+      --experiment-root "${EXPERIMENT_ROOT}"
+      --model-type "${MODEL_TYPE}"
+      --n-bins "${N_BINS}"
+      --n-per-bin "${N_PER_BIN}"
+      --n-overlay-per-bin "${N_OVERLAY_PER_BIN}"
+      --seed "${SAMPLING_SEED}"
+      --output-root "${OUTPUT_ROOT}"
+    )
+    if [[ "${SOURCE}" == "modest" ]]; then
+      SAMPLE_ARGS+=(
+        --region-label "${REGION_LABEL}"
+        --crop-bounds "${CROP_BOUNDS[@]}"
+        --modest-cache-dir "${MODEST_CACHE_DIR}"
+      )
+    fi
+    python scripts/synthesis/sample_pixels.py "${SAMPLE_ARGS[@]}"
 
     SELECTED_JSON="${REGION_OUT_DIR}/pixel_selection/selected_pixels.json"
     mapfile -t RUN_PIXELS < <(python -c "
@@ -86,15 +184,22 @@ for p in data['pixels']:
   done
 
   echo "=== Step 1: export predictions ==="
-  python scripts/synthesis/export_predictions.py \
-    --source modest \
-    --experiment-root "${EXPERIMENT_ROOT}" \
-    --model-type "${MODEL_TYPE}" \
-    --region-label "${REGION_LABEL}" \
-    --crop-bounds "${CROP_BOUNDS[@]}" \
-    "${PIXEL_ARGS[@]}" \
-    --output-root "${OUTPUT_ROOT}" \
-    --modest-cache-dir "${MODEST_CACHE_DIR}"
+  EXPORT_ARGS=(
+    "${SOURCE_ARGS[@]}"
+    "${GT_PRESSURE_ARGS[@]}"
+    --experiment-root "${EXPERIMENT_ROOT}"
+    --model-type "${MODEL_TYPE}"
+    "${PIXEL_ARGS[@]}"
+    --output-root "${OUTPUT_ROOT}"
+  )
+  if [[ "${SOURCE}" == "modest" ]]; then
+    EXPORT_ARGS+=(
+      --region-label "${REGION_LABEL}"
+      --crop-bounds "${CROP_BOUNDS[@]}"
+      --modest-cache-dir "${MODEST_CACHE_DIR}"
+    )
+  fi
+  python scripts/synthesis/export_predictions.py "${EXPORT_ARGS[@]}"
 
   PRED_H5="${REGION_OUT_DIR}/predictions.h5"
 
@@ -124,19 +229,19 @@ if [ "${#MODEL_TYPES[@]}" -ge 2 ]; then
   for mt in "${MODEL_TYPES[@]}"; do
     MODEL_TYPE_ARGS+=(--model-type "${mt}")
   done
-  python scripts/synthesis/compare_models.py \
-    --experiment-root "${EXPERIMENT_ROOT}" \
-    --region-label "${REGION_LABEL}" \
-    --output-root "${OUTPUT_ROOT}" \
+  COMPARE_ARGS=(
+    "${SOURCE_ARGS[@]}"
+    "${GT_PRESSURE_ARGS[@]}"
+    --experiment-root "${EXPERIMENT_ROOT}"
+    --output-root "${OUTPUT_ROOT}"
     "${MODEL_TYPE_ARGS[@]}"
+  )
+  [[ "${SOURCE}" == "modest" ]] && COMPARE_ARGS+=(--region-label "${REGION_LABEL}")
+  python scripts/synthesis/compare_models.py "${COMPARE_ARGS[@]}"
 
   echo
   echo "################################################################"
   echo "# Step 5: aggregate distribution comparison (aggregate_plots/, violin tier)"
   echo "################################################################"
-  python scripts/synthesis/aggregate_comparison.py \
-    --experiment-root "${EXPERIMENT_ROOT}" \
-    --region-label "${REGION_LABEL}" \
-    --output-root "${OUTPUT_ROOT}" \
-    "${MODEL_TYPE_ARGS[@]}"
+  python scripts/synthesis/aggregate_comparison.py "${COMPARE_ARGS[@]}"
 fi

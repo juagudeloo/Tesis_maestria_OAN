@@ -35,6 +35,8 @@ from utils.synthesis import SynthesisConfig
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--source", choices=["modest", "muram"], default="modest",
+                    help="Pixel-sampling source")
     p.add_argument(
         "--experiment-root",
         required=True,
@@ -45,15 +47,16 @@ def main():
         required=True,
         help=(
             "Single model variation, e.g. 'wfa_only'. Only affects the output "
-            "path -- the pixel selection itself is model-independent (SPINOR-sourced), "
-            "so re-running with a different --model-type and the same --seed/"
-            "--crop-bounds yields an identical pixel selection."
+            "path -- the pixel selection itself is model-independent (SPINOR- or "
+            "MURaM-ground-truth-sourced), so re-running with a different "
+            "--model-type and the same --seed yields an identical pixel selection."
         ),
     )
     p.add_argument(
         "--region-label",
         default="whole",
-        help="Label used in the output path (e.g. 'negative_region')",
+        help="Label used in the output path (e.g. 'negative_region'). "
+             "Ignored when --source muram (step-N plays that role instead).",
     )
     p.add_argument(
         "--crop-bounds",
@@ -61,7 +64,14 @@ def main():
         nargs=4,
         default=None,
         metavar=("Y0", "Y1", "X0", "X1"),
-        help="Region bounds passed to ModestData.load_all (Y0, Y1, X0, X1 order)",
+        help="Region bounds passed to ModestData.load_all (Y0, Y1, X0, X1 order). "
+             "modest only -- MURaM has no region-cropping concept.",
+    )
+    p.add_argument(
+        "--muram-step",
+        type=int,
+        default=None,
+        help="MURaM simulation step number (required when --source muram)",
     )
     p.add_argument(
         "--modest-cache-dir",
@@ -118,12 +128,16 @@ def main():
     )
     args = p.parse_args()
 
+    if args.source == "muram" and args.muram_step is None:
+        p.error("--muram-step is required when --source muram")
+
     cfg = SynthesisConfig(
-        source="modest",
+        source=args.source,
         experiment_root=args.experiment_root,
         model_type=args.model_type,
         region_label=args.region_label,
         crop_bounds=tuple(args.crop_bounds) if args.crop_bounds is not None else None,
+        muram_step=args.muram_step,
         modest_cache_dir=args.modest_cache_dir,
         use_modest_cache=not args.no_modest_cache,
         apply_polarization_mask=args.polarization_mask,
@@ -131,7 +145,7 @@ def main():
         output_root=args.output_root,
     )
 
-    # Run stratified sampling (SPINOR-sourced, no model loading needed)
+    # Run stratified sampling (SPINOR- or MURaM-ground-truth-sourced, no model loading needed)
     print(f"\nSampling {args.n_bins} bins × {args.n_per_bin} pixels (seed={args.seed})...")
     result = sample_pixels_by_abs_bz(
         cfg=cfg,
@@ -161,6 +175,8 @@ def main():
         model_type=cfg.model_type,
         crop_bounds=cfg.crop_bounds,
         is_overlay=is_overlay,
+        source=cfg.source,
+        muram_step=cfg.muram_step,
     )
 
     print(f"\nOutputs:")

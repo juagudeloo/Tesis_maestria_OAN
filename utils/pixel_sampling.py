@@ -1,12 +1,15 @@
 """Stratified pixel sampling for NICOLE synthesis testing.
 
-Given a cropped MODEST region, stratifies pixels by |B_LOS| from the SPINOR
-inversion already bundled with the MODEST data (model-independent — the same
-ground-truth Bz reference used for MODEST comparisons elsewhere in this
-codebase), samples representative pixels per magnitude bin, and produces a
-diagnostic PNG showing where on the map those pixels sit. Being
-model-independent means the same pixel selection can be reused fairly across
-different trained model variants when comparing them against each other.
+Given a cropped MODEST region or a MURaM simulation step, stratifies pixels by
+|B_LOS| from a source-independent ground truth -- the SPINOR inversion already
+bundled with the MODEST data for source="modest" (the same ground-truth Bz
+reference used for MODEST comparisons elsewhere in this codebase), or the
+MURaM simulation's own Bz cube for source="muram" (even more direct: literal
+ground truth, not an inversion product) -- samples representative pixels per
+magnitude bin, and produces a diagnostic PNG showing where on the map those
+pixels sit. Being model-independent means the same pixel selection can be
+reused fairly across different trained model variants when comparing them
+against each other.
 """
 from __future__ import annotations
 
@@ -15,12 +18,24 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
+import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
 
+from scripts.base_training import TrainingConfig
 from utils.cache_manage import ModestDataCache
 from utils.modest_data import ModestData
+from utils.muram_data import MhdData
 from utils.synthesis import SynthesisConfig
+
+# Fixed, model-independent tau grid used only for MURaM pixel stratification --
+# deliberately NOT the same grid utils.synthesis.PredictionExporter uses for the
+# NICOLE .model files (that one is each model checkpoint's own predicted tau
+# grid). Using a fixed grid here, independent of any model, is what guarantees
+# two different --model-type runs with the same --seed get an identical pixel
+# selection (mirrors the SPINOR case, which is likewise independent of the
+# model's own predicted grid).
+_MURAM_CANONICAL_LOGTAU = np.arange(-2.0, 0.05, 0.1)
 
 
 @dataclass
@@ -38,42 +53,11 @@ class PixelSamplingResult:
     pred_ny: int
 
 
-def sample_pixels_by_abs_bz(
-    cfg: SynthesisConfig,
-    n_bins: int = 5,
-    n_per_bin: int = 3,
-    seed: int = 0,
-) -> PixelSamplingResult:
-    """Stratify a region by |B_LOS| at the deepest level and sample pixels per bin.
+def _abs_bz_map_from_modest(cfg: SynthesisConfig) -> tuple[np.ndarray, int, int, int, float]:
+    """Model-independent |B_LOS| map from MODEST's own SPINOR inversion.
 
-    The |B_LOS| map comes from the SPINOR inversion bundled with the MODEST data
-    (model-independent), not from any trained model's own prediction — this is
-    what lets the same pixel selection be reused fairly across model variants.
-
-    Bin edges are log-spaced (equal-width in log₁₀(|B_LOS|) space) to give each bin
-    a physically meaningful order-of-magnitude field regime. Pixel counts per bin will
-    vary (high-field bins may be sparse or empty on quiet-Sun crops).
-
-    Parameters
-    ----------
-    cfg : SynthesisConfig
-        Configuration specifying experiment, region, crop bounds. `cfg.model_type`
-        is not used by this function (no model is loaded) — it only affects where
-        callers write their output.
-    n_bins : int, default 5
-        Number of log-spaced bins for |B_LOS|.
-    n_per_bin : int, default 3
-        Target number of pixels per bin.
-    seed : int, default 0
-        Random seed for reproducible sampling.
-
-    Returns
-    -------
-    PixelSamplingResult
-        Sampled pixels, bin assignments, log-spaced bin edges, and the |B_LOS| map.
+    Returns (abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value).
     """
-    rng = np.random.default_rng(seed)
-
     # Load MODEST data (auto-builds the SPINOR atmosphere) — no model inference needed.
     modest = ModestData(
         circular_polarization_threshold=cfg.polarization_threshold,
@@ -111,6 +95,85 @@ def sample_pixels_by_abs_bz(
         fy, fx = pred_nx // sy, pred_ny // sx
         blos_native = np.repeat(np.repeat(blos_native, fy, axis=0), fx, axis=1)
     abs_bz_map = np.abs(blos_native)
+    return abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value
+
+
+def _abs_bz_map_from_muram(cfg: SynthesisConfig) -> tuple[np.ndarray, int, int, int, float]:
+    """Model-independent |B_LOS| map from MURaM's own ground-truth Bz cube.
+
+    Remapped onto a fixed canonical tau grid (_MURAM_CANONICAL_LOGTAU) that is
+    independent of any model checkpoint's own predicted grid -- deliberately NOT
+    the grid utils.synthesis.PredictionExporter uses for the actual NICOLE .model
+    files, since mixing those up would misalign this stratification-only map
+    against what a real run would compare. No model is loaded here, matching the
+    MODEST/SPINOR path's model-independence guarantee.
+
+    Returns (abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value).
+    """
+    train_cfg = TrainingConfig()
+    data_path = Path(train_cfg.data_path)
+
+    mhd = MhdData(
+        data_path=data_path / "muram-simulation",
+        nx=train_cfg.nx,
+        ny=train_cfg.ny,
+        nz=train_cfg.nz,
+    )
+    mhd.load_step(step=cfg.muram_step, z_max=train_cfg.z_max)
+    mhd.load_opacity_table(kappa_path=data_path / train_cfg.kappa_path)
+    mhd.compute_optical_depth(dz=train_cfg.dz_km * u.km)
+    mhd.remap_to_optical_depth(_MURAM_CANONICAL_LOGTAU, quantities=["Bz"])
+
+    tau_index = len(_MURAM_CANONICAL_LOGTAU) - 1
+    logtau_value = float(_MURAM_CANONICAL_LOGTAU[tau_index])
+    bz = mhd.od_data["Bz"]
+    bz = bz.value if hasattr(bz, "value") else bz
+    abs_bz_map = np.abs(np.asarray(bz[:, :, tau_index], dtype=np.float64))
+    pred_nx, pred_ny = abs_bz_map.shape
+    return abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value
+
+
+def sample_pixels_by_abs_bz(
+    cfg: SynthesisConfig,
+    n_bins: int = 5,
+    n_per_bin: int = 3,
+    seed: int = 0,
+) -> PixelSamplingResult:
+    """Stratify a region by |B_LOS| at the deepest level and sample pixels per bin.
+
+    The |B_LOS| map comes from a source-independent ground truth (MODEST's SPINOR
+    inversion, or MURaM's own Bz cube), not from any trained model's own prediction
+    — this is what lets the same pixel selection be reused fairly across model
+    variants.
+
+    Bin edges are log-spaced (equal-width in log₁₀(|B_LOS|) space) to give each bin
+    a physically meaningful order-of-magnitude field regime. Pixel counts per bin will
+    vary (high-field bins may be sparse or empty on quiet-Sun crops).
+
+    Parameters
+    ----------
+    cfg : SynthesisConfig
+        Configuration specifying experiment, source, region/crop bounds (modest)
+        or muram_step (muram). `cfg.model_type` is not used by this function (no
+        model is loaded) — it only affects where callers write their output.
+    n_bins : int, default 5
+        Number of log-spaced bins for |B_LOS|.
+    n_per_bin : int, default 3
+        Target number of pixels per bin.
+    seed : int, default 0
+        Random seed for reproducible sampling.
+
+    Returns
+    -------
+    PixelSamplingResult
+        Sampled pixels, bin assignments, log-spaced bin edges, and the |B_LOS| map.
+    """
+    rng = np.random.default_rng(seed)
+
+    if cfg.source == "muram":
+        abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value = _abs_bz_map_from_muram(cfg)
+    else:
+        abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value = _abs_bz_map_from_modest(cfg)
 
     # Extract finite values and derive log-space floor
     valid_vals = abs_bz_map[np.isfinite(abs_bz_map)]
@@ -328,6 +391,8 @@ def write_pixel_selection_outputs(
     model_type: str,
     crop_bounds: Optional[tuple[int, int, int, int]] = None,
     is_overlay: Optional[dict[tuple[int, int], bool]] = None,
+    source: str = "modest",
+    muram_step: Optional[int] = None,
 ) -> dict[str, Path]:
     """Write JSON and text snippets for the selected pixels.
 
@@ -347,6 +412,11 @@ def write_pixel_selection_outputs(
         Result of mark_overlay_subset(), marking which pixels are in the small
         overlay-PNG subset (vs. the full violin/aggregate tier). If omitted,
         every pixel is marked False.
+    source : str, default "modest"
+        Sampling source, used only to render the correct --source/--muram-step
+        flags in the copy-paste snippet.
+    muram_step : int, optional
+        MURaM step number, included in the snippet when source == "muram".
 
     Returns
     -------
@@ -382,13 +452,14 @@ def write_pixel_selection_outputs(
     pixel_args = " ".join([f"--pixel {ix},{iy}" for ix, iy in result.pixels])
     bash_array = "PIXELS=(" + " ".join([f'"{ix},{iy}"' for ix, iy in result.pixels]) + ")"
 
+    source_args = f"--source {source} --muram-step {muram_step} \\\n    " if source == "muram" else ""
     text_content = f"""# Pixel selection for {experiment_root}/{model_type}
 # logtau = {result.logtau_value:.2f}, |B_LOS| stratified sampling
 # {len(result.pixels)} pixels in {len(result.bin_edges)-1} bins
 
 # For export_predictions.py or run_nicole_synthesis.py (repeatable --pixel args):
 python scripts/synthesis/export_predictions.py \\
-    --experiment-root {experiment_root} \\
+    {source_args}--experiment-root {experiment_root} \\
     --model-type {model_type} \\
     {pixel_args}
 
