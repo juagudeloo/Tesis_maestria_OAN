@@ -148,6 +148,21 @@ class SynthesisConfig:
             return root  # step-N *is* the shared level
         return root / self.region_label
 
+    def sampling_dir(self) -> Path:
+        """Directory pixel_selection/ lives under.
+
+        sample_pixels.py never takes --add-gt-pressure -- pixel stratification
+        is pressure-independent, so a plain run and its -gt-pressure sibling
+        must sample the SAME pixels for a fair diff. Its output therefore
+        always lives under the plain (non -gt-pressure) step dir, even for
+        SynthesisConfigs built with add_gt_pressure=True. Use this instead of
+        out_dir() whenever locating pixel_selection/selected_pixels.json.
+        """
+        if self.source == "muram" and self.add_gt_pressure:
+            import dataclasses
+            return dataclasses.replace(self, add_gt_pressure=False).out_dir()
+        return self.out_dir()
+
     def predictions_h5(self) -> Path:
         return self.out_dir() / "predictions.h5"
 

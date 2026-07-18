@@ -216,7 +216,7 @@ def main():
     overlay_flag: dict[tuple[int, int], bool] = {}
     bin_edges: list[float] = []
     for i, mt in enumerate(model_types):
-        selection_json = cfg_by_model[mt].out_dir() / "pixel_selection" / "selected_pixels.json"
+        selection_json = cfg_by_model[mt].sampling_dir() / "pixel_selection" / "selected_pixels.json"
         if not selection_json.exists():
             continue
         with open(selection_json) as f:

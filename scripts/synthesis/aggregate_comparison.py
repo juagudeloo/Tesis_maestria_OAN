@@ -116,7 +116,7 @@ def main():
     bin_of_pixel: dict[tuple[int, int], int] = {}
     abs_bz_of_pixel: dict[tuple[int, int], float] = {}
     bin_edges: list[float] = []
-    selection_json = cfg_by_model[model_types[0]].out_dir() / "pixel_selection" / "selected_pixels.json"
+    selection_json = cfg_by_model[model_types[0]].sampling_dir() / "pixel_selection" / "selected_pixels.json"
     if not selection_json.exists():
         sys.exit(f"Missing {selection_json} -- run sample_pixels.py for --model-type {model_types[0]} first")
     with open(selection_json) as f:

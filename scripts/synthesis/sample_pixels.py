@@ -167,7 +167,7 @@ def main():
     print(f"Flagged {sum(is_overlay.values())} of those as the overlay-PNG subset")
 
     # Write outputs
-    out_dir = cfg.out_dir() / "pixel_selection"
+    out_dir = cfg.sampling_dir() / "pixel_selection"
     outputs = write_pixel_selection_outputs(
         result=result,
         out_dir=out_dir,

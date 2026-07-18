@@ -140,8 +140,15 @@ for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
     STEP_LABEL="step-${MURAM_STEP}"
     [[ "${ADD_GT_PRESSURE}" == true ]] && STEP_LABEL="${STEP_LABEL}-gt-pressure"
     REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/muram/${STEP_LABEL}/${MODEL_TYPE}"
+    # Step 0 (sample_pixels.py) never takes --add-gt-pressure -- pixel
+    # stratification is pressure-independent by design, so a plain run and
+    # its -gt-pressure sibling must sample the SAME pixels for a fair diff.
+    # Its output therefore always lives under the plain step-N/ dir, even
+    # when this run's REGION_OUT_DIR (predictions/syntheses) has the suffix.
+    SAMPLE_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/muram/step-${MURAM_STEP}/${MODEL_TYPE}"
   else
     REGION_OUT_DIR="${OUTPUT_ROOT}/${EXPERIMENT_ROOT}/modest/${MODEL_TYPE}/${REGION_LABEL}"
+    SAMPLE_OUT_DIR="${REGION_OUT_DIR}"
   fi
   RUN_PIXELS=("${PIXELS[@]}")
 
@@ -166,7 +173,7 @@ for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
     fi
     python scripts/synthesis/sample_pixels.py "${SAMPLE_ARGS[@]}"
 
-    SELECTED_JSON="${REGION_OUT_DIR}/pixel_selection/selected_pixels.json"
+    SELECTED_JSON="${SAMPLE_OUT_DIR}/pixel_selection/selected_pixels.json"
     mapfile -t RUN_PIXELS < <(python -c "
 import json, sys
 with open(sys.argv[1]) as f:
