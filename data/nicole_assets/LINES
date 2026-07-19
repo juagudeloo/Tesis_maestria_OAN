@@ -1,0 +1,33 @@
+# LINES database file used by MUISCA -> NICOLE synthesis bridge.
+# Line parameters taken from NICOLE/run/LINES (modern Barklem collisions).
+# Labels are referenced by NICOLE.input.template:
+#   [Line 1] Line=FeI 6301.5
+#   [Line 2] Line=FeI 6302.5
+
+[FeI 6301.5]
+  Element='Fe'
+  Ionization stage=1
+  Wavelength=6301.5012
+  Excitation potential= 3.6540
+  Log(gf)=-0.718
+  Term (lower)= 5P2.0
+  Term (upper)= 5D2.0
+  Collisions='Barklem'
+  Damping sigma=834.4
+  Damping alpha=0.243
+  Width=2.
+  Mode='LTE'
+
+[FeI 6302.5]
+  Element='Fe'
+  Ionization stage=1
+  Wavelength=6302.4940
+  Excitation potential= 3.6860
+  Log(gf)=-1.13
+  Term (lower)= 5P1.0
+  Term (upper)= 5D0.0
+  Collisions='Barklem'
+  Damping sigma=850.2
+  Damping alpha=0.239
+  Width=2.
+  Mode='LTE'
