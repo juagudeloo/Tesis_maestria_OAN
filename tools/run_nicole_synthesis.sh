@@ -45,9 +45,9 @@ CROP_BOUNDS=(0 80 0 200)        # modest only -- Y0 Y1 X0 X1 (matches ModestData
 # Pixel selection. Either let step 0 auto-select a stratified-by-|B_LOS| sample
 # spanning weak/mid/strong field regimes, or pin an explicit manual list.
 USE_STRATIFIED_SAMPLING=true
-N_BINS=3                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
-N_PER_BIN=3                # pixels sampled per bin (violin/aggregate tier -- step 5)
-N_OVERLAY_PER_BIN=2          # subset of N_PER_BIN flagged for individual overlay PNGs (step 4 only)
+N_BINS=10                    # number of log-spaced |B_LOS| bins (see utils/pixel_sampling.py)
+N_PER_BIN=15                # pixels sampled per bin (violin/aggregate tier -- step 5)
+N_OVERLAY_PER_BIN=5          # subset of N_PER_BIN flagged for individual overlay PNGs (step 4 only)
 SAMPLING_SEED=0
 PIXELS=("40,100")           # used only when USE_STRATIFIED_SAMPLING=false
 
