@@ -36,10 +36,25 @@ python scripts/experiments/ablation_study.py \
 **Post-training analysis:**
 ```bash
 # On MURaM synthetic data (ground truth available)
-python scripts/analysis/muram_analysis.py --experiment_dir output/experiments/<name>/all_physics_terms
+python scripts/analysis/muram_analysis.py \
+    --experiment-root <experiment_name> \
+    --model-types all_physics_terms wfa_only
 
 # On real Hinode/SP observations (MODEST)
-python scripts/analysis/modest_analysis.py --experiment_dir output/experiments/<name>/all_physics_terms
+python scripts/analysis/modest_analysis.py \
+    --experiment-root <experiment_name> \
+    --model-types all_physics_terms
+
+# Distribution analysis (Stokes/MHD histograms)
+tools/generate_analysis.sh distributions --distribution-target both
+```
+
+**Fine-tuning (Bz-balanced, run after ablation study):**
+```bash
+python scripts/finetune.py \
+    --experiment-name <experiment_name> \
+    --variations wfa_only,all_physics_terms \
+    --finetune-epochs 20
 ```
 
 **HPC submission (Maxwell cluster):**
@@ -47,6 +62,7 @@ python scripts/analysis/modest_analysis.py --experiment_dir output/experiments/<
 sbatch tools/run_experiments.sh
 sbatch tools/compute_normalization_stats.sh
 sbatch tools/generate_analysis.sh
+sbatch tools/fine_tune.sh --experiment-name <name> --variations wfa_only,all_physics_terms
 ```
 
 There is no linting or unit test infrastructure in this research codebase.
@@ -87,16 +103,20 @@ Physics approximations live in `utils/physics_utils.py` (`ApproxInversions`):
 
 `scripts/experiments/ablation_study.py` runs 5 configurations: all physics terms, WFA only, Doppler only, Temperature only, and no physics (baseline).
 
+### Fine-Tuning Pipeline
+
+`scripts/finetune.py` loads a trained checkpoint from `output/experiments/` and resumes training with **mandatory Bz balancing** — pixels are resampled across 12 equal bins of |B_LOS| at the deepest τ level, so that extreme-field regions (which are rare in raw MURaM data) are seen more often. Fine-tuning outputs go to `output/fine-tune/<experiment_name>-finetuned/<variation>/`. See `docs/how-to-fine-tune.md` for the full workflow and `docs/magnetic_field_balancing_and_finetuning.md` for theory.
+
 ### Real Observation Pipeline
 
-`utils/modest_data.py` (`ModestData`) handles end-to-end loading of Hinode/SP MODEST observations: deconvolution, optional upsampling/smoothing, and polarization masking before passing to the trained model. Analysis on real data is done via `scripts/analysis/modest_analysis.py` which uses `utils/analysis.py` (`ModestDiagnosticPlots`).
+`utils/modest_data.py` (`ModestData`) handles end-to-end loading of Hinode/SP MODEST observations: deconvolution, optional upsampling/smoothing, and polarization masking before passing to the trained model. Analysis on real data is done via `scripts/analysis/modest_analysis.py` which uses `utils/analysis.py` (`ModestDiagnosticPlots`). Distribution analysis (histograms of Stokes and MHD values) is in `scripts/analysis/distributions_analysis.py`.
 
 ### Key Data Paths (hardcoded in TrainingConfig)
 
 - MURaM simulation: `/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/muram-simulation/`
 - MODEST/Hinode: `/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/data/hinode-MODEST/`
 - Normalization stats: `data/normalization_stats/mhd_normalization.json`, `stokes_normalization.json`
-- Caches: `.muram_cache/`, `.modest_cache/`
+- Caches: `.muram_cache/`, `.modest_cache/`, `.muram_balanced_cache/` (Bz-balanced fine-tuning)
 
 ### Notebooks
 
@@ -108,5 +128,10 @@ Six notebooks document the development incrementally:
 | `2-muram_stokes_data.ipynb` | Synthetic Stokes profiles & spectral degradation |
 | `3-stokes_mhd_relations.ipynb` | Physics approximations (WFA, Doppler, black-body) |
 | `4-modest_data.ipynb` | MODEST/Hinode observation handling |
-| `5-mscnn_architecture.ipynb` | Multi-scale CNN design |
+| `5-mscnn_architecture..ipynb` | Multi-scale CNN design (note: double dot in filename) |
 | `6-pinn_mscnn_model.ipynb` | Physics-informed training & loss analysis |
+
+### Other Utilities
+
+- `utils/model_prof_tools.py` — NICOLE model/profile binary I/O (used for synthesis/inversion integration; see `docs/nicole_integration_guide.md`)
+- `tools/generate_analysis.sh` — shell wrapper over all analysis scripts; edit `EXPERIMENT_ROOT` and `MODEL_TYPES` at the top before running

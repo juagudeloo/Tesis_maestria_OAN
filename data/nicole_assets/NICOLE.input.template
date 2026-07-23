@@ -1,0 +1,57 @@
+# NICOLE configuration template for MUISCA -> NICOLE forward synthesis.
+# Placeholders in curly braces are substituted by utils.synthesis.NicoleRunner:
+#   {NICOLE_COMMAND}   absolute path to the NICOLE Fortran executable
+#   {INPUT_MODEL}      input .model filename (written by write_ascii_model)
+#   {OUTPUT_PROFILE}   output .pro filename (read back via read_prof)
+#   {OUTPUT_MODEL}     output .mod filename (NICOLE-recomputed atmosphere)
+#   {WL_FIRST}         first wavelength in Angstroms
+#   {WL_STEP_MA}       wavelength step in milli-Angstroms
+#   {N_WL}             number of wavelength points
+#   {HYDROSTATIC_EQ}   Y/N -- normally Y (NICOLE integrates pressure from T using
+#                      the seed as a boundary condition); N when a per-pixel
+#                      ground-truth pressure column is supplied (--add-gt-pressure)
+#   {INPUT_DENSITY}    Pel (default, paired with HYDROSTATIC_EQ=Y) or PGas (paired
+#                      with HYDROSTATIC_EQ=N, when the density column holds true
+#                      MURaM gas pressure instead of an electron-pressure seed)
+# Region 1 covers the MODEST/Hinode Fe I 6301.5 / 6302.5 spectropolarimetric window.
+
+Command={NICOLE_COMMAND}
+Mode = Synthesis
+
+Input model= {INPUT_MODEL}
+Output profiles= {OUTPUT_PROFILE}
+Output model= {OUTPUT_MODEL}
+
+Heliocentric angle= 1.0
+Optimize Grid = 0
+Formal solution method= 0
+Printout detail= 1
+Restart=-1
+Debug mode= 0
+
+Impose hydrostatic equilibrium= {HYDROSTATIC_EQ}
+Input density= {INPUT_DENSITY}
+
+[Region 1]
+  First wavelength= {WL_FIRST}
+  Wavelength step= {WL_STEP_MA} mA
+  Number of wavelengths= {N_WL}
+
+[Line 1]
+  Line=FeI 6301.5
+
+[Line 2]
+  Line=FeI 6302.5
+
+
+[Nodes]
+Temperature=0
+Velocity=0
+Bz=0
+Bx=0
+By=0
+Microturbulence=0
+Macroturbulence=0
+Abundances=0
+Stray Light=0
+Filling Factor=0

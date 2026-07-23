@@ -1,0 +1,482 @@
+"""Stratified pixel sampling for NICOLE synthesis testing.
+
+Given a cropped MODEST region or a MURaM simulation step, stratifies pixels by
+|B_LOS| from a source-independent ground truth -- the SPINOR inversion already
+bundled with the MODEST data for source="modest" (the same ground-truth Bz
+reference used for MODEST comparisons elsewhere in this codebase), or the
+MURaM simulation's own Bz cube for source="muram" (even more direct: literal
+ground truth, not an inversion product) -- samples representative pixels per
+magnitude bin, and produces a diagnostic PNG showing where on the map those
+pixels sit. Being model-independent means the same pixel selection can be
+reused fairly across different trained model variants when comparing them
+against each other.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Optional
+
+import astropy.units as u
+import matplotlib.pyplot as plt
+import numpy as np
+
+from scripts.base_training import TrainingConfig
+from utils.cache_manage import ModestDataCache
+from utils.modest_data import ModestData
+from utils.muram_data import MhdData
+from utils.synthesis import SynthesisConfig
+
+# Fixed, model-independent tau grid used only for MURaM pixel stratification --
+# deliberately NOT the same grid utils.synthesis.PredictionExporter uses for the
+# NICOLE .model files (that one is each model checkpoint's own predicted tau
+# grid). Using a fixed grid here, independent of any model, is what guarantees
+# two different --model-type runs with the same --seed get an identical pixel
+# selection (mirrors the SPINOR case, which is likewise independent of the
+# model's own predicted grid).
+_MURAM_CANONICAL_LOGTAU = np.arange(-2.0, 0.05, 0.1)
+
+
+@dataclass
+class PixelSamplingResult:
+    """Result of stratified pixel sampling over a region."""
+
+    pixels: list[tuple[int, int]]       # Selected (ix, iy) tuples
+    bin_of_pixel: dict[tuple[int, int], int]  # Maps each pixel to its bin index
+    bin_edges: np.ndarray               # (n_bins+1,) log-spaced bin boundaries in Gauss
+    bin_values: list[float]             # Per-pixel true |B_LOS| values for selected pixels
+    tau_index: int                      # Index of the deepest level in the SPINOR tau grid
+    logtau_value: float                 # SPINOR tau value at tau_index (not a model's grid)
+    abs_bz_map: np.ndarray              # (pred_nx, pred_ny) |B_LOS| map, upsampled from SPINOR
+    pred_nx: int
+    pred_ny: int
+
+
+def _abs_bz_map_from_modest(cfg: SynthesisConfig) -> tuple[np.ndarray, int, int, int, float]:
+    """Model-independent |B_LOS| map from MODEST's own SPINOR inversion.
+
+    Returns (abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value).
+    """
+    # Load MODEST data (auto-builds the SPINOR atmosphere) — no model inference needed.
+    modest = ModestData(
+        circular_polarization_threshold=cfg.polarization_threshold,
+        stokes_v_multiplier=cfg.stokes_v_multiplier,
+    )
+    modest_cache = ModestDataCache(cache_dir=cfg.modest_cache_dir)
+    modest_data = modest.load_all(
+        region_bounds=tuple(cfg.crop_bounds) if cfg.crop_bounds is not None else None,
+        apply_mask=cfg.apply_polarization_mask,
+        cache=modest_cache,
+        use_cache=cfg.use_modest_cache,
+        prediction_input_mode=cfg.prediction_input_mode,
+    )
+
+    # Deepest SPINOR tau level (its grid is coarser than a model's prediction grid,
+    # e.g. 3 levels at -2.0/-0.8/0.0 by default — tau_index/logtau below refer to
+    # this SPINOR grid, not any model's).
+    tau_values = sorted(modest_data.get("tau_values", modest_data["spinor_atm"]["T"].keys()))
+    deepest_tau = tau_values[-1]
+    tau_index = len(tau_values) - 1
+    logtau_value = float(deepest_tau)
+    blos_native = modest_data["spinor_atm"]["Blos"][deepest_tau]
+
+    # Upsample the native-resolution SPINOR map to match the model's prediction grid
+    # (e.g. 2x per axis under the default upsampling_factor) — no transpose needed,
+    # axis 0 <-> axis 0 and axis 1 <-> axis 1 already align between the two grids.
+    pred_nx, pred_ny = modest_data["prediction_stokes"]["I"].shape[:2]
+    sy, sx = blos_native.shape
+    if (sy, sx) != (pred_nx, pred_ny):
+        if pred_nx % sy or pred_ny % sx:
+            raise ValueError(
+                f"Cannot upsample SPINOR Blos grid {(sy, sx)} to prediction grid "
+                f"{(pred_nx, pred_ny)}: not an integer ratio"
+            )
+        fy, fx = pred_nx // sy, pred_ny // sx
+        blos_native = np.repeat(np.repeat(blos_native, fy, axis=0), fx, axis=1)
+    abs_bz_map = np.abs(blos_native)
+    return abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value
+
+
+def _abs_bz_map_from_muram(cfg: SynthesisConfig) -> tuple[np.ndarray, int, int, int, float]:
+    """Model-independent |B_LOS| map from MURaM's own ground-truth Bz cube.
+
+    Remapped onto a fixed canonical tau grid (_MURAM_CANONICAL_LOGTAU) that is
+    independent of any model checkpoint's own predicted grid -- deliberately NOT
+    the grid utils.synthesis.PredictionExporter uses for the actual NICOLE .model
+    files, since mixing those up would misalign this stratification-only map
+    against what a real run would compare. No model is loaded here, matching the
+    MODEST/SPINOR path's model-independence guarantee.
+
+    Returns (abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value).
+    """
+    train_cfg = TrainingConfig()
+    data_path = Path(train_cfg.data_path)
+
+    mhd = MhdData(
+        data_path=data_path / "muram-simulation",
+        nx=train_cfg.nx,
+        ny=train_cfg.ny,
+        nz=train_cfg.nz,
+    )
+    mhd.load_step(step=cfg.muram_step, z_max=train_cfg.z_max)
+    mhd.load_opacity_table(kappa_path=data_path / train_cfg.kappa_path)
+    mhd.compute_optical_depth(dz=train_cfg.dz_km * u.km)
+    mhd.remap_to_optical_depth(_MURAM_CANONICAL_LOGTAU, quantities=["Bz"])
+
+    tau_index = len(_MURAM_CANONICAL_LOGTAU) - 1
+    logtau_value = float(_MURAM_CANONICAL_LOGTAU[tau_index])
+    bz = mhd.od_data["Bz"]
+    bz = bz.value if hasattr(bz, "value") else bz
+    abs_bz_map = np.abs(np.asarray(bz[:, :, tau_index], dtype=np.float64))
+    pred_nx, pred_ny = abs_bz_map.shape
+    return abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value
+
+
+def sample_pixels_by_abs_bz(
+    cfg: SynthesisConfig,
+    n_bins: int = 5,
+    n_per_bin: int = 3,
+    seed: int = 0,
+) -> PixelSamplingResult:
+    """Stratify a region by |B_LOS| at the deepest level and sample pixels per bin.
+
+    The |B_LOS| map comes from a source-independent ground truth (MODEST's SPINOR
+    inversion, or MURaM's own Bz cube), not from any trained model's own prediction
+    — this is what lets the same pixel selection be reused fairly across model
+    variants.
+
+    Bin edges are log-spaced (equal-width in log₁₀(|B_LOS|) space) to give each bin
+    a physically meaningful order-of-magnitude field regime. Pixel counts per bin will
+    vary (high-field bins may be sparse or empty on quiet-Sun crops).
+
+    Parameters
+    ----------
+    cfg : SynthesisConfig
+        Configuration specifying experiment, source, region/crop bounds (modest)
+        or muram_step (muram). `cfg.model_type` is not used by this function (no
+        model is loaded) — it only affects where callers write their output.
+    n_bins : int, default 5
+        Number of log-spaced bins for |B_LOS|.
+    n_per_bin : int, default 3
+        Target number of pixels per bin.
+    seed : int, default 0
+        Random seed for reproducible sampling.
+
+    Returns
+    -------
+    PixelSamplingResult
+        Sampled pixels, bin assignments, log-spaced bin edges, and the |B_LOS| map.
+    """
+    rng = np.random.default_rng(seed)
+
+    if cfg.source == "muram":
+        abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value = _abs_bz_map_from_muram(cfg)
+    else:
+        abs_bz_map, pred_nx, pred_ny, tau_index, logtau_value = _abs_bz_map_from_modest(cfg)
+
+    # Extract finite values and derive log-space floor
+    valid_vals = abs_bz_map[np.isfinite(abs_bz_map)]
+    if len(valid_vals) == 0:
+        raise RuntimeError(
+            "No finite |B_LOS| values in the region; cannot stratify. Check for NaN/inf in predictions."
+        )
+
+    # For log-spacing, need a floor for log(0). Use the minimum positive value as the floor,
+    # fallback to 1e-3 if all values are exactly 0.
+    positive_vals = valid_vals[valid_vals > 0]
+    if len(positive_vals) > 0:
+        floor = float(np.min(positive_vals))
+    else:
+        floor = 1e-3
+    ceil = float(np.max(valid_vals))
+
+    # Build log-spaced bin edges (equal-width in log10 space)
+    bin_edges = np.logspace(np.log10(floor), np.log10(ceil), n_bins + 1)
+
+    # For binning, clip |B_LOS| to floor so that any 0.0 G pixels can be assigned
+    # (they'll go to the first bin; their true value stays recorded as 0.0)
+    abs_bz_clipped = np.maximum(abs_bz_map, floor)
+    bin_indices = np.digitize(abs_bz_clipped.ravel(), bin_edges) - 1
+    # Clip to valid bin range (handles floating-point edge case where val == ceil)
+    bin_indices = np.clip(bin_indices, 0, n_bins - 1)
+    bin_indices = bin_indices.reshape(abs_bz_map.shape)
+
+    # Collect pixels per bin
+    selected_pixels = []
+    bin_of_pixel = {}
+    bin_values = []
+    n_actual_bins = len(bin_edges) - 1
+
+    for b in range(n_actual_bins):
+        mask = bin_indices == b
+        if not np.any(mask):
+            continue
+        # Get (ix, iy) coordinates of pixels in this bin
+        ixs, iys = np.where(mask)
+        candidates = list(zip(ixs.tolist(), iys.tolist()))
+        # Sample up to n_per_bin from this bin
+        n_sample = min(n_per_bin, len(candidates))
+        if n_sample > 0:
+            sampled = rng.choice(len(candidates), size=n_sample, replace=False)
+            for idx in sampled:
+                ix, iy = candidates[idx]
+                selected_pixels.append((ix, iy))
+                bin_of_pixel[(ix, iy)] = b
+                # Record the true unclipped value (may be exactly 0.0)
+                bin_values.append(float(abs_bz_map[ix, iy]))
+
+    return PixelSamplingResult(
+        pixels=selected_pixels,
+        bin_of_pixel=bin_of_pixel,
+        bin_edges=bin_edges,
+        bin_values=bin_values,
+        tau_index=tau_index,
+        logtau_value=logtau_value,
+        abs_bz_map=abs_bz_map,
+        pred_nx=pred_nx,
+        pred_ny=pred_ny,
+    )
+
+
+def mark_overlay_subset(
+    result: PixelSamplingResult,
+    n_overlay_per_bin: int = 3,
+    seed: int = 0,
+) -> dict[tuple[int, int], bool]:
+    """Pick a small subset of `result.pixels` per bin for individual overlay PNGs.
+
+    The subset is drawn from *within* each bin's already-selected pixels (not a
+    fresh, independent draw), so the overlay tier is always a strict subset of
+    the larger violin/aggregate tier -- every pixel shown in a detailed overlay
+    PNG is also part of the population the aggregate chi2 statistics summarize.
+
+    Parameters
+    ----------
+    result : PixelSamplingResult
+        Result from sample_pixels_by_abs_bz().
+    n_overlay_per_bin : int, default 3
+        Target number of overlay-tier pixels per bin.
+    seed : int, default 0
+        Random seed for reproducible sub-sampling.
+
+    Returns
+    -------
+    dict[tuple[int, int], bool]
+        True for pixels in the overlay subset, False otherwise. Covers every
+        pixel in result.pixels.
+    """
+    rng = np.random.default_rng(seed)
+
+    pixels_by_bin: dict[int, list[tuple[int, int]]] = {}
+    for pix, b in result.bin_of_pixel.items():
+        pixels_by_bin.setdefault(b, []).append(pix)
+
+    is_overlay: dict[tuple[int, int], bool] = {pix: False for pix in result.pixels}
+    for b, candidates in pixels_by_bin.items():
+        n_sample = min(n_overlay_per_bin, len(candidates))
+        if n_sample > 0:
+            sampled = rng.choice(len(candidates), size=n_sample, replace=False)
+            for idx in sampled:
+                is_overlay[candidates[idx]] = True
+
+    return is_overlay
+
+
+def plot_pixel_selection(
+    result: PixelSamplingResult,
+    out_path: Path,
+    experiment_root: str,
+    model_type: str,
+) -> Path:
+    """Plot the |B_LOS| map with selected pixel locations overlaid.
+
+    Uses log-scale coloring to match the log-spaced bin edges, ensuring that
+    the visual color gradation reflects the physical field-strength stratification.
+
+    Parameters
+    ----------
+    result : PixelSamplingResult
+        Result from sample_pixels_by_abs_bz().
+    out_path : Path
+        Output PNG file path.
+    experiment_root : str
+        Experiment name for the figure title.
+    model_type : str
+        Model type for the figure title.
+
+    Returns
+    -------
+    Path
+        The output PNG path.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Set up the figure and colormap for |B_LOS| on a log scale
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Derive floor matching the bin edges (minimum positive value, or fallback)
+    valid_vals = result.abs_bz_map[np.isfinite(result.abs_bz_map)]
+    positive_vals = valid_vals[valid_vals > 0]
+    if len(positive_vals) > 0:
+        floor = float(np.min(positive_vals))
+    else:
+        floor = 1e-3
+    ceil = float(np.max(valid_vals))
+
+    # Plot the |B_LOS| map with LogNorm for log-scale color mapping
+    # (axis 0 = row = y, axis 1 = col = x)
+    from matplotlib.colors import LogNorm
+    norm = LogNorm(vmin=floor, vmax=ceil)
+    im = ax.imshow(
+        result.abs_bz_map.T,
+        origin="lower",
+        cmap="viridis",
+        norm=norm,
+        extent=[0, result.pred_nx, 0, result.pred_ny],
+    )
+    cbar = plt.colorbar(im, ax=ax, label="|B_LOS| [Gauss] (log scale)")
+
+    # Overlay sampled pixels with one marker per bin
+    n_bins = len(result.bin_edges) - 1
+    cmap_scatter = plt.cm.get_cmap("tab10", max(n_bins, 1))
+    bin_colors = {b: cmap_scatter(b % 10) for b in range(n_bins)}
+
+    # Group pixels by bin for legend
+    pixels_by_bin = {}
+    for pix, b in result.bin_of_pixel.items():
+        if b not in pixels_by_bin:
+            pixels_by_bin[b] = []
+        pixels_by_bin[b].append(pix)
+
+    for b in sorted(pixels_by_bin.keys()):
+        pixs = pixels_by_bin[b]
+        ixs, iys = zip(*pixs)
+        bin_lo = float(result.bin_edges[b])
+        bin_hi = float(result.bin_edges[b + 1])
+        # Use scientific notation for readable labels across 0.01-10000 G range
+        label = f"bin {b}: {bin_lo:.2g}-{bin_hi:.2g} G"
+        ax.plot(
+            ixs,
+            iys,
+            "o",
+            color=bin_colors[b],
+            markeredgecolor="white",
+            markeredgewidth=1.0,
+            markersize=8,
+            label=label,
+            alpha=0.8,
+        )
+
+    ax.set_xlabel("ix (pixel column)")
+    ax.set_ylabel("iy (pixel row)")
+    ax.set_title(
+        f"|B_LOS| stratified sampling (log-spaced bins): {experiment_root}/{model_type}\n"
+        f"logtau={result.logtau_value:.2f}, {len(result.pixels)} pixels in {len(pixels_by_bin)} non-empty bins"
+    )
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return out_path
+
+
+def write_pixel_selection_outputs(
+    result: PixelSamplingResult,
+    out_dir: Path,
+    experiment_root: str,
+    model_type: str,
+    crop_bounds: Optional[tuple[int, int, int, int]] = None,
+    is_overlay: Optional[dict[tuple[int, int], bool]] = None,
+    source: str = "modest",
+    muram_step: Optional[int] = None,
+) -> dict[str, Path]:
+    """Write JSON and text snippets for the selected pixels.
+
+    Parameters
+    ----------
+    result : PixelSamplingResult
+        Result from sample_pixels_by_abs_bz().
+    out_dir : Path
+        Output directory for JSON and text files.
+    experiment_root : str
+        Experiment name (included in JSON).
+    model_type : str
+        Model type (included in JSON).
+    crop_bounds : tuple[int, int, int, int], optional
+        Crop bounds (y0, y1, x0, x1) to include in JSON.
+    is_overlay : dict[tuple[int, int], bool], optional
+        Result of mark_overlay_subset(), marking which pixels are in the small
+        overlay-PNG subset (vs. the full violin/aggregate tier). If omitted,
+        every pixel is marked False.
+    source : str, default "modest"
+        Sampling source, used only to render the correct --source/--muram-step
+        flags in the copy-paste snippet.
+    muram_step : int, optional
+        MURaM step number, included in the snippet when source == "muram".
+
+    Returns
+    -------
+    dict[str, Path]
+        Dict with keys "json", "text", "png" pointing to the output files.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Prepare JSON data
+    n_overlay_pixels = sum(is_overlay.values()) if is_overlay is not None else 0
+    json_data = {
+        "experiment_root": experiment_root,
+        "model_type": model_type,
+        "n_pixels": len(result.pixels),
+        "n_overlay_pixels": n_overlay_pixels,
+        "n_bins": len(result.bin_edges) - 1,
+        "tau_index": result.tau_index,
+        "logtau": result.logtau_value,
+        "crop_bounds": crop_bounds,
+        "bin_edges_gauss": result.bin_edges.tolist(),
+        "pixels": [{"ix": ix, "iy": iy, "bin": result.bin_of_pixel[(ix, iy)],
+                    "abs_bz_gauss": val,
+                    "is_overlay_example": bool(is_overlay.get((ix, iy), False)) if is_overlay is not None else False}
+                   for (ix, iy), val in zip(result.pixels, result.bin_values)],
+    }
+
+    # Write JSON
+    json_path = out_dir / "selected_pixels.json"
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+    # Prepare text snippets for CLI usage
+    pixel_args = " ".join([f"--pixel {ix},{iy}" for ix, iy in result.pixels])
+    bash_array = "PIXELS=(" + " ".join([f'"{ix},{iy}"' for ix, iy in result.pixels]) + ")"
+
+    source_args = f"--source {source} --muram-step {muram_step} \\\n    " if source == "muram" else ""
+    text_content = f"""# Pixel selection for {experiment_root}/{model_type}
+# logtau = {result.logtau_value:.2f}, |B_LOS| stratified sampling
+# {len(result.pixels)} pixels in {len(result.bin_edges)-1} bins
+
+# For export_predictions.py or run_nicole_synthesis.py (repeatable --pixel args):
+python scripts/synthesis/export_predictions.py \\
+    {source_args}--experiment-root {experiment_root} \\
+    --model-type {model_type} \\
+    {pixel_args}
+
+# For tools/run_nicole_synthesis.sh (bash array):
+{bash_array}
+"""
+
+    text_path = out_dir / "pixel_selection_snippets.txt"
+    with open(text_path, "w") as f:
+        f.write(text_content)
+
+    # Also write the PNG if result includes the map
+    png_path = out_dir / "abs_bz_map_selected_pixels.png"
+    plot_pixel_selection(result, png_path, experiment_root, model_type)
+
+    return {
+        "json": json_path,
+        "text": text_path,
+        "png": png_path,
+    }
