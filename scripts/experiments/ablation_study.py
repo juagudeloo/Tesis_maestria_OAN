@@ -1952,26 +1952,25 @@ def main():
                        default=['all'],
                        help='Which experiments to run (default: all)')
     
+    parser.add_argument('--data-source', '--data_source', dest='data_source',
+                       type=str, choices=['muram_legacy', 'nicole_tau500'], default='nicole_tau500',
+                       help='Training data source (default: nicole_tau500)')
+
     # Cache-related arguments
-    default_cache_dir = os.environ.get(
-        'MURAM_CACHE_DIR',
-        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache'
-    )
     parser.add_argument('--stokes-ic-mode', '--stokes_ic_mode', dest='stokes_ic_mode',
                        type=str, choices=['per_step', 'fixed_global'], default='fixed_global',
                        help='Continuum normalization mode for Stokes data')
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
-    parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=default_cache_dir,
-                       help='Directory for cached MURaM data (or set MURAM_CACHE_DIR)')
+    parser.add_argument('--cache-dir', '--cache_dir', dest='cache_dir', type=str, default=None,
+                       help='Directory for cached MURaM data (or set MURAM_CACHE_DIR). Defaults to '
+                            'the standard cache dir, suffixed with the data source for non-legacy sources.')
     parser.add_argument('--balanced-cache', '--balanced_cache', dest='use_balanced_cache', action='store_true',
                        help='Enable post-balancing train-data cache')
     parser.add_argument('--balanced-cache-dir', '--balanced_cache_dir', dest='balanced_cache_dir', type=str,
-                       default=os.environ.get(
-                           'MURAM_BALANCED_CACHE_DIR',
-                           '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache'
-                       ),
-                       help='Directory for balanced training cache')
+                       default=None,
+                       help='Directory for balanced training cache (or set MURAM_BALANCED_CACHE_DIR). '
+                            'Defaults to the standard dir, suffixed with the data source for non-legacy sources.')
     parser.add_argument('--clear-balanced-cache', '--clear_balanced_cache', dest='clear_balanced_cache', action='store_true',
                        help='Clear balanced training cache before running experiments')
     parser.add_argument('--balanced-cache-strategy', '--balanced_cache_strategy', dest='balanced_cache_strategy',
@@ -2066,12 +2065,12 @@ def main():
         type=float,
         nargs='+',
         default=None,
-        help='Explicit log(tau) grid values (overrides min/max/step), e.g. --logtau_values -2.0 -1.9 ... 0.0'
+        help='Explicit log(tau) grid values (overrides min/max/step), e.g. --logtau_values -3.0 -2.9 ... 1.4'
     )
-    parser.add_argument('--logtau_min', type=float, default=-2.0,
-                       help='Minimum log(tau) for range mode (default: -2.0)')
-    parser.add_argument('--logtau_max', type=float, default=0.0,
-                       help='Maximum log(tau) for range mode (default: 0.0)')
+    parser.add_argument('--logtau_min', type=float, default=-3.0,
+                       help='Minimum log(tau) for range mode (default: -3.0, the tau_500 generation grid)')
+    parser.add_argument('--logtau_max', type=float, default=1.4,
+                       help='Maximum log(tau) for range mode (default: 1.4, the tau_500 generation grid)')
     parser.add_argument('--logtau_step', type=float, default=0.1,
                        help='Step in log(tau) for range mode (default: 0.1)')
 
@@ -2163,8 +2162,7 @@ def main():
             args.logtau_min,
             args.logtau_max + 0.5 * args.logtau_step,
             args.logtau_step,
-            dtype=np.float32,
-        )
+        ).astype(np.float32)  # accumulate in float64 first -- see TrainingConfig.get_logtau_values
     resolved_logtau = np.round(resolved_logtau, 6)
 
     if args.bz_balance_logtau is not None:
@@ -2176,6 +2174,24 @@ def main():
                 f"Requested: {target_logtau}. Grid: {resolved_logtau.tolist()}"
             )
         args.bz_balance_tau_idx = int(match_idx[0])
+    default_cache_dir = os.environ.get(
+        'MURAM_CACHE_DIR',
+        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_cache'
+    )
+    default_balanced_cache_dir = os.environ.get(
+        'MURAM_BALANCED_CACHE_DIR',
+        '/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/.muram_balanced_cache'
+    )
+    if args.cache_dir is None:
+        args.cache_dir = (
+            default_cache_dir if args.data_source == 'muram_legacy'
+            else f'{default_cache_dir}_{args.data_source}'
+        )
+    if args.balanced_cache_dir is None:
+        args.balanced_cache_dir = (
+            default_balanced_cache_dir if args.data_source == 'muram_legacy'
+            else f'{default_balanced_cache_dir}_{args.data_source}'
+        )
     args.cache_dir = str(Path(args.cache_dir).expanduser().resolve())
     args.balanced_cache_dir = str(Path(args.balanced_cache_dir).expanduser().resolve())
     args.modest_cache_dir = str(Path(args.modest_cache_dir).expanduser().resolve())
@@ -2189,12 +2205,17 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     test_steps = list(range(198, 201))
     
-    # Load normalizers
-    print("Loading normalizers...")
+    # Load normalizers (non-legacy sources use an isolated normalization_stats subdir,
+    # mirroring TrainingConfig.__post_init__'s default mhd/stokes_normalizer_path)
+    norm_dir = (
+        data_path / "normalization_stats" if args.data_source == "muram_legacy"
+        else data_path / "normalization_stats" / args.data_source
+    )
+    print(f"Loading normalizers from {norm_dir}...")
     mhd_normalizer = MhdNormalizer()
-    mhd_normalizer.load(data_path / "normalization_stats/mhd_normalization.json")
+    mhd_normalizer.load(norm_dir / "mhd_normalization.json")
     stokes_normalizer = StokesNormalizer()
-    stokes_normalizer.load(data_path / "normalization_stats/stokes_normalization.json")
+    stokes_normalizer.load(norm_dir / "stokes_normalization.json")
     print("  ✓ Normalizers loaded")
     
     tracker = ExperimentTracker(output_dir)
@@ -2319,6 +2340,7 @@ def main():
             c1_filters=args.c1_filters,
             stokes_mult_factor=args.stokes_mult_factor,
             stokes_ic_mode=args.stokes_ic_mode,
+            data_source=args.data_source,
             **common_epoch_plot_kwargs,
         )
 

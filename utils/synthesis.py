@@ -40,7 +40,12 @@ from utils.cache_manage import ModestDataCache
 from utils.modest_data import ModestData, transform_modest_stokes_profiles
 from utils.muram_data import MhdData, StokesData
 import utils.model_prof_tools as model_prof_tools
-from utils.model_prof_tools import check_prof, read_prof, write_ascii_model
+from utils.model_prof_tools import (
+    check_prof,
+    read_prof,
+    write_ascii_model,
+    write_binary_model_cube,
+)
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 
 
@@ -576,6 +581,159 @@ class NicoleRunner:
         # NICOLE row layout per wavelength: [I, Q, U, V]
         iquv = np.stack([flat[:, 0], flat[:, 1], flat[:, 2], flat[:, 3]], axis=0)
         return iquv
+
+    def run_cube(
+        self,
+        workdir: Path,
+        logtau: np.ndarray,
+        T: np.ndarray,
+        v_los_kms: np.ndarray,
+        b_long_G: np.ndarray,
+        n_wl: int,
+        *,
+        gt_pressure: Optional[np.ndarray] = None,
+        wl_first: Optional[float] = None,
+        wl_step_mA: Optional[float] = None,
+        v_mic_cms: Optional[float] = None,
+    ) -> np.ndarray:
+        """Synthesize a whole (nx, ny) atmosphere cube in ONE NICOLE invocation.
+
+        Writes the cube as a native nicole2.3bm binary model
+        (write_binary_model_cube), renders NICOLE.input for the requested
+        wavelength grid, runs run_nicole.py once (NICOLE's Fortran loops over
+        all pixels internally -- no per-pixel Python/subprocess overhead), and
+        reads the (nx, ny) profile cube back. Returns an (nx, ny, 4, n_wl)
+        IQUV array.
+
+        A WARM-UP pixel is prepended internally and discarded. Empirically,
+        NICOLE synthesizes a pixel identically and reproducibly whenever the
+        PRECEDING pixel in the cube is a different atmosphere (the result is
+        independent of which different atmosphere, and of position/count), but
+        gives a slightly different (~3e-3) "isolated" result when the preceding
+        pixel is identical or absent (first pixel). Adjacent MURaM pixels
+        always differ, so every real pixel is in the uniform different-
+        predecessor regime -- except the first, which needs a predecessor.
+        The warm-up is therefore made DISTINCT from the first real pixel (its
+        temperature scaled), so the first real pixel too has a different
+        predecessor. The upshot: every real pixel's result is identical
+        regardless of how the frame is split into chunks (chunk-independent).
+
+        By default the flat el_p_seed + hydrostatic-equilibrium path (Y / Pel)
+        is used, matching the validated tau500 experiment. Passing gt_pressure
+        (nx, ny, nz gas pressure, dyn/cm^2) switches to Input density=PGas /
+        hydrostatic=N instead.
+
+        T/v_los_kms/b_long_G(/gt_pressure) are (nx, ny, nz) on the shared
+        `logtau` grid. wl_first/wl_step_mA/v_mic_cms default to config values.
+        """
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        nx, ny = T.shape[:2]
+        nz = T.shape[2]
+
+        wl_first = self.cfg.wl_first if wl_first is None else wl_first
+        wl_step_mA = self.cfg.wl_step_mA if wl_step_mA is None else wl_step_mA
+        v_mic_cms = self.cfg.v_mic_cms if v_mic_cms is None else v_mic_cms
+
+        # Flatten to (npix, nz) and prepend a warm-up pixel laid out as a
+        # 1 x (npix+1) cube. The warm-up is a DISTINCT copy of pixel 0 (T
+        # scaled by 1.05) so that pixel 0 -- like every other real pixel --
+        # is preceded by a different atmosphere (see docstring).
+        npix = nx * ny
+        Tf = T.reshape(npix, nz)
+        Vf = v_los_kms.reshape(npix, nz)
+        Bf = b_long_G.reshape(npix, nz)
+        Tw = np.concatenate([Tf[:1] * 1.05, Tf], axis=0).reshape(1, npix + 1, nz)
+        Vw = np.concatenate([Vf[:1], Vf], axis=0).reshape(1, npix + 1, nz)
+        Bw = np.concatenate([Bf[:1], Bf], axis=0).reshape(1, npix + 1, nz)
+        Pw = None
+        if gt_pressure is not None:
+            Pf = gt_pressure.reshape(npix, nz)
+            Pw = np.concatenate([Pf[:1], Pf], axis=0).reshape(1, npix + 1, nz)
+
+        model_path = workdir / "model.model"
+        if gt_pressure is not None:
+            write_binary_model_cube(
+                model_path,
+                logtau=logtau, T=Tw, v_los_kms=Vw, b_long_G=Bw,
+                v_mic_cms=v_mic_cms, v_mac_cms=self.cfg.v_mac_cms,
+                stray_light=self.cfg.stray_light, gas_p=Pw,
+            )
+            hydrostatic_eq, input_density = "N", "PGas"
+        else:
+            write_binary_model_cube(
+                model_path,
+                logtau=logtau, T=Tw, v_los_kms=Vw, b_long_G=Bw,
+                v_mic_cms=v_mic_cms, v_mac_cms=self.cfg.v_mac_cms,
+                stray_light=self.cfg.stray_light, el_p_seed=self.cfg.el_p_seed,
+            )
+            hydrostatic_eq, input_density = "Y", "Pel"
+
+        template = self.template_path.read_text()
+        rendered = template.format(
+            NICOLE_COMMAND=str(self.nicole_command),
+            INPUT_MODEL="model.model",
+            OUTPUT_PROFILE="profile.pro",
+            OUTPUT_MODEL="model_out.mod",
+            WL_FIRST=f"{wl_first:.4f}",
+            WL_STEP_MA=f"{wl_step_mA:g}",
+            N_WL=int(n_wl),
+            HYDROSTATIC_EQ=hydrostatic_eq,
+            INPUT_DENSITY=input_density,
+        )
+        (workdir / "NICOLE.input").write_text(rendered)
+        shutil.copyfile(self.lines_path, workdir / "LINES")
+        link = workdir / "run_nicole.py"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(self.run_nicole_py)
+
+        env = os.environ.copy()
+        result = subprocess.run(
+            [
+                self.cfg.python_for_nicole,
+                "./run_nicole.py",
+                "--nicolecommand=" + str(self.nicole_command),
+                "--modelin=model.model",
+                "--profout=profile.pro",
+            ],
+            cwd=str(workdir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"NICOLE cube run failed in {workdir} (exit {result.returncode}).\n"
+                f"--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
+            )
+        prof_path = workdir / "profile.pro"
+        if not prof_path.exists():
+            raise FileNotFoundError(
+                f"NICOLE did not produce {prof_path}.\n--- STDOUT ---\n{result.stdout}"
+            )
+
+        # Profile cube is 1 x (npix+1): record 0 is the warm-up pixel (discarded),
+        # records 1..npix are the real pixels in flattened (ix*ny + iy) order.
+        # read_prof returns 4*n_wl interleaved [I,Q,U,V]; read sequentially.
+        prof_ny = npix + 1
+        flat_out = np.empty((npix, 4, int(n_wl)), dtype=np.float64)
+        seq = 0
+        for p in range(prof_ny):
+            flat = read_prof(
+                str(prof_path), "nicole2.3", 1, prof_ny, int(n_wl), 0, p, sequential=seq
+            )
+            seq = 1
+            if p == 0:
+                continue  # warm-up pixel
+            flat = np.asarray(flat, dtype=np.float64).reshape(int(n_wl), 4)
+            flat_out[p - 1] = np.stack(
+                [flat[:, 0], flat[:, 1], flat[:, 2], flat[:, 3]], axis=0
+            )
+        f_handle = getattr(model_prof_tools, "f", None)
+        if f_handle is not None and not f_handle.closed:
+            f_handle.close()
+        return flat_out.reshape(nx, ny, 4, int(n_wl))
 
     def run_pixels_from_h5(
         self,

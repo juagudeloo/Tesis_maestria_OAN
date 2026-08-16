@@ -28,10 +28,13 @@ conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 # EXPERIMENT CONFIGURATION
 # ==============================================================================
 
+# Data source: 'nicole_tau500' (current default/method) or 'muram_legacy'
+DATA_SOURCE="nicole_tau500"
+
 # Data range
-MIN_STEP=81
-MAX_STEP=181
-STEP_SIZE=5
+MIN_STEP=110
+MAX_STEP=130
+STEP_SIZE=10
 EXPERIMENT_ROOT="experiment_${MIN_STEP}_to_${MAX_STEP}-step_size_${STEP_SIZE}-normal"
 
 # Training hyperparameters
@@ -45,10 +48,11 @@ LAMBDA_WFA_VALUES=(10)
 LAMBDA_DOPPLER_VALUES=(5e-1)
 LAMBDA_TEMP_VALUES=(2)
 
-# Logtau values to map
-# Use NICOLE's standard log(tau_5000) grid: from -8.0 to +1.4 in 0.1 steps.
-# Generate at runtime to keep the script concise and exact.
-LOGTAU_VALUES=($(seq -f "%.6f" -8.0 0.1 1.4))
+# Logtau values to map. Leave empty to use ablation_study.py's own default,
+# which matches the tau500 generation grid (45 levels, -3.0 to 1.4) for
+# nicole_tau500. If DATA_SOURCE=muram_legacy, set this explicitly instead
+# (e.g. NICOLE's HSRA grid: LOGTAU_VALUES=($(seq -f "%.6f" -8.0 0.1 1.4))).
+LOGTAU_VALUES=()
 
 # Physics modes
 BLOS_MODE='single_height'        # 'tau_averaged' or 'single_height'
@@ -67,19 +71,21 @@ WFA_GATE_PATIENCE=5             # Used when WFA_GATE_MODE='plateau'
 WFA_GATE_MIN_DELTA=5e-4         # Used when WFA_GATE_MODE='plateau'
 WFA_GATE_WARMUP_EPOCHS=0
 
-# Stokes continuum normalization mode
+# Stokes continuum normalization mode (muram_legacy only -- ignored for
+# nicole_tau500, which is already continuum-normalized by NICOLE)
 STOKES_IC_MODE='fixed_global'   # 'per_step' or 'fixed_global'
 
 # Scalar multiplier applied after continuum normalization
 STOKES_MULT_FACTOR=1
 
-# Shared cache (same path used by normalization script)
-CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
-export MURAM_CACHE_DIR="${CACHE_DIR}"
+# Shared cache. Leave empty to use ablation_study.py's own data-source-aware
+# default (.muram_cache_nicole_tau500 for nicole_tau500, .muram_cache for
+# muram_legacy) -- only set to force a specific directory.
+CACHE_DIR=""
 
-# Balanced post-bz cache (final balanced tensors reused across epochs)
-BALANCED_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
-export MURAM_BALANCED_CACHE_DIR="${BALANCED_CACHE_DIR}"
+# Balanced post-bz cache (final balanced tensors reused across epochs).
+# Leave empty for the data-source-aware default (see CACHE_DIR above).
+BALANCED_CACHE_DIR=""
 ENABLE_BALANCED_CACHE=1
 BALANCED_CACHE_STRATEGY='auto'   # auto, preload, or disk
 BALANCED_CACHE_RAM_BUDGET_GB=32
@@ -132,6 +138,7 @@ TRAINING_HIST_MAX_SAMPLES=400000
 # ==============================================================================
 
 python3 ./scripts/experiments/ablation_study.py \
+    --data-source "${DATA_SOURCE}" \
     --n_epochs "${N_EPOCHS}" \
     --min_step "${MIN_STEP}" \
     --max_step "${MAX_STEP}" \
@@ -144,9 +151,9 @@ python3 ./scripts/experiments/ablation_study.py \
     --c1-filters "${C1_FILTERS}" \
     --stokes_ic_mode "${STOKES_IC_MODE}" \
     --stokes-mult-factor "${STOKES_MULT_FACTOR}" \
-    --cache-dir "${CACHE_DIR}" \
+    $( [[ -n "${CACHE_DIR}" ]] && echo "--cache-dir ${CACHE_DIR}" ) \
     $( [[ "${ENABLE_BALANCED_CACHE}" == "1" ]] && echo "--balanced-cache" ) \
-    --balanced-cache-dir "${BALANCED_CACHE_DIR}" \
+    $( [[ -n "${BALANCED_CACHE_DIR}" ]] && echo "--balanced-cache-dir ${BALANCED_CACHE_DIR}" ) \
     --balanced-cache-strategy "${BALANCED_CACHE_STRATEGY}" \
     --balanced-cache-ram-budget-gb "${BALANCED_CACHE_RAM_BUDGET_GB}" \
     --balanced-cache-ram-fraction "${BALANCED_CACHE_RAM_FRACTION}" \
@@ -172,7 +179,7 @@ python3 ./scripts/experiments/ablation_study.py \
     --wfa-gate-patience "${WFA_GATE_PATIENCE}" \
     --wfa-gate-min-delta "${WFA_GATE_MIN_DELTA}" \
     --wfa-gate-warmup-epochs "${WFA_GATE_WARMUP_EPOCHS}" \
-    --logtau_values "${LOGTAU_VALUES[@]}" \
+    $( [[ "${#LOGTAU_VALUES[@]}" -gt 0 ]] && echo "--logtau_values ${LOGTAU_VALUES[*]}" ) \
     --experiments ${EXPERIMENTS} \
     --modest-cache-dir "${MODEST_CACHE_DIR}" \
     --modest-crop-bounds "${MODEST_CROP_BOUNDS[@]}" \

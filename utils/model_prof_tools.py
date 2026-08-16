@@ -859,3 +859,117 @@ def write_ascii_model(
                 f"{v_mic_d[i]:.3E}  {b_long_d[i]:8.2f}  {v_los_d[i]:.3E}  "
                 f"{b_x_d[i]:8.2f}  {b_y_d[i]:8.2f}\n"
             )
+
+
+def write_binary_model_cube(
+    filepath,
+    logtau,
+    T,
+    v_los_kms,
+    b_long_G,
+    *,
+    v_mic_cms=1.0e5,
+    v_mac_cms=0.0,
+    stray_light=0.0,
+    el_p=None,
+    el_p_seed=1.0,
+    gas_p=None,
+):
+    # Write a whole (nx, ny) field of model atmospheres in NICOLE's native
+    # "nicole2.3bm" binary cube format, so NICOLE can synthesize the entire
+    # frame in ONE run_nicole.py invocation (its Fortran loops over pixels
+    # internally) instead of one python2 subprocess per pixel. This is the
+    # exact inverse of read_model()'s nicole2.3 branch, and run_nicole.py
+    # transparently converts nicole2.3 -> its native nicole2.6 (auto-filling
+    # default abundances) before handing the cube to the Fortran executable.
+    #
+    # Record layout (little-endian float64), matching read_model / idl_to_nicole:
+    #   header record: b"nicole2.3bm" padded to 16 bytes, int32 nx, int32 ny,
+    #                  int64 nz, then zero-padded to (17*nz+3) float64s.
+    #   per pixel (iy + ix*ny order): 17 depth variables x nz, then 3 scalars.
+    #     var order: z, tau, T, gas_p, rho, el_p, v_los, v_mic, b_los_z,
+    #                b_los_x, b_los_y, b_x, b_y, b_z, v_x, v_y, v_z
+    #     scalars:   v_mac, stray_frac, expansion
+    #   Only tau, T, el_p, v_los(cm/s), v_mic(cm/s), b_los_z(=B_long) are set;
+    #   everything else is 0 (matching write_ascii_model's single-pixel output,
+    #   NICOLE recomputes gas_p/rho/densities under hydrostatic equilibrium).
+    #   If gas_p (nx,ny,nz, dyn/cm^2) is supplied, it is written to the gas_p
+    #   slot as well; pair it with Input density=Pgas / Impose hydrostatic
+    #   equilibrium=N so NICOLE uses it directly (no HE iteration, hence no
+    #   inter-pixel boundary-condition carryover -- each pixel is independent).
+    #
+    # Inputs T/v_los_kms/b_long_G are (nx, ny, nz); logtau is the shared (nz,)
+    # grid (identical for every pixel, as produced by the tau500 remap). v_los
+    # is converted km/s -> cm/s. Depth is written descending in logtau (deepest
+    # first), matching write_ascii_model.
+    import struct
+
+    import numpy as np
+    from pathlib import Path
+
+    [int4f, intf, flf] = check_types()
+
+    logtau = np.asarray(logtau, dtype=np.float64).reshape(-1)
+    nz = logtau.size
+    T = np.asarray(T, dtype=np.float64)
+    v_los_kms = np.asarray(v_los_kms, dtype=np.float64)
+    b_long_G = np.asarray(b_long_G, dtype=np.float64)
+    if not (T.shape == v_los_kms.shape == b_long_G.shape) or T.ndim != 3 or T.shape[2] != nz:
+        raise ValueError(
+            f"T, v_los_kms, b_long_G must all be (nx, ny, {nz}) with nz matching "
+            f"logtau (got {T.shape}, {v_los_kms.shape}, {b_long_G.shape})"
+        )
+    nx, ny = T.shape[:2]
+
+    if el_p is None:
+        el_p_arr = np.full((nx, ny, nz), float(el_p_seed), dtype=np.float64)
+    else:
+        el_p_arr = np.asarray(el_p, dtype=np.float64)
+        if el_p_arr.shape != (nx, ny, nz):
+            raise ValueError(f"el_p must be (nx, ny, {nz}) (got {el_p_arr.shape})")
+
+    v_mic_arr = np.broadcast_to(np.asarray(v_mic_cms, dtype=np.float64), (nx, ny, nz))
+
+    if gas_p is None:
+        gas_p_arr = None
+    else:
+        gas_p_arr = np.asarray(gas_p, dtype=np.float64)
+        if gas_p_arr.shape != (nx, ny, nz):
+            raise ValueError(f"gas_p must be (nx, ny, {nz}) (got {gas_p_arr.shape})")
+
+    # Descending logtau (deepest -> top), applied identically to every pixel.
+    order = np.argsort(logtau)[::-1]
+    tau_d = logtau[order]
+
+    sizerec = 17 * nz + 3  # float64s per record
+
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(filepath, "wb") as f:
+        # Header record (record 0), zero-padded to a full sizerec-float record.
+        header = struct.pack("<16s" + int4f + int4f + intf, b"nicole2.3bm", nx, ny, nz)
+        f.write(header)
+        pad_bytes = sizerec * 8 - len(header)
+        f.write(b"\x00" * pad_bytes)
+
+        zero_col = np.zeros(nz, dtype=np.float64)
+        rec_fmt = "<" + str(sizerec) + flf
+        for ix in range(nx):
+            for iy in range(ny):
+                cols = [
+                    zero_col,                             # z
+                    tau_d,                                # tau
+                    T[ix, iy, order],                     # T
+                    (gas_p_arr[ix, iy, order] if gas_p_arr is not None else zero_col),  # gas_p
+                    zero_col,                             # rho
+                    el_p_arr[ix, iy, order],              # el_p
+                    v_los_kms[ix, iy, order] * 1.0e5,     # v_los (km/s -> cm/s)
+                    v_mic_arr[ix, iy, order],             # v_mic
+                    b_long_G[ix, iy, order],              # b_los_z (= B_long)
+                    zero_col, zero_col,                   # b_los_x, b_los_y
+                    zero_col, zero_col, zero_col,         # b_x, b_y, b_z
+                    zero_col, zero_col, zero_col,         # v_x, v_y, v_z
+                ]
+                rec = np.concatenate(cols)
+                rec = np.concatenate([rec, [float(v_mac_cms), float(stray_light), 0.0]])
+                f.write(struct.pack(rec_fmt, *rec))

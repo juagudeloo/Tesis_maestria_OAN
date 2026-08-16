@@ -71,11 +71,13 @@ class TrainingConfig:
     dz_km: float = 10.0
     step_size: int = 1  # Step size between simulation steps
 
-    # Optical depth remapping grid (used by MURaM -> tau mapping)
+    # Optical depth remapping grid (used by MURaM -> tau mapping).
+    # Defaults are the tau_500 grid NICOLE-generated data is fixed to
+    # (scripts/synthesis/tau500_multi_step_regen.py: NEW_LOGTAU_GRID, 45 levels).
     # If logtau_values is provided, it overrides min/max/step
     logtau_values: list[float] | None = None
-    logtau_min: float = -2.0
-    logtau_max: float = 0.0
+    logtau_min: float = -3.0
+    logtau_max: float = 1.4
     logtau_step: float = 0.1
 
     # Stokes continuum normalization policy
@@ -83,7 +85,12 @@ class TrainingConfig:
     stokes_ic_mode: str = "fixed_global"  # 'per_step' or 'fixed_global'
     stokes_fixed_ic: float | None = None
     stokes_mult_factor: float = 1.0
-    
+
+    # Training data source: 'nicole_tau500' (NICOLE-synthesized on tau_500,
+    # stokes_{step}_nicole_tau500.npy) or 'muram_legacy' (Rosseland-tau grid,
+    # stokes_{step}.npy -- kept for reference/old checkpoints, not the default)
+    data_source: str = "nicole_tau500"
+
     # Training parameters
     n_epochs: int = 20
     batch_size: int = 512  # Spatial batch size (512 pixels per batch)
@@ -194,7 +201,22 @@ class TrainingConfig:
         if self.stokes_cont_indices is None:
             self.stokes_cont_indices = [0, 1, 2, 3]
 
-        if self.stokes_ic_mode == "fixed_global" and self.stokes_fixed_ic is None:
+        valid_data_sources = {"muram_legacy", "nicole_tau500"}
+        if self.data_source not in valid_data_sources:
+            raise ValueError(
+                f"data_source must be one of {sorted(valid_data_sources)}, got {self.data_source!r}"
+            )
+        # Non-legacy sources get isolated normalizer-stats paths by default, so a
+        # fresh compute_normalization_stats.py run never overwrites the legacy files.
+        if self.data_source != "muram_legacy":
+            default_mhd_norm_path = "normalization_stats/mhd_normalization.json"
+            default_stokes_norm_path = "normalization_stats/stokes_normalization.json"
+            if self.mhd_normalizer_path == default_mhd_norm_path:
+                self.mhd_normalizer_path = f"normalization_stats/{self.data_source}/mhd_normalization.json"
+            if self.stokes_normalizer_path == default_stokes_norm_path:
+                self.stokes_normalizer_path = f"normalization_stats/{self.data_source}/stokes_normalization.json"
+
+        if self.data_source == "muram_legacy" and self.stokes_ic_mode == "fixed_global" and self.stokes_fixed_ic is None:
             ic_stats_path = Path(self.data_path) / "normalization_stats" / "ic_reference_stats.json"
             if ic_stats_path.exists():
                 with open(ic_stats_path, "r", encoding="utf-8") as f:
@@ -202,6 +224,12 @@ class TrainingConfig:
                 fixed_ic = ic_payload.get("fixed_ic")
                 if fixed_ic is not None:
                     self.stokes_fixed_ic = float(fixed_ic)
+
+        if self.data_source != "muram_legacy" and self.stokes_ic_mode == "fixed_global" and self.stokes_fixed_ic is None:
+            # fixed_ic is meaningless for pre-normalized sources (already continuum-
+            # normalized by NICOLE); skip it instead of requiring an unrelated legacy
+            # ic_reference_stats.json.
+            self.stokes_ic_mode = "per_step"
 
         if not np.isfinite(float(self.stokes_mult_factor)) or float(self.stokes_mult_factor) <= 0:
             raise ValueError(f"stokes_mult_factor must be finite and > 0, got {self.stokes_mult_factor}")
@@ -231,11 +259,15 @@ class TrainingConfig:
             self.logtau_values = None
         # Normalize cache dir (allow shared override via env)
         default_cache = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
+        if self.data_source != "muram_legacy" and self.cache_dir == default_cache:
+            self.cache_dir = f"{default_cache}_{self.data_source}"
         if (not self.cache_dir or self.cache_dir == default_cache) and os.environ.get("MURAM_CACHE_DIR"):
             self.cache_dir = os.environ["MURAM_CACHE_DIR"]
         self.cache_dir = str(Path(self.cache_dir).expanduser().resolve())
 
         default_balanced_cache = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
+        if self.data_source != "muram_legacy" and self.balanced_cache_dir == default_balanced_cache:
+            self.balanced_cache_dir = f"{default_balanced_cache}_{self.data_source}"
         if (not self.balanced_cache_dir or self.balanced_cache_dir == default_balanced_cache) and os.environ.get("MURAM_BALANCED_CACHE_DIR"):
             self.balanced_cache_dir = os.environ["MURAM_BALANCED_CACHE_DIR"]
         self.balanced_cache_dir = str(Path(self.balanced_cache_dir).expanduser().resolve())
@@ -347,13 +379,17 @@ class TrainingConfig:
         else:
             if self.logtau_step <= 0:
                 raise ValueError(f"logtau_step must be > 0, got {self.logtau_step}")
-            # include endpoint robustly
+            # include endpoint robustly. Accumulate in float64 (numpy's default)
+            # then cast down -- computing the arange directly in float32 accrues
+            # visible step-to-step rounding drift (~4e-6 by the last of 45
+            # steps), enough to fail exact-grid-match checks against externally
+            # generated data (e.g. the tau500 atmos_*.npz files) that use the
+            # same min/max/step but arange's float64 default.
             logtau = np.arange(
                 self.logtau_min,
                 self.logtau_max + 0.5 * self.logtau_step,
                 self.logtau_step,
-                dtype=np.float32,
-            )
+            ).astype(np.float32)
 
         if logtau.ndim != 1 or logtau.size < 2:
             raise ValueError("logtau grid must be 1D with at least 2 points")
@@ -417,6 +453,7 @@ class MetricsLogger:
 def build_cache_config_signature(config: TrainingConfig) -> dict:
     """Shared cache-signature contract across training/ablation/analysis."""
     return {
+        'data_source': str(config.data_source),
         'nx': config.nx,
         'ny': config.ny,
         'nz': config.nz,
@@ -436,6 +473,7 @@ def build_balanced_cache_signature(config: TrainingConfig, train_steps: list[int
     """Signature for post-balancing cache validity."""
     return {
         "version": 1,
+        "data_source": str(config.data_source),
         "steps": [int(s) for s in sorted(train_steps)],
         "apply_region_mask": bool(config.apply_region_mask),
         "apply_bz_bin_balance": bool(config.apply_bz_bin_balance),
@@ -691,6 +729,124 @@ def update_wfa_gate_state(
 
     return gate_state, False, None
 
+def load_source_arrays(
+    step: int,
+    config: TrainingConfig,
+    ignore_missing_files: bool = False,
+) -> tuple[StokesData, dict[str, np.ndarray]] | None:
+    """
+    Load raw, per-step MHD + Stokes arrays for `config.data_source`.
+
+    Returns a (stokes, mhd_data) pair with the same downstream contract
+    regardless of source: `stokes` is a StokesData instance with `.data`
+    (fine wavelength grid, I/Q/U/V, pre-LSF/resample) and `.mean_continuum`
+    populated; `mhd_data` maps {'T', 'Vz', 'Bz'} to (nx, ny, n_logtau)
+    Quantities on config.get_logtau_values(). Callers still need to run
+    load_hinode_lsf/apply_spectral_convolution/resample_to_hinode/
+    spectropolarimetry on the returned `stokes` -- those steps are
+    source-agnostic and are not duplicated here.
+
+    Returns None (instead of raising) when required files are missing and
+    ignore_missing_files=True.
+    """
+    new_logtau = config.get_logtau_values()
+
+    if config.data_source == "muram_legacy":
+        mhd = MhdData(
+            data_path=config.data_path / "muram-simulation",
+            nx=config.nx, ny=config.ny, nz=config.nz
+        )
+        try:
+            mhd.load_step(step=step, z_max=config.z_max)
+        except FileNotFoundError as exc:
+            if ignore_missing_files:
+                print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
+                return None
+            raise
+        mhd.load_opacity_table(kappa_path=config.data_path / config.kappa_path)
+        mhd.compute_optical_depth(dz=config.dz_km * u.km)
+        mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
+
+        stokes = StokesData(
+            data_dir=config.data_path / "muram-simulation/",
+            step=step,
+            wavelength_range=(6300.5, 6303.5),
+            wavelength_step=0.01
+        )
+        try:
+            stokes.load_stokes()
+        except FileNotFoundError as exc:
+            if ignore_missing_files:
+                print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
+                return None
+            raise
+        stokes_cont_indices = config.stokes_cont_indices or [0, 1, 2, 3]
+        if config.stokes_ic_mode == "fixed_global":
+            if config.stokes_fixed_ic is None:
+                raise ValueError("stokes_fixed_ic must be set for fixed_global mode")
+            fixed_ic = float(config.stokes_fixed_ic)
+        else:
+            fixed_ic = None
+        stokes.continuum_normalization(cont_indices=stokes_cont_indices, fixed_ic=fixed_ic)
+        if config.stokes_mult_factor != 1.0:
+            stokes.data["I"] = stokes.data["I"] * config.stokes_mult_factor
+            stokes.data["V"] = stokes.data["V"] * config.stokes_mult_factor
+
+        return stokes, mhd.od_data
+
+    elif config.data_source == "nicole_tau500":
+        sim_dir = config.data_path / "muram-simulation"
+        stokes_path = sim_dir / f"stokes_{step}_nicole_tau500.npy"
+        atmos_path = sim_dir / f"atmos_{step}_tau500.npz"
+        if not stokes_path.exists() or not atmos_path.exists():
+            missing = stokes_path if not stokes_path.exists() else atmos_path
+            if ignore_missing_files:
+                print(f"  ⚠ Skipping step {step} because required files are missing: {missing}")
+                return None
+            raise FileNotFoundError(
+                f"nicole_tau500 data not found for step {step}: expected {stokes_path} and {atmos_path}"
+            )
+
+        atmos = np.load(atmos_path)
+        saved_logtau = np.round(np.asarray(atmos["logtau"], dtype=np.float32), 6)
+        if saved_logtau.shape != new_logtau.shape or not np.allclose(saved_logtau, new_logtau, atol=1e-6):
+            raise ValueError(
+                f"atmos_{step}_tau500.npz was generated on a different log(tau) grid than the "
+                f"active config. Saved: {saved_logtau.tolist()} | Requested: {new_logtau.tolist()}. "
+                "Set logtau_min=-3.0, logtau_max=1.4, logtau_step=0.1 (the tau500-generation grid) "
+                "to use this data source."
+            )
+
+        mhd_data = {
+            "T": np.asarray(atmos["T"], dtype=np.float64) * u.K,
+            "Vz": np.asarray(atmos["Vz"], dtype=np.float64) * u.km / u.s,
+            "Bz": np.asarray(atmos["Bz"], dtype=np.float64) * u.G,
+        }
+
+        # Stokes cube is (nx, ny, nwl, 4) = I,Q,U,V, already NICOLE-normalized
+        # (Continuum reference=1) -- fixed_ic / stokes_mult_factor do not apply.
+        stokes_cube = np.load(stokes_path)
+        stokes = StokesData(
+            data_dir=sim_dir,
+            step=step,
+            wavelength_range=(6300.5, 6303.5),
+            wavelength_step=0.01,
+        )
+        stokes.data = {
+            "I": stokes_cube[:, :, :, 0],
+            "Q": stokes_cube[:, :, :, 1],
+            "U": stokes_cube[:, :, :, 2],
+            "V": stokes_cube[:, :, :, 3],
+        }
+        stokes.nx, stokes.ny, stokes.nwl = stokes.data["I"].shape
+        stokes_cont_indices = config.stokes_cont_indices or [0, 1, 2, 3]
+        stokes.mean_continuum = stokes.data["I"][:, :, stokes_cont_indices].mean(axis=2)
+
+        return stokes, mhd_data
+
+    raise ValueError(f"Unknown data_source: {config.data_source!r}")
+
+
 def load_and_prepare_step(
     step: int,
     config: TrainingConfig,
@@ -863,54 +1019,18 @@ def load_and_prepare_step(
                 print(f"  ⚠ Cache load failed for step {step}: {e}")
                 print(f"  Reprocessing step {step}...")
     
-    # Load MHD data
-    mhd = MhdData(
-        data_path=config.data_path / "muram-simulation",
-        nx=config.nx, ny=config.ny, nz=config.nz
-    )
-    try:
-        mhd.load_step(step=step, z_max=config.z_max)
-    except FileNotFoundError as exc:
-        if ignore_missing_files:
-            print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
-            return None
-        raise
-    mhd.load_opacity_table(kappa_path=config.data_path / config.kappa_path)
-    mhd.compute_optical_depth(dz=config.dz_km * u.km)
-    
-    # Remap to optical depth (from config)
+    # Check normalizer/tau-grid compatibility before doing any I/O.
     if hasattr(mhd_normalizer, "n_tau") and len(new_logtau) != mhd_normalizer.n_tau:
         raise ValueError(
             f"logtau grid has {len(new_logtau)} levels, but mhd_normalizer expects "
             f"{mhd_normalizer.n_tau}. Recompute normalizer stats or adjust logtau grid."
         )
-    mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
-    
-    # Load Stokes data
-    stokes = StokesData(
-        data_dir=config.data_path / "muram-simulation/",
-        step=step,
-        wavelength_range=(6300.5, 6303.5),
-        wavelength_step=0.01
-    )
-    try:
-        stokes.load_stokes()
-    except FileNotFoundError as exc:
-        if ignore_missing_files:
-            print(f"  ⚠ Skipping step {step} because required files are missing: {exc}")
-            return None
-        raise
-    stokes_cont_indices = config.stokes_cont_indices or [0, 1, 2, 3]
-    if config.stokes_ic_mode == "fixed_global":
-        if config.stokes_fixed_ic is None:
-            raise ValueError("stokes_fixed_ic must be set for fixed_global mode")
-        fixed_ic = float(config.stokes_fixed_ic)
-    else:
-        fixed_ic = None
-    stokes.continuum_normalization(cont_indices=stokes_cont_indices, fixed_ic=fixed_ic)
-    if config.stokes_mult_factor != 1.0:
-        stokes.data["I"] = stokes.data["I"] * config.stokes_mult_factor
-        stokes.data["V"] = stokes.data["V"] * config.stokes_mult_factor
+
+    result = load_source_arrays(step=step, config=config, ignore_missing_files=ignore_missing_files)
+    if result is None:
+        return None
+    stokes, mhd_od_data = result
+
     stokes.load_hinode_lsf(config.data_path / config.lsf_path)
     stokes.apply_spectral_convolution()
     stokes.resample_to_hinode()
@@ -952,17 +1072,17 @@ def load_and_prepare_step(
         }
     elif apply_bz_balance:
         selected_indices, bz_balance_info = build_bz_strength_balanced_indices(
-            mhd_data=mhd.od_data,
+            mhd_data=mhd_od_data,
             base_selected_indices=selected_indices,
             n_bins=config.bz_balance_bins,
             score_mode=config.bz_balance_mode,
             tau_idx=config.bz_balance_tau_idx,
         )
-    
+
     # Create dataset
     dataset = MuramStepDataset(
         stokes_data=stokes.data,
-        mhd_data=mhd.od_data,
+        mhd_data=mhd_od_data,
         stokes_normalizer=stokes_normalizer,
         mhd_normalizer=mhd_normalizer,
         selected_flat_indices=selected_indices,
@@ -1028,7 +1148,7 @@ def load_and_prepare_step(
             cache.save(
                 step=step,
                 stokes_data=stokes.data,
-                mhd_data=mhd.od_data,
+                mhd_data=mhd_od_data,
                 approx_data=approx_data,
                 config_hash=config_hash,
                 logtau_values=new_logtau,
@@ -1360,7 +1480,8 @@ def validate(
     """
     model.eval()
     n_val_samples = 0
-    
+    total_val_loss = 0.0
+
     with torch.no_grad():
         for step in val_steps:
             try:
@@ -2940,6 +3061,9 @@ def main():
     parser.add_argument('--stokes-mult-factor', '--stokes_mult_factor', dest='stokes_mult_factor',
                        type=float, default=1.0,
                        help='Scalar multiplier applied to normalized Stokes I and V before training')
+    parser.add_argument('--data-source', '--data_source', dest='data_source',
+                       type=str, choices=['muram_legacy', 'nicole_tau500'], default='nicole_tau500',
+                       help='Training data source (default: nicole_tau500)')
     parser.add_argument('--wfa-gate-mode', '--wfa_gate_mode', dest='wfa_gate_mode',
                        type=str, choices=['off', 'threshold', 'plateau'], default=None,
                        help='Train-time WFA activation gate mode')
@@ -2960,21 +3084,17 @@ def main():
     parser.add_argument('--no-cache', action='store_true',
                        help='Disable data caching')
     parser.add_argument('--cache-dir', '--cache_dir', type=str,
-                       default=os.environ.get(
-                           "MURAM_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
-                       ),
-                       help='Directory for cached data (or set MURAM_CACHE_DIR)')
+                       default=None,
+                       help='Directory for cached data (or set MURAM_CACHE_DIR). Defaults to the '
+                            'standard .muram_cache dir, suffixed with the data source for non-legacy sources.')
     parser.add_argument('--clear-cache', action='store_true',
                        help='Clear cache before training')
     parser.add_argument('--balanced-cache', '--balanced_cache', dest='use_balanced_cache', action='store_true',
                        help='Enable post-balancing train-data cache')
     parser.add_argument('--balanced-cache-dir', '--balanced_cache_dir', dest='balanced_cache_dir', type=str,
-                       default=os.environ.get(
-                           "MURAM_BALANCED_CACHE_DIR",
-                           "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache",
-                       ),
-                       help='Directory for balanced training cache')
+                       default=None,
+                       help='Directory for balanced training cache (or set MURAM_BALANCED_CACHE_DIR). '
+                            'Defaults to the standard dir, suffixed with the data source for non-legacy sources.')
     parser.add_argument('--clear-balanced-cache', '--clear_balanced_cache', dest='clear_balanced_cache', action='store_true',
                        help='Clear balanced training cache before training')
     parser.add_argument('--balanced-cache-strategy', '--balanced_cache_strategy', dest='balanced_cache_strategy',
@@ -3118,6 +3238,7 @@ def main():
         config.c1_filters = args.c1_filters
     config.stokes_ic_mode = args.stokes_ic_mode
     config.stokes_mult_factor = args.stokes_mult_factor
+    config.data_source = args.data_source
     if config.stokes_ic_mode == 'fixed_global' and config.stokes_fixed_ic is None:
         ic_stats_path = Path(config.data_path) / "normalization_stats" / "ic_reference_stats.json"
         if ic_stats_path.exists():
@@ -3137,6 +3258,29 @@ def main():
     if args.wfa_gate_warmup_epochs is not None:
         config.wfa_gate_warmup_epochs = args.wfa_gate_warmup_epochs
     
+    # Non-legacy sources get isolated cache dirs and normalizer-stats paths by
+    # default, mirroring TrainingConfig.__post_init__ (which already ran with
+    # data_source='muram_legacy' before the override above).
+    default_cache_dir = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache"
+    default_balanced_cache_dir = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_balanced_cache"
+    if args.cache_dir is None:
+        args.cache_dir = os.environ.get(
+            "MURAM_CACHE_DIR",
+            default_cache_dir if args.data_source == "muram_legacy" else f"{default_cache_dir}_{args.data_source}",
+        )
+    if args.balanced_cache_dir is None:
+        args.balanced_cache_dir = os.environ.get(
+            "MURAM_BALANCED_CACHE_DIR",
+            default_balanced_cache_dir if args.data_source == "muram_legacy" else f"{default_balanced_cache_dir}_{args.data_source}",
+        )
+    if args.data_source != "muram_legacy":
+        default_mhd_norm_path = "normalization_stats/mhd_normalization.json"
+        default_stokes_norm_path = "normalization_stats/stokes_normalization.json"
+        if config.mhd_normalizer_path == default_mhd_norm_path:
+            config.mhd_normalizer_path = f"normalization_stats/{args.data_source}/mhd_normalization.json"
+        if config.stokes_normalizer_path == default_stokes_norm_path:
+            config.stokes_normalizer_path = f"normalization_stats/{args.data_source}/stokes_normalization.json"
+
     # Apply cache CLI overrides
     config.use_cache = not args.no_cache
     config.cache_dir = str(Path(args.cache_dir).expanduser().resolve())

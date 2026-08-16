@@ -18,7 +18,7 @@ set -euo pipefail
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-EXPERIMENT_ROOT="experiment_81_to_181-step_size_5-normal"
+EXPERIMENT_ROOT="experiment_110_to_130-step_size_10-normal"
 MODEL_TYPES=("wfa_only" "no_physics")   # one or more model variations to run.
                                           # Step 0's sampling is model-independent
                                           # (SPINOR- or MURaM-ground-truth-sourced),

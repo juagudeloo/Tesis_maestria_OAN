@@ -7,13 +7,12 @@ import json
 import shutil
 from datetime import datetime, timezone
 import numpy as np
-import astropy.units as u
 from tqdm import tqdm
 
-from utils.muram_data import MhdData, StokesData
+from utils.muram_data import StokesData
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 from utils.cache_manage import MuramDataCache
-from scripts.base_training import TrainingConfig, build_cache_config_signature
+from scripts.base_training import TrainingConfig, build_cache_config_signature, load_source_arrays
 
 
 def _compute_fixed_global_ic(
@@ -59,11 +58,12 @@ def _compute_fixed_global_ic(
 def compute_normalization_stats(
     min_step: int = 60,
     max_step: int = 223,
+    steps: list[int] | None = None,
     save_interval: int = 20,
     resume_from: str = None,
     logtau_values: list[float] | None = None,
-    logtau_min: float = -2.0,
-    logtau_max: float = 0.0,
+    logtau_min: float = -3.0,
+    logtau_max: float = 1.4,
     logtau_step: float = 0.1,
     use_cache: bool = True,
     cache_dir: str = "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
@@ -73,13 +73,21 @@ def compute_normalization_stats(
     ic_cont_indices: list[int] | None = None,
     clean_start: bool = False,
     purge_cache: bool = False,
+    data_source: str = "nicole_tau500",
+    data_path: str | Path = "/scratchsan/observatorio/juagudeloo/MUISCA/data/",
+    output_dir: str | Path | None = None,
+    kappa_path: str | Path | None = None,
+    lsf_path: str | Path | None = None,
 ):
     """
     Compute normalization statistics for both MHD and Stokes data.
-    
+
     Args:
         min_step: first simulation step to process
         max_step: last simulation step to process (inclusive)
+        steps: explicit list of steps to process (overrides min_step/max_step scanning
+            -- use this for a small, non-contiguous set of available steps, e.g. a
+            nicole_tau500 pilot with only 2 generated steps)
         save_interval: save intermediate state every N steps
         resume_from: path to resume from saved state (optional)
         logtau_values: explicit log(tau) nodes (overrides min/max/step)
@@ -88,20 +96,35 @@ def compute_normalization_stats(
         logtau_step: step in log(tau) for range mode
         use_cache: enable/disable cache usage
         cache_dir: cache directory
-        stokes_ic_mode: 'per_step' or 'fixed_global'
+        stokes_ic_mode: 'per_step' or 'fixed_global' (ignored when data_source != 'muram_legacy';
+            the nicole_tau500 source is already continuum-normalized)
         ic_start_step: first step for fixed-I_c extraction (inclusive)
         ic_end_step: last step for fixed-I_c extraction (inclusive)
         ic_cont_indices: continuum indices used for I_c extraction
         clean_start: if True, remove previous normalization outputs before run
         purge_cache: if True and clean_start=True, remove cache directory before run
+        data_source: 'muram_legacy' or 'nicole_tau500' (see TrainingConfig.data_source)
+        data_path: root data directory (contains muram-simulation/, csv/, normalization_stats/)
+        output_dir: where to write mhd_normalization.json / stokes_normalization.json.
+            Defaults to data_path/normalization_stats for muram_legacy, or
+            data_path/normalization_stats/<data_source> otherwise -- never clobbers the
+            legacy files when computing stats for a different source.
+        kappa_path: Rosseland opacity table (only used for data_source='muram_legacy')
+        lsf_path: Hinode LSF kernel (used by both sources)
     """
     # Configuration - using same paths as other scripts
-    data_path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/")
+    data_path = Path(data_path)
     mhd_data_dir = data_path / "muram-simulation"
     stokes_data_dir = data_path / "muram-simulation"
-    kappa_path = data_path / "csv/kappa.0.dat"
-    lsf_path = data_path / "hinode-MODEST/PSFs/hinode_sp.spline.psf"
-    output_dir = data_path / "normalization_stats"
+    kappa_path = Path(kappa_path) if kappa_path is not None else data_path / "csv/kappa.0.dat"
+    lsf_path = Path(lsf_path) if lsf_path is not None else data_path / "hinode-MODEST/PSFs/hinode_sp.spline.psf"
+    if output_dir is None:
+        output_dir = (
+            data_path / "normalization_stats"
+            if data_source == "muram_legacy"
+            else data_path / "normalization_stats" / data_source
+        )
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ic_reference_path = output_dir / "ic_reference_stats.json"
     raw_bz_values_dir = output_dir / "raw_bz_values"
@@ -151,8 +174,7 @@ def compute_normalization_stats(
             logtau_min,
             logtau_max + 0.5 * logtau_step,  # robust endpoint inclusion
             logtau_step,
-            dtype=np.float32
-        )
+        ).astype(np.float32)  # accumulate in float64 first -- see TrainingConfig.get_logtau_values
     else:
         new_logtau = np.asarray(logtau_values, dtype=np.float32)
 
@@ -210,9 +232,9 @@ def compute_normalization_stats(
         stokes_normalizer = StokesNormalizer()
         start_step = min_step
     
-    available_steps = list(range(start_step, max_step + 1))
+    available_steps = sorted(int(s) for s in steps) if steps else list(range(start_step, max_step + 1))
 
-    if stokes_ic_mode == "fixed_global":
+    if data_source == "muram_legacy" and stokes_ic_mode == "fixed_global":
         fixed_ic_value, per_step_ic = _compute_fixed_global_ic(
             stokes_data_dir=stokes_data_dir,
             start_step=ic_start_step,
@@ -232,7 +254,10 @@ def compute_normalization_stats(
         with open(ic_reference_path, "w", encoding="utf-8") as f:
             json.dump(ic_payload, f, indent=2)
         print(f"Saved fixed I_c metadata to: {ic_reference_path}")
-    
+    elif data_source != "muram_legacy":
+        print(f"data_source={data_source!r}: skipping fixed-I_c computation "
+              "(source is already continuum-normalized).")
+
     print(f"\nComputing normalization statistics for both MHD and Stokes data")
     print(f"Processing steps {start_step} to {max_step}")
     print(f"MHD data directory: {mhd_data_dir}")
@@ -263,8 +288,11 @@ def compute_normalization_stats(
         use_cache=use_cache,
         cache_dir=cache_dir,
         stokes_cont_indices=[int(x) for x in ic_cont_indices],
-        stokes_ic_mode=stokes_ic_mode,
+        # fixed_ic policy is meaningless for pre-normalized sources; use per_step to
+        # sidestep TrainingConfig's fixed_ic validation/auto-load entirely.
+        stokes_ic_mode=(stokes_ic_mode if data_source == "muram_legacy" else "per_step"),
         stokes_fixed_ic=(None if fixed_ic_value is None else float(fixed_ic_value)),
+        data_source=data_source,
         # avoid side effects unrelated to this script
         checkpoint_dir=str(output_dir / "_tmp_checkpoints"),
         log_dir=str(output_dir / "_tmp_logs"),
@@ -292,30 +320,10 @@ def compute_normalization_stats(
                 mhd_data = {'T': mhd_data_cached['T'], 'Vz': mhd_data_cached['Vz'], 'Bz': mhd_data_cached['Bz']}
                 print(f"\n[Step {step}] Loaded raw arrays from exact cache")
             else:
-                print(f"\n[Step {step}] Processing raw MURaM data for stats")
+                print(f"\n[Step {step}] Processing raw {data_source} data for stats")
 
-                mhd = MhdData(
-                    data_path=shared_cfg.data_path / "muram-simulation",
-                    nx=shared_cfg.nx,
-                    ny=shared_cfg.ny,
-                    nz=shared_cfg.nz,
-                )
-                mhd.load_step(step=step, z_max=shared_cfg.z_max)
-                mhd.load_opacity_table(kappa_path=shared_cfg.data_path / shared_cfg.kappa_path)
-                mhd.compute_optical_depth(dz=shared_cfg.dz_km * u.km)
-                mhd.remap_to_optical_depth(new_logtau, quantities=["T", "Vz", "Bz"])
+                stokes, mhd_od_data = load_source_arrays(step=step, config=shared_cfg)
 
-                stokes = StokesData(
-                    data_dir=shared_cfg.data_path / "muram-simulation/",
-                    step=step,
-                    wavelength_range=(6300.5, 6303.5),
-                    wavelength_step=0.01,
-                )
-                stokes.load_stokes()
-                stokes.continuum_normalization(
-                    cont_indices=shared_cfg.stokes_cont_indices,
-                    fixed_ic=shared_cfg.stokes_fixed_ic,
-                )
                 stokes.load_hinode_lsf(shared_cfg.data_path / shared_cfg.lsf_path)
                 stokes.apply_spectral_convolution()
                 stokes.resample_to_hinode()
@@ -325,13 +333,13 @@ def compute_normalization_stats(
                 stokes.data["circular_polarization"] = np.asarray(stokes.circular_polarization, dtype=np.float32)
 
                 stokes_data = {'I': stokes.data['I'], 'V': stokes.data['V']}
-                mhd_data = {'T': mhd.od_data['T'], 'Vz': mhd.od_data['Vz'], 'Bz': mhd.od_data['Bz']}
+                mhd_data = {'T': mhd_od_data['T'], 'Vz': mhd_od_data['Vz'], 'Bz': mhd_od_data['Bz']}
 
                 if cache is not None and config_hash is not None:
                     cache.save(
                         step=step,
                         stokes_data=stokes.data,
-                        mhd_data=mhd.od_data,
+                        mhd_data=mhd_od_data,
                         approx_data={},
                         config_hash=config_hash,
                         logtau_values=new_logtau,
@@ -435,14 +443,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--logtau_min",
         type=float,
-        default=-2.0,
-        help="Minimum log(tau) for range mode (default: -2.0)"
+        default=-3.0,
+        help="Minimum log(tau) for range mode (default: -3.0, the tau_500 generation grid)"
     )
     parser.add_argument(
         "--logtau_max",
         type=float,
-        default=0.0,
-        help="Maximum log(tau) for range mode (default: 0.0)"
+        default=1.4,
+        help="Maximum log(tau) for range mode (default: 1.4, the tau_500 generation grid)"
     )
     parser.add_argument(
         "--logtau_step",
@@ -495,18 +503,52 @@ if __name__ == "__main__":
         "--cache-dir", "--cache_dir",
         dest="cache_dir",
         type=str,
-        default=os.environ.get(
-            "MURAM_CACHE_DIR",
-            "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
-        ),
-        help="Cache directory (or set MURAM_CACHE_DIR)"
+        default=None,
+        help="Cache directory (or set MURAM_CACHE_DIR). Defaults to the standard "
+             ".muram_cache dir, suffixed with the data source for non-legacy sources."
+    )
+    parser.add_argument(
+        "--data-source", "--data_source",
+        dest="data_source",
+        type=str,
+        choices=["muram_legacy", "nicole_tau500"],
+        default="nicole_tau500",
+        help="Training data source (default: nicole_tau500)"
+    )
+    parser.add_argument(
+        "--output-dir", "--output_dir",
+        dest="output_dir",
+        type=str,
+        default=None,
+        help="Where to write mhd/stokes_normalization.json. Defaults to "
+             "data/normalization_stats (muram_legacy) or "
+             "data/normalization_stats/<data_source> otherwise."
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Explicit list of steps to process (overrides --min_step/--max_step scanning); "
+             "use for a small, non-contiguous set of already-generated steps."
     )
 
     args = parser.parse_args()
 
+    default_cache = os.environ.get(
+        "MURAM_CACHE_DIR",
+        "/scratchsan/observatorio/juagudeloo/MUISCA/.muram_cache",
+    )
+    if args.cache_dir is None:
+        args.cache_dir = (
+            default_cache if args.data_source == "muram_legacy"
+            else f"{default_cache}_{args.data_source}"
+        )
+
     compute_normalization_stats(
         min_step=args.min_step,
         max_step=args.max_step,
+        steps=args.steps,
         save_interval=args.save_interval,
         resume_from=args.resume_from,
         logtau_values=args.logtau_values,
@@ -515,6 +557,8 @@ if __name__ == "__main__":
         logtau_step=args.logtau_step,
         use_cache=not args.no_cache,
         cache_dir=args.cache_dir,
+        data_source=args.data_source,
+        output_dir=args.output_dir,
         stokes_ic_mode=args.stokes_ic_mode,
         ic_start_step=args.ic_start_step,
         ic_end_step=args.ic_end_step,
