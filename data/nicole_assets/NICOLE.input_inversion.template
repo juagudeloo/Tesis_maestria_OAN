@@ -1,0 +1,76 @@
+# NICOLE configuration template for inverting real Hinode/SP (MODEST) Stokes
+# observations, for a one-to-one comparison against MUISCA's own predictions
+# on the same pixels. Placeholders in curly braces are substituted by
+# utils.synthesis.NicoleRunner.run_inversion_cube:
+#   {NICOLE_COMMAND}      absolute path to the NICOLE Fortran executable
+#   {INPUT_MODEL}         starting-guess .model filename (written by
+#                         write_binary_model_cube; in inversion mode "Input
+#                         model" is the guess, not ground truth)
+#   {OBSERVED_PROFILES}   observed .prof filename (written by write_prof_cube)
+#   {OUTPUT_PROFILE}      output .pro filename with the fitted profiles
+#                         (read back via read_prof)
+#   {OUTPUT_MODEL}        output .mod filename with the retrieved atmosphere
+#                         (mandatory in inversion mode; read back via
+#                         read_model, native nicole2.6 layout)
+#   {WL_FIRST}            first wavelength in Angstroms
+#   {WL_STEP_MA}          wavelength step in milli-Angstroms
+#   {N_WL}                number of wavelength points
+# Region 1 covers the MODEST/Hinode Fe I 6301.5 / 6302.5 spectropolarimetric window.
+#
+#   {NODES_T}, {NODES_V}, {NODES_BZ}   node counts (see below)
+#
+# Node counts are templated rather than hardcoded so NicoleRunner can drive
+# NICOLE's recommended 3-cycle progression (1/1/1 -> 4/4/4-ish ->
+# 8-10/6/4) itself, chaining cycle N's retrieved atmosphere as cycle N+1's
+# guess -- see run_inversion_cube's cycle-chaining docstring. Nodes are
+# equispaced across the full guess-atmosphere depth grid by NICOLE's default
+# (no explicit positions). Bx/By/microturbulence/macroturbulence/abundances/
+# stray light/filling factor stay at 0 to match what MUISCA itself predicts
+# (T, V_LOS, B_LOS only), for a fair one-to-one comparison.
+#
+# There is no per-pixel ground-truth gas pressure for a real observation, so
+# (unlike the tau500 MURaM synthesis path) this always uses the hydrostatic
+# Pel seed -- Impose hydrostatic equilibrium=Y / Input density=Pel are not
+# templated, just fixed.
+
+Command={NICOLE_COMMAND}
+Mode = Inversion
+
+Input model= {INPUT_MODEL}
+Observed profiles= {OBSERVED_PROFILES}
+Output profiles= {OUTPUT_PROFILE}
+Output model= {OUTPUT_MODEL}
+
+Heliocentric angle= 1.0
+Optimize Grid = 0
+Formal solution method= 0
+Printout detail= 1
+Restart=-1
+Debug mode= 0
+
+Impose hydrostatic equilibrium= Y
+Input density= Pel
+
+[Region 1]
+  First wavelength= {WL_FIRST}
+  Wavelength step= {WL_STEP_MA} mA
+  Number of wavelengths= {N_WL}
+
+[Line 1]
+  Line=FeI 6301.5
+
+[Line 2]
+  Line=FeI 6302.5
+
+
+[Nodes]
+Temperature={NODES_T}
+Velocity={NODES_V}
+Bz={NODES_BZ}
+Bx=0
+By=0
+Microturbulence=0
+Macroturbulence=0
+Abundances=0
+Stray Light=0
+Filling Factor=0

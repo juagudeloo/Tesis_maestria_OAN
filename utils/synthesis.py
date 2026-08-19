@@ -37,14 +37,17 @@ if str(ROOT) not in sys.path:
 from scripts.base_training import TrainingConfig
 from utils.analysis import AnalysisModelPipeline
 from utils.cache_manage import ModestDataCache
+from utils.hinode_wavelengths import N_WL_OBSERVED, hinode_grid_first_and_step_mA
 from utils.modest_data import ModestData, transform_modest_stokes_profiles
 from utils.muram_data import MhdData, StokesData
 import utils.model_prof_tools as model_prof_tools
 from utils.model_prof_tools import (
     check_prof,
+    read_model,
     read_prof,
     write_ascii_model,
     write_binary_model_cube,
+    write_prof_cube,
 )
 from utils.normalizer import MhdNormalizer, StokesNormalizer
 
@@ -111,10 +114,16 @@ class SynthesisConfig:
     stokes_v_multiplier: float = -1.0
     prediction_input_mode: str = "upsampled"
 
-    # NICOLE wavelength grid (MODEST/Hinode SP Fe I 6301.5/6302.5 window)
-    wl_first: float = 6300.796
-    wl_step_mA: float = 21.5
-    n_wl: int = 112
+    # NICOLE wavelength grid (MODEST/Hinode SP Fe I 6301.5/6302.5 window).
+    # Left as None so they are derived from the MODEST FITS header in
+    # __post_init__ (utils.hinode_wavelengths) rather than hardcoded: these
+    # were 6300.796 / 21.5, which disagreed with the observed axis by 0.0776 A
+    # (~3.7 km/s) and made profiles synthesized from MUISCA predictions
+    # spectrally misaligned with the observations they were compared against.
+    # Set explicitly only to override.
+    wl_first: Optional[float] = None
+    wl_step_mA: Optional[float] = None
+    n_wl: int = N_WL_OBSERVED
 
     # NICOLE atmospheric-column defaults (for the values MUISCA does not predict)
     v_mic_cms: float = 1.0e5
@@ -127,6 +136,17 @@ class SynthesisConfig:
 
     # Inference
     inference_batch_size: int = 4096
+
+    def __post_init__(self) -> None:
+        # Derive the spectral grid from the MODEST FITS header unless explicitly
+        # overridden, so synthesis always lands on the same axis the observations
+        # are loaded on (see utils.hinode_wavelengths).
+        if self.wl_first is None or self.wl_step_mA is None:
+            first, step_mA = hinode_grid_first_and_step_mA(self.n_wl)
+            if self.wl_first is None:
+                self.wl_first = first
+            if self.wl_step_mA is None:
+                self.wl_step_mA = step_mA
 
     def _source_root(self) -> Path:
         root = self.output_root / self.experiment_root
@@ -442,6 +462,7 @@ class NicoleRunner:
     def __init__(self, cfg: SynthesisConfig):
         self.cfg = cfg
         self.template_path = cfg.nicole_assets / "NICOLE.input.template"
+        self.inversion_template_path = cfg.nicole_assets / "NICOLE.input_inversion.template"
         self.lines_path = cfg.nicole_assets / "LINES"
         if not self.template_path.exists():
             raise FileNotFoundError(self.template_path)
@@ -734,6 +755,207 @@ class NicoleRunner:
         if f_handle is not None and not f_handle.closed:
             f_handle.close()
         return flat_out.reshape(nx, ny, 4, int(n_wl))
+
+    def run_inversion_cube(
+        self,
+        workdir: Path,
+        logtau: np.ndarray,
+        guess_T: np.ndarray,
+        guess_v_los_kms: np.ndarray,
+        guess_b_long_G: np.ndarray,
+        observed_iquv: np.ndarray,
+        n_wl: int,
+        *,
+        nodes_T: int = 8,
+        nodes_V: int = 4,
+        nodes_Bz: int = 4,
+        wl_first: Optional[float] = None,
+        wl_step_mA: Optional[float] = None,
+        v_mic_cms: Optional[float] = None,
+    ) -> dict:
+        """Invert a whole (nx, ny) cube of observed Stokes profiles in ONE
+        NICOLE invocation, using data/nicole_assets/NICOLE.input_inversion.template
+        (Mode=Inversion, Temperature/Velocity/Bz nodes equispaced across the
+        guess grid, Bx/By/microturbulence/etc fixed at 0).
+
+        nodes_T/nodes_V/nodes_Bz default to the manual's recommended "cycle 2"
+        complexity (8/4/4). For the full 3-cycle progression the manual
+        recommends (1/1/1 -> 8/4/4 -> 10/6/4), call this 3 times with
+        increasing node counts, passing cycle N's returned 'T'/'v_los_kms'/
+        'b_long_G' in as cycle N+1's guess_T/guess_v_los_kms/guess_b_long_G
+        (per-pixel, not the single (nz,) starting guess used for cycle 1) --
+        this reuses the already-verified single-cycle path instead of
+        NICOLE's own native multi-cycle file chaining (NICOLE.input_2/_3 +
+        dummy placeholder files), which has more moving parts and hasn't been
+        exercised here.
+
+        guess_T/guess_v_los_kms/guess_b_long_G are a single (nz,) starting-guess
+        atmosphere on the shared `logtau` grid, broadcast to every pixel (NICOLE
+        would also do this itself given a 1-model file, but broadcasting
+        ourselves keeps the guess and observed cubes the same (npix+1) size,
+        matching the warm-up-pixel convention below rather than depending on
+        NICOLE's own model-padding behavior, which hasn't been checked against
+        that convention). observed_iquv is (nx, ny, 4, n_wl), Stokes-major/
+        wavelength-minor per pixel (same layout run_cube returns).
+
+        Same warm-up-pixel trick as run_cube (a distinct, discarded pixel 0
+        prepended so every real pixel has a different-atmosphere predecessor)
+        -- this was only empirically verified necessary for SYNTHESIS mode;
+        inversion's first-iteration synthesis calls may or may not need it.
+        Kept defensively since it costs one extra (discarded) pixel.
+
+        Returns a dict with the retrieved atmosphere ('T' (nx,ny,nz) K,
+        'v_los_kms' (nx,ny,nz), 'b_long_G' (nx,ny,nz)) and the fitted profiles
+        ('fit_iquv' (nx,ny,4,n_wl), for residual/chi^2 checks against
+        observed_iquv). T/v_los/b_long indices into NICOLE's native nicole2.6
+        model-record layout (22 depth-variables/record, variable-major) were
+        verified empirically against a known synthetic atmosphere run through
+        run_cube: T is block 2 (index 2*nz:3*nz), v_los is block 6 (cm/s,
+        divide by 1e5 for km/s), b_long is block 8.
+        """
+        workdir = Path(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        observed_iquv = np.asarray(observed_iquv, dtype=np.float64)
+        nx, ny = observed_iquv.shape[:2]
+        if observed_iquv.shape[2] != 4 or observed_iquv.shape[3] != int(n_wl):
+            raise ValueError(
+                f"observed_iquv must be (nx, ny, 4, {n_wl}) (got {observed_iquv.shape})"
+            )
+        logtau = np.asarray(logtau, dtype=np.float64).reshape(-1)
+        nz = logtau.size
+
+        wl_first = self.cfg.wl_first if wl_first is None else wl_first
+        wl_step_mA = self.cfg.wl_step_mA if wl_step_mA is None else wl_step_mA
+        v_mic_cms = self.cfg.v_mic_cms if v_mic_cms is None else v_mic_cms
+
+        npix = nx * ny
+
+        def _flatten_guess(arr):
+            # Accepts a single (nz,) atmosphere (broadcast to every pixel,
+            # cycle 1) or a per-pixel (nx, ny, nz) atmosphere (chaining a
+            # prior cycle's retrieved result in as this cycle's guess).
+            arr = np.asarray(arr, dtype=np.float64)
+            if arr.shape == (nz,):
+                return np.tile(arr, (npix, 1))
+            if arr.shape == (nx, ny, nz):
+                return arr.reshape(npix, nz)
+            raise ValueError(f"guess array must be ({nz},) or ({nx}, {ny}, {nz}) (got {arr.shape})")
+
+        Tf = _flatten_guess(guess_T)
+        Vf = _flatten_guess(guess_v_los_kms)
+        Bf = _flatten_guess(guess_b_long_G)
+
+        # Guess model cube, prepended with a warm-up pixel (T scaled) distinct
+        # from pixel 0 -- mirrors run_cube's warm-up convention exactly.
+        Tw = np.concatenate([Tf[:1] * 1.05, Tf], axis=0).reshape(1, npix + 1, nz)
+        Vw = np.concatenate([Vf[:1], Vf], axis=0).reshape(1, npix + 1, nz)
+        Bw = np.concatenate([Bf[:1], Bf], axis=0).reshape(1, npix + 1, nz)
+
+        model_path = workdir / "model.model"
+        write_binary_model_cube(
+            model_path,
+            logtau=logtau, T=Tw, v_los_kms=Vw, b_long_G=Bw,
+            v_mic_cms=v_mic_cms, v_mac_cms=self.cfg.v_mac_cms,
+            stray_light=self.cfg.stray_light, el_p_seed=self.cfg.el_p_seed,
+        )
+
+        # Observed profile cube: same (npix+1) sizing, warm-up record reuses
+        # real pixel 0's observed profile (paired with the warm-up model
+        # above; its inversion result is discarded regardless of content).
+        obs_flat = observed_iquv.reshape(npix, 4, int(n_wl))
+        obs_w = np.concatenate([obs_flat[:1], obs_flat], axis=0).reshape(1, npix + 1, 4, int(n_wl))
+        obs_path = workdir / "observed.prof"
+        write_prof_cube(obs_path, obs_w)
+
+        template = self.inversion_template_path.read_text()
+        rendered = template.format(
+            NICOLE_COMMAND=str(self.nicole_command),
+            INPUT_MODEL="model.model",
+            OBSERVED_PROFILES="observed.prof",
+            OUTPUT_PROFILE="profile.pro",
+            OUTPUT_MODEL="model_out.mod",
+            WL_FIRST=f"{wl_first:.4f}",
+            WL_STEP_MA=f"{wl_step_mA:g}",
+            N_WL=int(n_wl),
+            NODES_T=int(nodes_T),
+            NODES_V=int(nodes_V),
+            NODES_BZ=int(nodes_Bz),
+        )
+        (workdir / "NICOLE.input").write_text(rendered)
+        shutil.copyfile(self.lines_path, workdir / "LINES")
+        link = workdir / "run_nicole.py"
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(self.run_nicole_py)
+
+        env = os.environ.copy()
+        result = subprocess.run(
+            [
+                self.cfg.python_for_nicole,
+                "./run_nicole.py",
+                "--nicolecommand=" + str(self.nicole_command),
+                "--modelin=model.model",
+                "--profout=profile.pro",
+            ],
+            cwd=str(workdir),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"NICOLE inversion failed in {workdir} (exit {result.returncode}).\n"
+                f"--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
+            )
+        prof_path = workdir / "profile.pro"
+        mod_path = workdir / "model_out.mod"
+        for p in (prof_path, mod_path):
+            if not p.exists():
+                raise FileNotFoundError(
+                    f"NICOLE did not produce {p}.\n--- STDOUT ---\n{result.stdout}"
+                )
+
+        prof_ny = npix + 1
+        fit_iquv = np.empty((npix, 4, int(n_wl)), dtype=np.float64)
+        seq = 0
+        for p in range(prof_ny):
+            flat = read_prof(
+                str(prof_path), "nicole2.3", 1, prof_ny, int(n_wl), 0, p, sequential=seq
+            )
+            seq = 1
+            if p == 0:
+                continue
+            flat = np.asarray(flat, dtype=np.float64).reshape(int(n_wl), 4)
+            fit_iquv[p - 1] = np.stack(
+                [flat[:, 0], flat[:, 1], flat[:, 2], flat[:, 3]], axis=0
+            )
+        f_handle = getattr(model_prof_tools, "f", None)
+        if f_handle is not None and not f_handle.closed:
+            f_handle.close()
+
+        T_out = np.empty((npix, nz), dtype=np.float64)
+        V_out = np.empty((npix, nz), dtype=np.float64)
+        B_out = np.empty((npix, nz), dtype=np.float64)
+        seq = 0
+        for p in range(prof_ny):
+            data = read_model(str(mod_path), "nicole2.6", 1, prof_ny, nz, 0, p, sequential=seq)
+            seq = 1
+            if p == 0:
+                continue
+            data = np.asarray(data, dtype=np.float64)
+            T_out[p - 1] = data[2 * nz:3 * nz]
+            V_out[p - 1] = data[6 * nz:7 * nz] / 1.0e5  # cm/s -> km/s
+            B_out[p - 1] = data[8 * nz:9 * nz]
+        f_handle = getattr(model_prof_tools, "f", None)
+        if f_handle is not None and not f_handle.closed:
+            f_handle.close()
+
+        return {
+            "T": T_out.reshape(nx, ny, nz),
+            "v_los_kms": V_out.reshape(nx, ny, nz),
+            "b_long_G": B_out.reshape(nx, ny, nz),
+            "fit_iquv": fit_iquv.reshape(nx, ny, 4, int(n_wl)),
+        }
 
     def run_pixels_from_h5(
         self,

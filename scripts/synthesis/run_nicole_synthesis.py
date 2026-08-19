@@ -11,6 +11,7 @@ import h5py
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
+from utils.hinode_wavelengths import N_WL_OBSERVED
 from utils.synthesis import NicoleRunner, SynthesisConfig
 
 
@@ -31,9 +32,13 @@ def main():
                    default=Path("/scratchsan/observatorio/juagudeloo/NICOLE"))
     p.add_argument("--nicole-assets", type=Path,
                    default=Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/nicole_assets"))
-    p.add_argument("--wl-first", type=float, default=6300.796)
-    p.add_argument("--wl-step-mA", type=float, default=21.5)
-    p.add_argument("--n-wl", type=int, default=112)
+    # Default None -> SynthesisConfig derives the grid from the MODEST FITS header
+    # (utils.hinode_wavelengths). Pass these only to deliberately override it; the
+    # old hardcoded 6300.796 / 21.5 defaults were 0.0776 A (~3.7 km/s) off the
+    # observed axis.
+    p.add_argument("--wl-first", type=float, default=None)
+    p.add_argument("--wl-step-mA", type=float, default=None)
+    p.add_argument("--n-wl", type=int, default=N_WL_OBSERVED)
     p.add_argument("--v-mic-cms", type=float, default=1.0e5)
     p.add_argument("--v-mac-cms", type=float, default=0.0)
     p.add_argument("--el-p-seed", type=float, default=1.0)

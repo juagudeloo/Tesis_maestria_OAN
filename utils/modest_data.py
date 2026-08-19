@@ -11,6 +11,12 @@ from scipy.fft import fft2, fftshift, ifft2
 from scipy.ndimage import uniform_filter1d
 
 from utils.cache_manage import ModestDataCache
+from utils.hinode_wavelengths import (
+	N_WL_INVERTED,
+	N_WL_OBSERVED,
+	hinode_wavelength_grid,
+	read_hinode_wavelength_metadata,
+)
 
 
 def transform_modest_stokes_profiles(
@@ -186,31 +192,6 @@ class ModestData:
 		}
 		return self.inverted_profs
 
-	def _read_wavelength_metadata_from_inverted_profs(
-		self,
-		filename: str = "inverted_profs.1.fits",
-	) -> Optional[Tuple[float, float, float]]:
-		"""Return (wl_min_abs, wl_max_abs, wl_ref) in Angstrom from FITS header if present."""
-		path = self.modest_dir / filename
-		if not path.exists():
-			return None
-		try:
-			with fits.open(path) as hdul:
-				hdr = hdul[0].header
-			wl_ref = float(hdr["WLREF"])
-			wl_min = float(hdr["WLMIN"])
-			wl_max = float(hdr["WLMAX"])
-		except Exception:
-			return None
-
-		if not (np.isfinite(wl_ref) and np.isfinite(wl_min) and np.isfinite(wl_max)):
-			return None
-		wl_min_abs = wl_ref + wl_min
-		wl_max_abs = wl_ref + wl_max
-		if not (np.isfinite(wl_min_abs) and np.isfinite(wl_max_abs) and wl_max_abs > wl_min_abs):
-			return None
-		return wl_min_abs, wl_max_abs, wl_ref
-
 	def load_inverted_atmos(self, filename: str = "inverted_atmos.fits") -> np.ndarray:
 		path = self.modest_dir / filename
 		with fits.open(path) as hdul:
@@ -225,29 +206,18 @@ class ModestData:
 		return psf
 
 	def compute_wavelength_arrays(self) -> Tuple[u.Quantity, u.Quantity]:
-		obs_nwl = 112
-		inv_nwl = 250
-		# Use MODEST FITS metadata when available to avoid wavelength-offset bias.
-		meta = self._read_wavelength_metadata_from_inverted_profs()
-		if meta is not None:
-			wl_min_abs, wl_max_abs, wl_ref = meta
-			wl_obs = np.linspace(wl_min_abs, wl_max_abs, obs_nwl, dtype=np.float64)
-			wl_inv = np.linspace(wl_min_abs, wl_max_abs, inv_nwl, dtype=np.float64)
-			print(
-				f"MODEST wavelength axis from FITS header: [{wl_min_abs:.4f}, {wl_max_abs:.4f}] Å (WLREF={wl_ref:.4f})"
-			)
-		else:
-			crval1 = 6302.0
-			cdelt1 = 0.0215
-			crpix1 = 57
-			wl_obs = crval1 + (np.arange(1, obs_nwl + 1) - crpix1) * cdelt1
-			spectral_range = wl_obs[-1] - wl_obs[0]
-			cdelt1_inv = spectral_range / (inv_nwl - 1)
-			crpix1_inv = 125
-			wl_inv = crval1 + (np.arange(1, inv_nwl + 1) - crpix1_inv) * cdelt1_inv
-			print(
-				"MODEST wavelength metadata missing; using fallback Hinode grid assumptions."
-			)
+		# Axis comes from the MODEST FITS header via utils.hinode_wavelengths, the
+		# single source of truth shared with the training/synthesis side. There is
+		# no fallback on purpose: the hardcoded fallback that used to live here
+		# (CRVAL1=6302.0/CDELT1=0.0215/CRPIX1=57) drifted 0.0776 A from the real
+		# header, injecting a spurious ~3.7 km/s blueshift into every model
+		# trained against it.
+		wl_min_abs, wl_max_abs, wl_ref = read_hinode_wavelength_metadata(self.modest_dir)
+		wl_obs = hinode_wavelength_grid(N_WL_OBSERVED, self.modest_dir)
+		wl_inv = hinode_wavelength_grid(N_WL_INVERTED, self.modest_dir)
+		print(
+			f"MODEST wavelength axis from FITS header: [{wl_min_abs:.4f}, {wl_max_abs:.4f}] Å (WLREF={wl_ref:.4f})"
+		)
 
 		self.wl = wl_obs * u.Angstrom
 		self.wl_inv = wl_inv * u.Angstrom

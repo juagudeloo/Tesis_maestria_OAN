@@ -973,3 +973,50 @@ def write_binary_model_cube(
                 rec = np.concatenate(cols)
                 rec = np.concatenate([rec, [float(v_mac_cms), float(stray_light), 0.0]])
                 f.write(struct.pack(rec_fmt, *rec))
+
+
+def write_prof_cube(filepath, iquv):
+    # Write a whole (nx, ny) field of Stokes profiles in NICOLE's native
+    # "nicole2.3bp" binary profile-cube format, for use as inversion mode's
+    # "Observed profiles=" input (the exact inverse of read_prof's nicole2.3
+    # binary branch, and the profile-side counterpart to write_binary_model_cube).
+    #
+    # Record layout (little-endian float64), matching read_prof/check_prof:
+    #   header record: b"nicole2.3bp" padded to 16 bytes, int32 nx, int32 ny,
+    #                  int64 nlam, then zero-padded to a full (4*nlam)-float
+    #                  record (verified against check_prof's filesize check:
+    #                  (4*nlam)*(nx*ny+1)*8 bytes).
+    #   per pixel (iy + ix*ny order): 4*nlam floats, interleaved per
+    #     wavelength as [I, Q, U, V] (matching read_prof's
+    #     .reshape(n_wl, 4) -> stack([:,0],[:,1],[:,2],[:,3]) convention).
+    #
+    # iquv is (nx, ny, 4, n_wl), Stokes-major/wavelength-minor per pixel
+    # (matching NicoleRunner.run_cube's return layout).
+    import struct
+
+    import numpy as np
+    from pathlib import Path
+
+    [int4f, intf, flf] = check_types()
+
+    iquv = np.asarray(iquv, dtype=np.float64)
+    if iquv.ndim != 4 or iquv.shape[2] != 4:
+        raise ValueError(f"iquv must be (nx, ny, 4, n_wl) (got {iquv.shape})")
+    nx, ny, _, nlam = iquv.shape
+
+    sizerec = 4 * nlam  # float64s per record
+
+    filepath = Path(filepath)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    with open(filepath, "wb") as f:
+        header = struct.pack("<16s" + int4f + int4f + intf, b"nicole2.3bp", nx, ny, nlam)
+        f.write(header)
+        pad_bytes = sizerec * 8 - len(header)
+        f.write(b"\x00" * pad_bytes)
+
+        rec_fmt = "<" + str(sizerec) + flf
+        for ix in range(nx):
+            for iy in range(ny):
+                # (4, n_wl) -> (n_wl, 4) -> flat [I0,Q0,U0,V0, I1,Q1,U1,V1, ...]
+                rec = iquv[ix, iy].T.reshape(-1)
+                f.write(struct.pack(rec_fmt, *rec))
