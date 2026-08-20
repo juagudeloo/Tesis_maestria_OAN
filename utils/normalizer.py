@@ -214,7 +214,39 @@ class MhdNormalizer:
         print(f"  Global B1_weight_saturation (P99.5): {self.B1_weight_saturation:.2f} G")
         print(f"  Huber delta:                        {self.huber_delta:.2f} G")
         print(f"  Per-τ B0_transform (P60) range:    [{self.B0_transform_per_tau.min():.2f}, {self.B0_transform_per_tau.max():.2f}] G")
-        
+
+        # Re-derive Bz's mean/std against the FINAL per-τ B0.
+        #
+        # update() accumulates the running moments on asinh(Bz) with a placeholder B0=1,
+        # because the real B0 (the P60 of |Bz|) is only known here. normalize() then applies
+        # asinh(Bz / B0) with the real B0 -- so without this step the stored std belongs to a
+        # different transform than the one it scales, and it is ~3.5x too large. That made
+        # the normalized target span only +/-1.15 instead of +/-4, and since denormalize
+        # inverts through B0*sinh(y*std), it left the mapping violently stiff: at y=1.5,
+        # dB/dy was ~23,000 G per unit, so the network only had to overshoot its training
+        # range slightly to emit hundreds of kG. That is the blow-up the +/-10 kG clip in
+        # denormalize() was put there to contain.
+        #
+        # No second pass over the data is needed: the per-τ histograms above already hold
+        # the |Bz| distribution, and asinh is odd, so E[y] is ~0 for a sign-symmetric field
+        # and E[y^2] follows from |Bz| alone. This reproduces a direct computation to 0.00%.
+        hist_centers = 0.5 * (histogram_edges[:-1] + histogram_edges[1:])
+        self._bz_rescaled_std = np.zeros(self.n_tau, dtype=np.float64)
+        for tau_idx, tau_histogram in enumerate(per_tau_histograms):
+            total = tau_histogram.sum()
+            if total <= 0:
+                self._bz_rescaled_std[tau_idx] = 1.0
+                continue
+            y2 = np.arcsinh(hist_centers / self.B0_transform_per_tau[tau_idx]) ** 2
+            self._bz_rescaled_std[tau_idx] = float(np.sqrt((tau_histogram * y2).sum() / total))
+        self._bz_rescaled_std = np.where(
+            self._bz_rescaled_std > self.epsilon, self._bz_rescaled_std, 1.0
+        )
+        print(
+            f"  Per-τ Bz std (vs final B0):        "
+            f"[{self._bz_rescaled_std.min():.3f}, {self._bz_rescaled_std.max():.3f}]"
+        )
+
         self.final_stats = {}
         for param in ['T', 'Vz', 'Bz']:
             self.final_stats[param] = []
@@ -235,6 +267,13 @@ class MhdNormalizer:
                 if param == 'Bz':
                     stats_entry['type'] = 'asinh'
                     stats_entry['B0_transform'] = float(self.B0_transform_per_tau[tau_idx])
+                    # Swap in the moments that match the actual transform (see the
+                    # re-derivation above). asinh is odd and the field is sign-symmetric,
+                    # so the mean is ~0 by construction; the placeholder-B0 value is kept
+                    # for reference only.
+                    stats_entry['std_placeholder_b0'] = float(std)
+                    stats_entry['mean'] = 0.0
+                    stats_entry['std'] = float(self._bz_rescaled_std[tau_idx])
                 elif param == 'T':
                     stats_entry['type'] = 'standard'
                 else:
