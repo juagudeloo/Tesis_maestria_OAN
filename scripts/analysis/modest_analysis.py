@@ -40,6 +40,7 @@ def main(args):
         device=device,
         output_dir=modest_output_dir,
         experiment_root=args.experiment_root,
+        experiments_base_dir=args.experiments_base_dir,
     )
 
     # Load the trained model checkpoints and determine their shared tau grid.
@@ -163,6 +164,12 @@ if __name__ == "__main__":
         type=str,
         default='experiment_80_to_113',
         help='Experiment folder under output/experiments (e.g., experiment_112_to_113)',
+    )
+    parser.add_argument(
+        '--experiments-base-dir', '--experiments_base_dir', dest='experiments_base_dir',
+        type=str, default=None,
+        help='Directory holding <experiment-root>/ (default: output/experiments). Point at '
+             'output/fine-tune to analyze fine-tuned checkpoints.',
     )
     parser.add_argument(
         '--crop-label',

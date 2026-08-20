@@ -19,6 +19,45 @@ except Exception:
     torch_summary = None
 
 
+# Edges (G) for reporting accuracy against the true |B_LOS| of each pixel. Chosen around the
+# training data's support: MURaM steps 110-130 hold ~25k distinct pixels above 200 G and ~7k
+# above 352 G, but only ~150 above 954 G and none at all above 1500 G, while the sunspot
+# crops reach 3.7 kG. Splitting the metrics here separates "the model was trained for this"
+# from "the model is extrapolating".
+FIELD_STRENGTH_BIN_EDGES_G = (0.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 1500.0, float("inf"))
+
+
+def compute_metrics_by_field_strength(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    field_strength: np.ndarray,
+    edges: tuple = FIELD_STRENGTH_BIN_EDGES_G,
+) -> list[dict]:
+    """Regression metrics computed separately within bins of true |B_LOS|.
+
+    Aggregate metrics hide where a model is reliable: a field of view is dominated by weak
+    pixels, so a good overall correlation can coexist with the strong-field regime being
+    badly wrong. `field_strength` is the reference |B_LOS| per pixel (same shape as y_true),
+    and binning on it -- not on the prediction -- keeps the split independent of the model.
+    """
+    y_true = np.asarray(y_true).ravel()
+    y_pred = np.asarray(y_pred).ravel()
+    strength = np.abs(np.asarray(field_strength).ravel())
+
+    rows = []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        mask = (strength >= lo) & (strength < hi) & np.isfinite(y_true) & np.isfinite(y_pred)
+        n = int(mask.sum())
+        label = f"{lo:.0f}-{hi:.0f}G" if np.isfinite(hi) else f">{lo:.0f}G"
+        if n == 0:
+            rows.append({"field_bin": label, "bin_lo_G": float(lo), "bin_hi_G": float(hi), "n_points": 0})
+            continue
+        metrics = compute_regression_metrics(y_true[mask], y_pred[mask])
+        metrics.update({"field_bin": label, "bin_lo_G": float(lo), "bin_hi_G": float(hi)})
+        rows.append(metrics)
+    return rows
+
+
 def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
     """Compute scalar quality metrics for prediction vs ground truth arrays."""
     y_true = np.asarray(y_true).ravel()
@@ -715,6 +754,8 @@ class ModestDiagnosticPlots:
         self.n_tau_eff = None
         self.tau_indices = None
         self.metrics_rows: list[dict[str, float | str | int]] = []
+        # Same comparisons as metrics_rows, split by the true |B_LOS| of each pixel.
+        self.field_metrics_rows: list[dict[str, float | str | int]] = []
         self.modest_wavelength: np.ndarray | None = None
 
     @staticmethod
@@ -865,7 +906,29 @@ class ModestDiagnosticPlots:
 
         return calibrated, applied_by_pred_idx
 
+    def _write_field_strength_metrics_csv(self, model_type: str, out_root: Path) -> None:
+        """Companion to metrics_summary.csv, split by the true |B_LOS| of each pixel.
+
+        Lets the range of applicability be read off directly: MURaM steps 110-130 have
+        plenty of pixels below ~500 G, few above ~950 G, and none above 1500 G, while the
+        sunspot crops reach 3.7 kG -- so the high-field rows show extrapolation, not skill.
+        """
+        rows = [r for r in self.field_metrics_rows if r.get("model") == model_type]
+        if not rows:
+            return
+        field_path = out_root / "metrics_by_field_strength.csv"
+        fieldnames = [
+            "model", "param", "logtau", "field_bin", "bin_lo_G", "bin_hi_G",
+            "n_points", "corr", "r2", "rmse", "rrmse", "mae", "nmae", "bias",
+        ]
+        with open(field_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"[{model_type}] Range-of-applicability metrics saved to: {field_path}")
+
     def _write_metrics_csv(self, model_type: str, out_root: Path) -> None:
+        self._write_field_strength_metrics_csv(model_type, out_root)
         rows = [r for r in self.metrics_rows if r.get("model") == model_type]
         if not rows:
             return
@@ -1257,6 +1320,21 @@ class ModestDiagnosticPlots:
                         title=plot_title,
                         save_path=joint_dir / f"{param}_tau_{tau_val:+.2f}_jointplot.png",
                     )
+                    # Range-of-applicability breakdown: same comparison, split by the true
+                    # |B_LOS| of each pixel, so the strong-field regime (where MURaM has few
+                    # or no training pixels) is reported separately instead of being diluted
+                    # by the weak-field majority. Reference strength is SPINOR's own B_LOS,
+                    # so the split never depends on the model being evaluated.
+                    if true_map.shape == pred_map.shape:
+                        ref_bz = self.modest_mhd_data["Bz"][:, :, i_mod]
+                        for row in compute_metrics_by_field_strength(true_map, pred_map, ref_bz):
+                            self.field_metrics_rows.append({
+                                "model": model_type,
+                                "param": param,
+                                "logtau": float(tau_val),
+                                **row,
+                            })
+
                     if metrics_out is not None:
                         metrics, comparison = metrics_out
                         cal_info = applied_by_tau_idx.get(i_pred) if param == "T" else None

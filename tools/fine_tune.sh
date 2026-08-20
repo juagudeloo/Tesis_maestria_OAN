@@ -25,6 +25,12 @@
 #   --finetune-epochs N                 Override fine-tuning epoch count (default: 10% of original)
 #   --output-base-dir PATH              Override output directory (default: output/fine-tune/)
 #   --exp-base-dir PATH                 Override experiment checkpoint directory
+#   --steps N [N ...]                   Explicit steps to fine-tune on, e.g. --steps 120 130
+#   --min-step / --max-step / --step-size   Range form of the same override
+#
+# Step selection defaults to the base run's range, read from experiment_config.json next to
+# the checkpoint. Overriding it does NOT refit the normalizers -- those stay the base run's,
+# since the Bz asinh scale is baked into the pretrained weights' output space.
 #
 ################################################################################
 
@@ -51,6 +57,10 @@ VARIATIONS=""
 FINETUNE_EPOCHS=""
 OUTPUT_BASE_DIR=""
 EXP_BASE_DIR=""
+STEPS=()
+MIN_STEP=""
+MAX_STEP=""
+STEP_SIZE=""
 
 # Parse arguments passed via sbatch or command line
 while [[ $# -gt 0 ]]; do
@@ -73,6 +83,26 @@ while [[ $# -gt 0 ]]; do
             ;;
         --exp-base-dir)
             EXP_BASE_DIR="$2"
+            shift 2
+            ;;
+        --steps)
+            # Variadic: consume every following bare number, e.g. --steps 120 130
+            shift
+            while [[ $# -gt 0 && "$1" =~ ^[0-9]+$ ]]; do
+                STEPS+=("$1")
+                shift
+            done
+            ;;
+        --min-step)
+            MIN_STEP="$2"
+            shift 2
+            ;;
+        --max-step)
+            MAX_STEP="$2"
+            shift 2
+            ;;
+        --step-size)
+            STEP_SIZE="$2"
             shift 2
             ;;
         *)
@@ -168,6 +198,21 @@ FINETUNE_CMD="python3 scripts/finetune.py \
 # Add optional fine-tune epochs if specified
 if [ -n "$FINETUNE_EPOCHS" ]; then
     FINETUNE_CMD="$FINETUNE_CMD --finetune-epochs ${FINETUNE_EPOCHS}"
+fi
+
+# Optional step selection. Omitted entirely -> finetune.py replays the base run's range
+# from experiment_config.json.
+if [ "${#STEPS[@]}" -gt 0 ]; then
+    FINETUNE_CMD="$FINETUNE_CMD --steps ${STEPS[*]}"
+fi
+if [ -n "$MIN_STEP" ]; then
+    FINETUNE_CMD="$FINETUNE_CMD --min-step ${MIN_STEP}"
+fi
+if [ -n "$MAX_STEP" ]; then
+    FINETUNE_CMD="$FINETUNE_CMD --max-step ${MAX_STEP}"
+fi
+if [ -n "$STEP_SIZE" ]; then
+    FINETUNE_CMD="$FINETUNE_CMD --step-size ${STEP_SIZE}"
 fi
 
 # Execute fine-tuning script

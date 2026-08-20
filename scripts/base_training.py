@@ -42,6 +42,7 @@ from utils.muram_data import (
     MuramStepDataset,
     build_granulation_polarization_masks,
     build_balanced_region_indices,
+    build_bz_balance_bin_edges,
     build_bz_strength_balanced_indices,
 )
 from utils.modest_data import ModestData
@@ -164,6 +165,17 @@ class TrainingConfig:
     log_bz_bin_balance_stats: bool = True
     bz_balance_mode: str = "mean_abs"  # 'mean_abs', 'max_abs', or 'tau_index'
     bz_balance_bins: int = 12
+    # Equalize bins upward (oversample rare strong-field bins with replacement) rather than
+    # downward to the rarest bin, and cap how far into the tail the scheme tries to balance.
+    # MURaM's |Bz| is heavy-tailed enough that the old downward scheme kept ~96 of 691k
+    # pixels. Cap defaults to the p99.9 of the scores when left as None.
+    bz_balance_oversample: bool = True
+    bz_balance_cap: float | None = None
+    # 'log' (default), 'quantile' or 'linear' -- see build_bz_balance_bin_edges.
+    bz_balance_bin_scale: str = "log"
+    # Ceiling on how far a sparse bin may be inflated by oversampling, as a multiple of its
+    # distinct-pixel count. Bounds memorization of the handful of extreme-field pixels.
+    bz_balance_max_oversample_factor: float = 10.0
     bz_balance_tau_idx: int | None = None
     bz_balance_scope: str = "global"  # 'global' or 'per_step'
     bz_balance_seed: int = 42
@@ -480,6 +492,11 @@ def build_balanced_cache_signature(config: TrainingConfig, train_steps: list[int
         "bz_balance_scope": str(config.bz_balance_scope),
         "bz_balance_mode": str(config.bz_balance_mode),
         "bz_balance_bins": int(config.bz_balance_bins),
+        # Part of the signature: both change which pixels land in the balanced cache.
+        "bz_balance_oversample": bool(config.bz_balance_oversample),
+        "bz_balance_cap": None if config.bz_balance_cap is None else float(config.bz_balance_cap),
+        "bz_balance_max_oversample_factor": float(config.bz_balance_max_oversample_factor),
+        "bz_balance_bin_scale": str(config.bz_balance_bin_scale),
         "bz_balance_tau_idx": None if config.bz_balance_tau_idx is None else int(config.bz_balance_tau_idx),
         "bz_balance_seed": int(config.bz_balance_seed),
         "logtau_values": [float(x) for x in config.get_logtau_values().tolist()],
@@ -974,6 +991,10 @@ def load_and_prepare_step(
                         n_bins=config.bz_balance_bins,
                         score_mode=config.bz_balance_mode,
                         tau_idx=config.bz_balance_tau_idx,
+                        oversample=config.bz_balance_oversample,
+                        balance_cap=config.bz_balance_cap,
+                        max_oversample_factor=config.bz_balance_max_oversample_factor,
+                        bin_scale=config.bz_balance_bin_scale,
                     )
 
                 dataset_cached = MuramStepDataset(
@@ -1077,6 +1098,10 @@ def load_and_prepare_step(
             n_bins=config.bz_balance_bins,
             score_mode=config.bz_balance_mode,
             tau_idx=config.bz_balance_tau_idx,
+            oversample=config.bz_balance_oversample,
+            balance_cap=config.bz_balance_cap,
+            max_oversample_factor=config.bz_balance_max_oversample_factor,
+            bin_scale=config.bz_balance_bin_scale,
         )
 
     # Create dataset
@@ -1257,26 +1282,40 @@ def compute_global_bz_balancing_indices(
         counts_before = {"bin_0": int(scores_global.size)}
         target_per_bin = int(scores_global.size)
     else:
-        bin_edges = np.linspace(score_min, score_max, n_bins + 1, dtype=np.float32)
+        # Shared with the per-step balancer so the two cannot drift apart; see
+        # build_bz_balance_bin_edges for why the bin scale matters on this distribution.
+        bin_edges, cap = build_bz_balance_bin_edges(
+            scores_global,
+            n_bins=n_bins,
+            balance_cap=config.bz_balance_cap,
+            bin_scale=config.bz_balance_bin_scale,
+        )
+
         bin_ids = np.digitize(scores_global, bin_edges[1:-1], right=False)
-        bin_ids = np.clip(bin_ids, 0, n_bins - 1)
+        bin_ids = np.clip(bin_ids, 0, bin_edges.size - 2)
 
         counts_before = {
             f"bin_{bin_idx}": int(np.sum(bin_ids == bin_idx))
-            for bin_idx in range(n_bins)
+            for bin_idx in range(bin_edges.size - 1)
         }
         occupied = [c for c in counts_before.values() if c > 0]
         if not occupied:
             raise RuntimeError("Global Bz balancing found no occupied bins.")
-        target_per_bin = int(min(occupied))
+        target_per_bin = int(np.median(occupied)) if config.bz_balance_oversample else int(min(occupied))
+        target_per_bin = max(1, target_per_bin)
 
         selected_chunks = []
-        for bin_idx in range(n_bins):
+        for bin_idx in range(bin_edges.size - 1):
             idx_bin = np.flatnonzero(bin_ids == bin_idx)
             if idx_bin.size == 0:
                 continue
             if idx_bin.size > target_per_bin:
                 chosen = rng.choice(idx_bin, size=target_per_bin, replace=False)
+            elif config.bz_balance_oversample and idx_bin.size < target_per_bin:
+                # Bound replication: inflating a bin of a few pixels up to the target
+                # teaches the model those specific pixels, not the regime they sit in.
+                allowed = int(min(target_per_bin, idx_bin.size * config.bz_balance_max_oversample_factor))
+                chosen = rng.choice(idx_bin, size=max(allowed, idx_bin.size), replace=True)
             else:
                 chosen = idx_bin
             selected_chunks.append(chosen.astype(np.int64, copy=False))

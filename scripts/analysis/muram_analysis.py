@@ -27,6 +27,7 @@ def main(args):
         device=device,
         output_dir=Path("/scratchsan/observatorio/juagudeloo/MUISCA/images/analysis/muram"),
         experiment_root=args.experiment_root,
+        experiments_base_dir=args.experiments_base_dir,
     )
     model_configs, models, n_tau = pipeline.prepare_models(args.model_types)
     
@@ -127,6 +128,12 @@ if __name__ == "__main__":
         type=str,
         default='experiment_80_to_113',
         help='Experiment folder under output/experiments (e.g., experiment_112_to_113)',
+    )
+    parser.add_argument(
+        '--experiments-base-dir', '--experiments_base_dir', dest='experiments_base_dir',
+        type=str, default=None,
+        help='Directory holding <experiment-root>/ (default: output/experiments). Point at '
+             'output/fine-tune to analyze fine-tuned checkpoints.',
     )
     args = parser.parse_args()
     main(args)

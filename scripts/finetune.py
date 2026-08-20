@@ -42,8 +42,11 @@ from scripts.base_training import (
     preload_balanced_steps_from_cache,
     generate_epoch_diagnostic_plots,
     prepare_modest_epoch_snapshot, generate_epoch_modest_diagnostic_plots,
-    compute_tau_averaged_metrics, compute_modest_tau_averaged_metrics,
 )
+# These live in ablation_study, not base_training -- importing them from base_training made
+# this script fail at import time. ablation_study guards its entrypoint under __main__, so
+# importing it here is side-effect free.
+from scripts.experiments.ablation_study import compute_tau_averaged_metrics
 
 
 def discover_checkpoint_path(experiment_name: str, variation: str, base_exp_dir: Path) -> Path:
@@ -64,19 +67,125 @@ def discover_checkpoint_path(experiment_name: str, variation: str, base_exp_dir:
     )
 
 
-def load_and_adapt_config(checkpoint_path: Path, finetune_epochs_override: int = None) -> tuple:
+# Keys present in experiment_config.json that describe what a run DID rather than how it was
+# configured -- they have no TrainingConfig counterpart and must not be replayed.
+_EXPERIMENT_CONFIG_REPORT_ONLY_KEYS = frozenset({
+    "n_steps_per_epoch",
+    "test_steps",
+    "total_training_pixels_used",
+})
+
+# experiment_config.json records a couple of switches under result-style names that do not
+# match their TrainingConfig attribute. They must still be replayed: apply_region_mask
+# defaults to True, so skipping balanced_region_training left region masking ON for a base
+# run that had it OFF, shrinking the balancing pool from 460,800 to 31,444 pixels.
+_EXPERIMENT_CONFIG_KEY_ALIASES = {
+    "balanced_region_training": "apply_region_mask",
+    "balanced_bz_training": "apply_bz_bin_balance",
+}
+
+_EXPERIMENT_CONFIG_SECTIONS = ("data_config", "training_config", "model_config", "physics_config")
+
+
+def source_step_exists(step: int, config: TrainingConfig) -> bool:
+    """Whether a MURaM step has source data on disk for the config's data source.
+
+    Mirrors the filenames load_source_arrays() resolves (base_training.py): nicole_tau500
+    needs both stokes_<step>_nicole_tau500.npy and atmos_<step>_tau500.npz; muram_legacy
+    needs stokes_<step>.npy.
+    """
+    sim_dir = Path(config.data_path) / "muram-simulation"
+    if config.data_source == "nicole_tau500":
+        return (sim_dir / f"stokes_{step}_nicole_tau500.npy").exists() and (
+            sim_dir / f"atmos_{step}_tau500.npz"
+        ).exists()
+    return (sim_dir / f"stokes_{step}.npy").exists()
+
+
+def available_source_steps(config: TrainingConfig) -> list:
+    """Steps that do have source data on disk, for error messages."""
+    sim_dir = Path(config.data_path) / "muram-simulation"
+    if config.data_source == "nicole_tau500":
+        pattern, strip = "stokes_*_nicole_tau500.npy", "_nicole_tau500"
+    else:
+        pattern, strip = "stokes_*.npy", ""
+    steps = []
+    for path in sim_dir.glob(pattern):
+        token = path.stem.replace("stokes_", "").replace(strip, "")
+        if token.isdigit():
+            steps.append(int(token))
+    return sorted(steps)
+
+
+def load_experiment_config_json(checkpoint_path: Path) -> dict:
+    """Load the experiment_config.json written alongside a trained checkpoint.
+
+    Base training saves the run's real settings here, NOT inside the .pth (final_model.pth
+    holds only model_state_dict plus metric history). Without this, fine-tuning silently
+    falls back to TrainingConfig() defaults -- which means min_step=60/max_step=200/
+    step_size=1, i.e. iterating 141 steps when only a handful were ever synthesized.
+
+    Looks next to the checkpoint first, then one level up (for checkpoints/best_model.pth).
+    Raises rather than returning empty: a silent fallback here produces a wrong run.
+    """
+    candidates = [
+        checkpoint_path.parent / "experiment_config.json",
+        checkpoint_path.parent.parent / "experiment_config.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            with open(candidate, "r") as f:
+                return json.load(f)
+    raise FileNotFoundError(
+        f"No experiment_config.json found next to checkpoint {checkpoint_path}.\n"
+        f"Checked: {[str(c) for c in candidates]}\n"
+        "Fine-tuning needs the base run's real settings (step range, logtau grid, "
+        "bz_balance_tau_idx). Without it the run would fall back to TrainingConfig() "
+        "defaults and iterate steps that were never synthesized."
+    )
+
+
+def apply_experiment_config(config: TrainingConfig, experiment_config: dict) -> dict:
+    """Replay a base run's experiment_config.json onto a TrainingConfig. Returns applied keys."""
+    applied = {}
+    for section in _EXPERIMENT_CONFIG_SECTIONS:
+        for key, value in (experiment_config.get(section) or {}).items():
+            if key in _EXPERIMENT_CONFIG_REPORT_ONLY_KEYS or key in ("checkpoint_dir", "log_dir"):
+                continue
+            attr = _EXPERIMENT_CONFIG_KEY_ALIASES.get(key, key)
+            if not hasattr(config, attr):
+                continue
+            try:
+                setattr(config, attr, value)
+                applied[attr] = value
+            except Exception:
+                pass
+    return applied
+
+
+def load_and_adapt_config(
+    checkpoint_path: Path,
+    finetune_epochs_override: int = None,
+    step_overrides: dict = None,
+    balance_overrides: dict = None,
+) -> tuple:
     """
     Load checkpoint and setup config for fine-tuning with mandatory Bz balancing.
-    
+
     Returns:
         (config, checkpoint_dict) tuple
     """
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
+
     # Initialize fresh config
     config = TrainingConfig()
-    
-    # Apply saved config from checkpoint if available
+
+    # Primary source of truth: the base run's experiment_config.json on disk.
+    experiment_config = load_experiment_config_json(checkpoint_path)
+    applied = apply_experiment_config(config, experiment_config)
+    print(f"✓ Restored {len(applied)} settings from experiment_config.json")
+
+    # Secondary: a config embedded in the checkpoint, if this one happens to carry it.
     saved_config = checkpoint.get('config', {})
     for key, value in saved_config.items():
         if hasattr(config, key) and key not in ['checkpoint_dir', 'log_dir']:
@@ -84,7 +193,7 @@ def load_and_adapt_config(checkpoint_path: Path, finetune_epochs_override: int =
                 setattr(config, key, value)
             except Exception:
                 pass
-    
+
     # ENFORCE Bz balancing (mandatory for fine-tuning, per magnetic_field_balancing_and_finetuning.md)
     # Override any base-training settings to ensure fine-tuning uses balanced data.
     config.apply_bz_bin_balance = True
@@ -92,14 +201,43 @@ def load_and_adapt_config(checkpoint_path: Path, finetune_epochs_override: int =
     config.bz_balance_mode = "tau_index"      # Use absolute Bz at a fixed optical depth
     config.bz_balance_bins = 12               # Standard 12-bin histogram
     config.bz_balance_seed = 42               # Deterministic selection
-    
+    # Bin shape: quantile edges under a cap, equalized upward. Overridable via CLI.
+    balance_overrides = balance_overrides or {}
+    config.bz_balance_bins = balance_overrides.get("bz_balance_bins", config.bz_balance_bins)
+    config.bz_balance_cap = balance_overrides.get("bz_balance_cap", config.bz_balance_cap)
+    config.bz_balance_oversample = balance_overrides.get(
+        "bz_balance_oversample", config.bz_balance_oversample
+    )
+
+    # tau_index mode needs the depth to score at. It comes from the base run (restored
+    # above); if it is missing the balancer would silently fall back to n_tau // 2 -- a
+    # different height than the one the base model was trained to balance on.
+    if getattr(config, "bz_balance_tau_idx", None) is None:
+        raise ValueError(
+            "bz_balance_mode='tau_index' is enforced for fine-tuning, but bz_balance_tau_idx "
+            "is unset. It should come from experiment_config.json's data_config; without it "
+            "the balancer would silently score at n_tau//2 instead of the base run's depth."
+        )
+
+    # Optional step-range override (fine-tune on a different, e.g. stronger-field, range).
+    # Normalizers are deliberately NOT recomputed for this -- see run_fine_tune_single_variation.
+    if step_overrides:
+        for key, value in step_overrides.items():
+            if key == "steps":
+                continue  # explicit list, consumed directly when building the split
+            setattr(config, key, value)
+
     # Calculate fine-tune epochs (default: 10% of original training epochs)
-    original_epochs = saved_config.get('n_epochs', 100)
+    original_epochs = (
+        saved_config.get('n_epochs')
+        or (experiment_config.get('training_config') or {}).get('n_epochs')
+        or 100
+    )
     if finetune_epochs_override is not None:
         config.n_epochs = finetune_epochs_override
     else:
         config.n_epochs = max(5, int(0.1 * original_epochs))
-    
+
     return config, checkpoint
 
 
@@ -109,10 +247,12 @@ def run_fine_tune_single_variation(
     output_base_dir: Path,
     base_exp_dir: Path,
     finetune_epochs_override: int = None,
+    step_overrides: dict = None,
+    balance_overrides: dict = None,
 ):
     """
     Run fine-tuning for a single model variation.
-    
+
     Workflow:
     1. Discover and load trained checkpoint
     2. Load normalizers
@@ -136,23 +276,45 @@ def run_fine_tune_single_variation(
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output dir: {output_dir}")
     
-    # Load normalizers
-    data_path = Path("/scratchsan/observatorio/juagudeloo/MUISCA/data/")
-    mhd_normalizer = MhdNormalizer()
-    mhd_normalizer.load(filepath=data_path / "normalization_stats" / "mhd_normalization.json")
-    stokes_normalizer = StokesNormalizer()
-    stokes_normalizer.load(filepath=data_path / "normalization_stats" / "stokes_normalization.json")
-    print("✓ Normalizers loaded")
-    
-    # Load checkpoint and setup config with mandatory Bz balancing
+    # Load checkpoint and setup config with mandatory Bz balancing. This must happen BEFORE
+    # the normalizers are loaded, since their paths are data-source dependent and come from
+    # the config.
     config, checkpoint_data = load_and_adapt_config(
         checkpoint_path,
-        finetune_epochs_override=finetune_epochs_override
+        finetune_epochs_override=finetune_epochs_override,
+        step_overrides=step_overrides,
+        balance_overrides=balance_overrides,
     )
     print(f"✓ Config prepared: Bz balancing ENFORCED (mandatory for fine-tuning)")
-    print(f"  Original epochs: {checkpoint_data.get('config', {}).get('n_epochs', 'unknown')}")
+    print(f"  Data source:      {config.data_source}")
+    print(f"  Step range:       {config.min_step}..{config.max_step} step {config.step_size}")
+    print(f"  Bz balance depth: tau_idx={config.bz_balance_tau_idx}")
     print(f"  Fine-tune epochs: {config.n_epochs}")
-    
+
+    # Load the SAME normalizers the base run used, resolved from the config so they follow
+    # the data source (mirrors base_training.py). Fine-tuning must never refit these: the Bz
+    # asinh scale B0_transform_per_tau is baked into the pretrained weights' output space
+    # (physical Bz = B0 * sinh(pred * std + mean)), so changing it would silently reinterpret
+    # every prediction. This holds even when --steps selects a different range.
+    data_path = Path(config.data_path)
+    mhd_norm_path = data_path / config.mhd_normalizer_path
+    stokes_norm_path = data_path / config.stokes_normalizer_path
+    mhd_normalizer = MhdNormalizer()
+    mhd_normalizer.load(filepath=mhd_norm_path)
+    stokes_normalizer = StokesNormalizer()
+    stokes_normalizer.load(filepath=stokes_norm_path)
+    print(f"✓ Normalizers loaded from {mhd_norm_path.parent}")
+
+    # The normalizer and the checkpoint must agree on the optical-depth grid, or every
+    # denormalized prediction is meaningless. Mismatches here are silent otherwise.
+    if int(mhd_normalizer.n_tau) != int(config.get_n_logtau()):
+        raise ValueError(
+            f"Normalizer/config optical-depth mismatch: {mhd_norm_path} has n_tau="
+            f"{mhd_normalizer.n_tau}, but the config's logtau grid has {config.get_n_logtau()} "
+            f"levels (data_source={config.data_source}). Recompute normalization stats for "
+            "this data source, or point data_source at the one these stats were built for."
+        )
+
     # Instantiate model
     n_logtau = config.get_n_logtau()
     model = PhysicsInformedMSCNN(
@@ -202,11 +364,28 @@ def run_fine_tune_single_variation(
     logger = MetricsLogger(config.log_dir)
     
     # Setup train/val splits (reuse original split: last 10% for validation)
-    all_steps = list(range(config.min_step, config.max_step + 1, config.step_size))
+    explicit_steps = (step_overrides or {}).get("steps")
+    if explicit_steps:
+        all_steps = sorted(int(s) for s in explicit_steps)
+    else:
+        all_steps = list(range(config.min_step, config.max_step + 1, config.step_size))
+
+    # Fail before training rather than partway through it: only a subset of MURaM steps has
+    # ever been synthesized for a given data source.
+    missing = [s for s in all_steps if not source_step_exists(s, config)]
+    if missing:
+        raise FileNotFoundError(
+            f"Requested fine-tuning steps have no {config.data_source} Stokes on disk: {missing}\n"
+            f"Available under {Path(config.data_path) / 'muram-simulation'}: "
+            f"{available_source_steps(config)}\n"
+            "Synthesize them first, or pass --steps with ones that exist."
+        )
+
     n_val = max(1, len(all_steps) // 10)
     val_steps = sorted(all_steps)[-n_val:]
     train_steps = [s for s in all_steps if s not in val_steps]
-    
+
+    print(f"Steps: {all_steps}")
     print(f"Train steps: {len(train_steps)}, Validation steps: {len(val_steps)}")
     print(f"Fine-tuning for {config.n_epochs} epochs with MANDATORY Bz balancing")
     
@@ -239,7 +418,13 @@ def run_fine_tune_single_variation(
     )
     balanced_mode = choose_balanced_cache_runtime_mode(config, balanced_report["estimated_preload_bytes"])
     preloaded = preload_balanced_steps_from_cache(train_steps, balanced_cache, sig_hash) if balanced_mode == "preload" else None
-    print(f"✓ Balanced cache ready: strategy={balanced_mode}, {balanced_report['total_cache_bytes']/1e9:.2f} GB")
+    # build_or_refresh_balanced_cache reports 'total_disk_bytes'; the old key name here
+    # ('total_cache_bytes') never existed and raised KeyError on every run.
+    print(
+        f"✓ Balanced cache ready: strategy={balanced_mode}, "
+        f"{balanced_report.get('total_disk_bytes', 0)/1e9:.2f} GB, "
+        f"{balanced_report.get('total_selected', 0)} pixels selected"
+    )
     
     # Fine-tuning loop
     print(f"\n{'='*100}")
@@ -318,15 +503,51 @@ def run_fine_tune_single_variation(
     logger.close()
     
     # Save fine-tuned checkpoint
+    # Stringify Paths before saving: config carries checkpoint_dir/log_dir as PosixPath, and
+    # torch.load's weights_only=True default (which the analysis pipeline uses) refuses to
+    # unpickle them, making the resulting checkpoint unreadable by scripts/analysis/*.
+    serializable_config = {
+        key: (str(value) if isinstance(value, Path) else value)
+        for key, value in config.__dict__.items()
+    }
     torch.save(
         {
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'config': config.__dict__,
+            'config': serializable_config,
         },
         output_dir / "final_model.pth"
     )
     print(f"\n✓ Fine-tuned checkpoint saved to {output_dir / 'final_model.pth'}")
+
+    # Mirror the base run's experiment_config.json into the fine-tune output. The analysis
+    # pipeline reads the model's optical-depth grid from data_config.logtau_values here
+    # (utils/analysis.py: get_model_logtau_values); without it every fine-tuned model is
+    # skipped with "optical depth nodes: not found". Start from the base run's file so the
+    # rest of the provenance carries over, then overwrite what fine-tuning changed.
+    finetuned_config = load_experiment_config_json(checkpoint_path)
+    finetuned_config.setdefault("data_config", {}).update({
+        "logtau_values": [float(v) for v in config.get_logtau_values().tolist()],
+        "min_step": int(config.min_step),
+        "max_step": int(config.max_step),
+        "step_size": int(config.step_size),
+        "bz_balance_tau_idx": int(config.bz_balance_tau_idx),
+        "bz_balance_bins": int(config.bz_balance_bins),
+        "bz_balance_scope": str(config.bz_balance_scope),
+        "bz_balance_mode": str(config.bz_balance_mode),
+        "bz_balance_bin_scale": str(config.bz_balance_bin_scale),
+        "bz_balance_oversample": bool(config.bz_balance_oversample),
+        "balanced_bz_training": True,
+        "balanced_region_training": bool(config.apply_region_mask),
+    })
+    finetuned_config.setdefault("training_config", {})["n_epochs"] = int(config.n_epochs)
+    # Leave experiment_name alone: the analysis pipeline uses it as the model-variation key
+    # (it holds "wfa_only", not the experiment folder), so renaming it makes --model-types
+    # stop matching. Record the provenance in a separate field instead.
+    finetuned_config["finetuned_from"] = str(checkpoint_path)
+    with open(output_dir / "experiment_config.json", "w") as f:
+        json.dump(finetuned_config, f, indent=2)
+    print(f"✓ Config written to {output_dir / 'experiment_config.json'}")
     
     print(f"\n✓ Fine-tuning complete in {training_time:.1f} minutes")
     print(f"✓ Results saved to {output_dir}")
@@ -369,27 +590,77 @@ def main():
     parser.add_argument(
         '--output-base-dir',
         type=Path,
-        default=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/fine-tune"),
+        default=ROOT / "output" / "fine-tune",
         help='Base output directory for fine-tune results (default: output/fine-tune/)'
     )
     parser.add_argument(
         '--exp-base-dir',
         type=Path,
-        default=Path("/scratchsan/observatorio/juagudeloo/Tesis_maestria_OAN/output/experiments"),
+        default=ROOT / "output" / "experiments",
         help='Base directory for trained experiment checkpoints (default: output/experiments/)'
     )
-    
+    # Step selection. Default (both unset) replays the base run's range from
+    # experiment_config.json. Overriding does NOT refit the normalizers -- see
+    # run_fine_tune_single_variation.
+    parser.add_argument(
+        '--steps',
+        type=int,
+        nargs='+',
+        default=None,
+        help='Explicit step list to fine-tune on, e.g. --steps 120 130 (overrides the base '
+             'run range; preferred, since only some steps are synthesized)'
+    )
+    parser.add_argument('--min-step', type=int, default=None,
+                        help='Override the base run\'s minimum step (inclusive)')
+    parser.add_argument('--max-step', type=int, default=None,
+                        help='Override the base run\'s maximum step (inclusive)')
+    parser.add_argument('--step-size', type=int, default=None,
+                        help='Override the base run\'s step stride')
+    # Bz balancing shape. Defaults match TrainingConfig: quantile bins capped at the
+    # scores' p99.9, equalized upward by oversampling rare bins.
+    parser.add_argument('--bz-balance-bins', type=int, default=None,
+                        help='Number of |B_LOS| bins to balance across (default: 12)')
+    parser.add_argument('--bz-balance-cap', type=float, default=None,
+                        help='|B_LOS| ceiling in G above which pixels share the top bin '
+                             '(default: p99.9 of the scores). Bounds balancing into the '
+                             'tail, where too few distinct pixels exist to learn from.')
+    parser.add_argument('--no-bz-oversample', action='store_true',
+                        help='Equalize bins downward to the rarest one (original behavior). '
+                             'On MURaM this keeps ~0.01%% of the pool -- almost never what '
+                             'you want.')
+
     args = parser.parse_args()
-    
+
     # Parse requested variations
     variations = [v.strip() for v in args.variations.split(',')]
-    
+
+    # Collect only the step settings actually passed; anything left out keeps the base run's
+    # value from experiment_config.json.
+    step_overrides = {}
+    if args.steps:
+        step_overrides["steps"] = args.steps
+    if args.min_step is not None:
+        step_overrides["min_step"] = args.min_step
+    if args.max_step is not None:
+        step_overrides["max_step"] = args.max_step
+    if args.step_size is not None:
+        step_overrides["step_size"] = args.step_size
+
+    balance_overrides = {}
+    if args.bz_balance_bins is not None:
+        balance_overrides["bz_balance_bins"] = args.bz_balance_bins
+    if args.bz_balance_cap is not None:
+        balance_overrides["bz_balance_cap"] = args.bz_balance_cap
+    if args.no_bz_oversample:
+        balance_overrides["bz_balance_oversample"] = False
+
     print("\n" + "="*100)
     print("MUISCA Model Fine-Tuning Workflow".center(100))
     print("="*100)
     print(f"Experiment: {args.experiment_name}")
     print(f"Variations to fine-tune: {', '.join(variations)}")
     print(f"Fine-tune epochs: {args.finetune_epochs or '10% of original (min 5)'}")
+    print(f"Steps: {'from base run config' if not step_overrides else step_overrides}")
     print(f"Output base: {args.output_base_dir}")
     print("\nNOTE: Bz balancing is MANDATORY during fine-tuning (temporary; V/B balancing planned for future).")
     print("See docs/magnetic_field_balancing_and_finetuning.md for theoretical justification.")
@@ -405,6 +676,8 @@ def main():
                 output_base_dir=args.output_base_dir,
                 base_exp_dir=args.exp_base_dir,
                 finetune_epochs_override=args.finetune_epochs,
+                step_overrides=step_overrides,
+                balance_overrides=balance_overrides,
             )
             results[variation] = result
         except Exception as e:
