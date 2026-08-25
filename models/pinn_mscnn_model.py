@@ -11,6 +11,12 @@ import astropy.units as u
 
 from models.mscnn_model import MSCNNInversionModel
 
+# Overflow guard on the argument of sinh() when denormalizing Bz. float32 sinh overflows
+# around 89; 20 already corresponds to ~|B| = 1e8 G with a typical per-tau B0, which is far
+# beyond anything physical, so this only ever catches a diverging prediction and never
+# interferes with gradients in the range the data occupies.
+_SINH_ARG_LIMIT = 20.0
+
 
 class PhysicsInformedMSCNN(MSCNNInversionModel):
     """MSCNN inversion model with integrated physics-based regularization computed in physical units.
@@ -238,49 +244,90 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         if self.mhd_normalizer is None:
             raise RuntimeError("MHD normalizer not set. Call set_physics_context() first.")
 
-        # Convert to numpy for denormalization
-        predictions_np = predictions.detach().cpu().numpy()
-
-        # Resolve n_tau and split per parameter
-        if predictions_np.ndim == 2:
-            if predictions_np.shape[1] % 3 != 0:
+        # Denormalize with torch ops so autograd can reach the network.
+        #
+        # This used to round-trip through numpy (predictions.detach().cpu().numpy(), then
+        # MhdNormalizer.denormalize, then torch.tensor(...)). torch.tensor() on a numpy array
+        # builds a fresh leaf, so the graph was severed: every physics loss computed from
+        # these values had requires_grad=False and contributed exactly zero gradient. The
+        # terms still appeared in the reported totals, which is why a run could show a large
+        # WFA loss sitting flat for hundreds of epochs while only the MSE improved.
+        #
+        # Per-tau transforms mirror MhdNormalizer.denormalize:
+        #   T, Vz : x * std + mean
+        #   Bz    : B0 * sinh(x * std + mean)      (per-tau asinh scale)
+        if predictions.ndim == 2:
+            if predictions.shape[1] % 3 != 0:
                 raise ValueError(
-                    f"Expected predictions.shape[1] to be divisible by 3, got {predictions_np.shape[1]}"
+                    f"Expected predictions.shape[1] to be divisible by 3, got {predictions.shape[1]}"
                 )
-            n_tau = int(predictions_np.shape[1] // 3)
-            t_norm = predictions_np[:, :n_tau]
-            vz_norm = predictions_np[:, n_tau:2 * n_tau]
-            bz_norm = predictions_np[:, 2 * n_tau:3 * n_tau]
-        elif predictions_np.ndim == 3:
-            if predictions_np.shape[2] != 3:
+            n_tau = int(predictions.shape[1] // 3)
+            t_norm = predictions[:, :n_tau]
+            vz_norm = predictions[:, n_tau:2 * n_tau]
+            bz_norm = predictions[:, 2 * n_tau:3 * n_tau]
+        elif predictions.ndim == 3:
+            if predictions.shape[2] != 3:
                 raise ValueError(
-                    f"Expected predictions.shape[2] == 3 for (batch, n_tau, 3), got {predictions_np.shape[2]}"
+                    f"Expected predictions.shape[2] == 3 for (batch, n_tau, 3), got {predictions.shape[2]}"
                 )
-            n_tau = int(predictions_np.shape[1])
-            t_norm = predictions_np[:, :, 0]
-            vz_norm = predictions_np[:, :, 1]
-            bz_norm = predictions_np[:, :, 2]
+            n_tau = int(predictions.shape[1])
+            t_norm = predictions[:, :, 0]
+            vz_norm = predictions[:, :, 1]
+            bz_norm = predictions[:, :, 2]
         else:
             raise ValueError(
-                f"Unsupported predictions ndim={predictions_np.ndim}; expected 2D or 3D tensor"
+                f"Unsupported predictions ndim={predictions.ndim}; expected 2D or 3D tensor"
             )
 
-        # Per-parameter denormalization (same pipeline as scripts)
-        denorm_np: Dict[str, np.ndarray] = {
-            "T": np.asarray(self.mhd_normalizer.denormalize(t_norm, param="T"), dtype=np.float32),
-            "Vz": np.asarray(self.mhd_normalizer.denormalize(vz_norm, param="Vz"), dtype=np.float32),
-            "Bz": np.asarray(self.mhd_normalizer.denormalize(bz_norm, param="Bz"), dtype=np.float32),
-        }
-
-        # Convert back to torch tensors on correct device
         device = self._get_device()
+        mean, std, b0 = self._denorm_params(n_tau, device, predictions.dtype)
+
         denorm_torch = {
-            'T': torch.tensor(denorm_np['T'], dtype=torch.float32, device=device),
-            'Vz': torch.tensor(denorm_np['Vz'], dtype=torch.float32, device=device),
-            'Bz': torch.tensor(denorm_np['Bz'], dtype=torch.float32, device=device),
+            'T': t_norm * std['T'] + mean['T'],
+            'Vz': vz_norm * std['Vz'] + mean['Vz'],
+            # Bound the sinh argument before exponentiating. This is an overflow guard, not
+            # the physical clip that MhdNormalizer.denormalize applies for reporting: the
+            # bound sits far outside the range the training targets occupy, so gradients stay
+            # alive everywhere a prediction could plausibly land. Clipping in Gauss instead
+            # (as the numpy path does) would zero the gradient for exactly the runaway pixels
+            # the physics terms exist to pull back.
+            'Bz': b0 * torch.sinh(
+                torch.clamp(bz_norm * std['Bz'] + mean['Bz'], min=-_SINH_ARG_LIMIT, max=_SINH_ARG_LIMIT)
+            ),
         }
 
         return denorm_torch
+
+    def _denorm_params(self, n_tau: int, device, dtype):
+        """Per-tau mean/std/B0 as tensors, cached per (n_tau, device, dtype)."""
+        key = (n_tau, str(device), str(dtype))
+        cached = getattr(self, "_denorm_param_cache", {}).get(key)
+        if cached is not None:
+            return cached
+
+        stats = self.mhd_normalizer.final_stats
+        if len(stats['Bz']) != n_tau:
+            raise ValueError(
+                f"Normalizer has {len(stats['Bz'])} tau levels but predictions carry {n_tau}. "
+                "The checkpoint and the normalization statistics describe different grids."
+            )
+
+        def col(param, field):
+            return torch.tensor(
+                [float(stats[param][i][field]) for i in range(n_tau)], dtype=dtype, device=device
+            )
+
+        mean = {p: col(p, 'mean') for p in ('T', 'Vz', 'Bz')}
+        std = {p: col(p, 'std') for p in ('T', 'Vz', 'Bz')}
+        b0 = torch.tensor(
+            [float(self.mhd_normalizer.B0_transform_per_tau[i]) for i in range(n_tau)],
+            dtype=dtype, device=device,
+        )
+
+        if not hasattr(self, "_denorm_param_cache"):
+            self._denorm_param_cache = {}
+        self._denorm_param_cache[key] = (mean, std, b0)
+        return mean, std, b0
 
     def _compute_tau_averaged_blos(self, bz: torch.Tensor) -> torch.Tensor:
         """
