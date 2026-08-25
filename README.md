@@ -11,10 +11,11 @@ A physics-informed deep learning framework for atmospheric inversion of solar sp
 - [Overview](#overview)
 - [Repository Structure](#repository-structure)
 - [Key Components](#key-components)
-- [Getting Started](#getting-started)
-- [Training Pipeline](#training-pipeline)
+- [Getting Started](#getting-started) — the `tools/` workflow, in order
+- [Training Pipeline](#training-pipeline) — synthesis → training → fine-tuning
 - [Notebooks](#notebooks)
-- [Configuration](#configuration)
+- [Configuration](#configuration) — including [Data Sources](#data-sources) and the spectral axis
+- [Outputs](#outputs) — metrics CSVs and range of applicability
 - [Citation](#citation)
 
 ---
@@ -31,6 +32,13 @@ The model combines:
 2. **Physics-based regularization** using weak-field approximation (WFA), Doppler shift, and black-body temperature constraints
 3. **Multi-scale architecture** for capturing features at different spatial scales
 
+Training data is synthesized by running **NICOLE** forward on MURaM atmospheres remapped onto
+the τ₅₀₀ continuum optical-depth scale — the `nicole_tau500` data source, which is the
+default. The alternative, `muram_legacy`, uses the older Rosseland-τ Stokes and a different
+optical-depth grid; it is kept only for reading old checkpoints. The two are deliberately
+isolated from each other (separate caches and normalization statistics), so switching
+sources cannot silently mix data. See [Data Sources](#data-sources).
+
 ---
 
 ## 📁 Repository Structure
@@ -42,27 +50,38 @@ Tesis_maestria_OAN/
 │   └── pinn_mscnn_model.py         # Physics-informed extension
 │
 ├── utils/                           # Utility modules
-│   ├── muram_data.py               # MURaM data loading & preprocessing
-│   ├── modest_data.py              # MODEST data loading & processing
-│   ├── normalizer.py               # Data normalization utilities
+│   ├── muram_data.py               # MURaM data loading, LSF/resample, Bz balancing
+│   ├── modest_data.py              # MODEST/Hinode observation loading & SPINOR atmosphere
+│   ├── hinode_wavelengths.py       # SINGLE source of truth for the Hinode spectral axis
+│   ├── normalizer.py               # MHD (per-τ asinh for Bz) & Stokes normalization
 │   ├── physics_utils.py            # Physics approximations (WFA, Doppler, Temperature)
+│   ├── synthesis.py                # NICOLE bridge: cube synthesis and inversion
+│   ├── pixel_sampling.py           # |B_LOS|-stratified pixel selection for synthesis
 │   ├── analysis.py                 # Shared analysis pipelines & diagnostic plot classes
-│   ├── cache_manage.py             # HDF5 cache for processed steps
-│   └── model_prof_tools.py         # Model profiling & performance tools
+│   ├── cache_manage.py             # HDF5 caches for processed / balanced steps
+│   └── model_prof_tools.py         # NICOLE model & profile binary I/O
 │
 ├── scripts/                         # Training & experiment scripts
-│   ├── base_training.py            # Core training loop with interleaved epoch training
+│   ├── base_training.py            # TrainingConfig + core training loop
 │   ├── compute_normalization_stats.py # Builds MHD/Stokes normalization JSONs
+│   ├── finetune.py                 # Bz-balanced fine-tuning of a trained checkpoint
+│   ├── synthesis/                  # τ₅₀₀ Stokes generation & NICOLE comparison
+│   │   ├── generate_tau500_stokes.py  # Chunked NICOLE synthesis per MURaM step
+│   │   └── merge_tau500_stokes.py     # Reassembles chunks into stokes_<step>_nicole_tau500.npy
 │   └── experiments/
-│       ├── ablation_study.py       # Physics regularization ablation study (5 configurations)
+│       └── ablation_study.py       # Physics regularization ablation study (5 configurations)
 │
 ├── scripts/analysis/                # Post-training diagnostics
 │   ├── muram_analysis.py           # Diagnostic maps on MURaM steps
-│   └── modest_analysis.py          # Diagnostic comparison on MODEST data
+│   ├── modest_analysis.py          # Diagnostic comparison on MODEST data
+│   └── distributions_analysis.py   # Stokes/MHD histogram comparisons
 │
 ├── tools/                           # Run wrappers (HPC/local)
 │   ├── run_experiments.sh          # SLURM-ready ablation launcher
 │   ├── compute_normalization_stats.sh # SLURM-ready normalization launcher
+│   ├── fine_tune.sh                # SLURM-ready Bz-balanced fine-tuning launcher
+│   ├── generate_tau500_stokes.sh   # τ₅₀₀ Stokes generation (multi-step)
+│   ├── run_nicole_synthesis.sh     # MUISCA → NICOLE forward-synthesis comparison
 │   └── generate_analysis.sh        # Unified analysis launcher (MURaM/MODEST)
 │
 ├── notebooks/                       # Jupyter notebooks (documentation & analysis)
@@ -73,22 +92,27 @@ Tesis_maestria_OAN/
 │   ├── 5-mscnn_architecture.ipynb   # Multi-Scale CNN design & architecture
 │   └── 6-pinn_mscnn_model.ipynb     # Physics-Informed training & loss analysis
 │
-├── data/                            # Data directory (not in repo)
-│   ├── muram-simulation/            # MURaM snapshots (T, V, B, Stokes)
-│   ├── normalization_stats/         # Pre-computed normalization statistics
+├── data/                            # Data directory (mostly gitignored)
+│   ├── muram-simulation/            # MURaM snapshots + synthesized τ₅₀₀ Stokes/atmospheres
+│   ├── normalization_stats/         # Per-data-source normalization statistics
+│   │   └── nicole_tau500/           #   isolated from muram_legacy's stats
+│   ├── nicole_assets/               # NICOLE.input templates + LINES atomic data
 │   ├── csv/                         # Opacity tables (kappa.0.dat), etc.
-│   └── hinode-MODEST/               # PSF and spectral response files
+│   └── hinode-MODEST/               # Observations, PSF and spectral response files
 │
 └── output/                          # Training outputs
-    ├── experiments/                 # Ablation study results
-    │   ├── <experiment_name>/
-    │   ├── all_physics_terms/
-    │   ├── wfa_only/
-    │   ├── doppler_only/
-    │   ├── black_body_only/
-    │   └── no_physics/
-  └── region_analysis/             # Saved regional diagnostics (.npy)
+    ├── experiments/<experiment_name>/<variation>/   # Ablation results per variation
+    │       ├── final_model.pth              # weights (+ config, for fine-tune outputs)
+    │       ├── experiment_config.json       # the run's real settings; read by fine-tuning
+    │       └── logs/, checkpoints/
+    ├── fine-tune/<experiment_name>-finetuned/<variation>/
+    └── synthesis/                   # NICOLE forward-synthesis comparisons
 ```
+
+Caches live at the repo root and are gitignored: `.muram_cache_nicole_tau500/` (raw,
+post-resample data — **not** normalized, so it survives a normalization change),
+`.muram_balanced_cache_nicole_tau500/` (post-balancing tensors — these *are* normalized and
+must be cleared when normalization changes), and `.modest_cache/` (observations).
 
 ---
 
@@ -99,7 +123,10 @@ Tesis_maestria_OAN/
 #### `mscnn_model.py`
 - **MSCNNInversionModel**: Base multi-scale convolutional neural network
 - Processes Stokes I and V profiles at multiple scales (1×, 2×, 3×)
-- Architecture: Conv blocks → Multi-scale fusion → Dense layers → Atmospheric stratification output (63 values: 21 per T, V_LOS, B_LOS)
+- Architecture: Conv blocks → Multi-scale fusion → Dense layers → Atmospheric stratification output
+- Output width is `3 × n_logtau`, set by the active optical-depth grid: **135 values (45 per
+  T, V_LOS, B_LOS)** for `nicole_tau500`. Older `muram_legacy` checkpoints have 63 (21 each),
+  so a checkpoint's final-layer shape tells you which grid it was trained on.
 
 #### `pinn_mscnn_model.py`
 - **PhysicsInformedMSCNN**: Extends MSCNN with physics regularization
@@ -230,42 +257,52 @@ pip install torch torchvision astropy scipy tqdm matplotlib
 
 ### Quick Start
 
-1. **Prepare data**:
+The `tools/*.sh` wrappers are the intended entry points: each holds its configuration in a
+block at the top, resolves every path against an absolute `MUISCA_ROOT`, and can be run
+directly or submitted with `sbatch`. Run them in this order.
+
+0. **Synthesize training Stokes** — only needed for MURaM steps that don't have
+   `stokes_<step>_nicole_tau500.npy` yet. Expensive (chunked NICOLE runs), so check first.
    ```bash
-   # Ensure MURaM data is in /data/muram-simulation/
-   # Compute normalization statistics (see notebooks)
+   ./tools/generate_tau500_stokes.sh --submit-waves   # generate
+   ./tools/generate_tau500_stokes.sh --merge          # reassemble chunks
    ```
 
-2. **Train baseline model** (no physics):
+1. **Compute normalization statistics** — required before the first training run, and again
+   whenever the training step list or the normalization code changes.
    ```bash
-   cd scripts/experiments
-   python ablation_study.py \
-       --n_epochs 30 \
-       --learning_rate 1e-3 \
-       --lambda_wfa 0.0 \
-       --lambda_doppler 0.0 \
-       --lambda_temp 0.0 \
-       --min_step 150 \
-       --max_step 155
+   sbatch -M fisica tools/compute_normalization_stats.sh
+   ```
+   Fit these on **training steps only**; including the held-out test step leaks it into the
+   preprocessing the model learns in.
+
+2. **Train** (ablation over the physics terms):
+   ```bash
+   sbatch -M fisica tools/run_experiments.sh
+   ```
+   Or directly, for a short pilot:
+   ```bash
+   python scripts/experiments/ablation_study.py \
+       --experiment_name pilot --min_step 110 --max_step 130 --step_size 10 \
+       --n_epochs 5 --experiments wfa_only
    ```
 
-3. **Train with physics regularization**:
+3. **Fine-tune on Bz-balanced data** (optional; starts from a trained checkpoint):
    ```bash
-   python ablation_study.py \
-       --n_epochs 30 \
-       --learning_rate 1e-3 \
-       --lambda_wfa 0.01 \
-       --lambda_doppler 0.01 \
-       --lambda_temp 0.01 \
-       --min_step 150 \
-       --max_step 155
+   sbatch -M fisica tools/fine_tune.sh \
+       --experiment-name <experiment_name> --variations wfa_only,no_physics \
+       --finetune-epochs 20
    ```
 
-4. **Submit to HPC**:
+4. **Analyze**:
    ```bash
-  # Edit tools/run_experiments.sh to set hyperparameters
-  sbatch tools/run_experiments.sh
+   ./tools/generate_analysis.sh          # edit EXPERIMENT_ROOT/MODEL_TYPES at the top first
    ```
+
+> **Cluster note:** jobs target `-w maxwell` on `--cluster=fisica`. Use
+> `--partition=gpu.cecc` — `cpu.cecc` does not contain maxwell (the job will never schedule)
+> and `boltzmann.cpu` rejects submission with `Invalid qos specification`. Verify a job
+> actually queued with `squeue -M fisica -u $USER`; a rejected `sbatch` leaves no trace.
 
 ---
 
@@ -273,33 +310,39 @@ pip install torch torchvision astropy scipy tqdm matplotlib
 
 ### Training Flow
 
+Offline, once per MURaM step (`scripts/synthesis/`, expensive — cached as `.npy`/`.npz`):
+
 ```
-1. Load MURaM step
-   ↓
-2. Compute optical depth (log τ)
-   ↓
-3. Remap T, V, B to optical depth grid
-   ↓
-4. Generate synthetic Stokes profiles
-   ↓
-5. Apply LSF convolution & wavelength resampling
-   ↓
-6. Compute physics approximations (WFA, Doppler, Temperature)
-   ↓
-7. Normalize inputs/outputs
-   ↓
-8. Create mini-batches (spatial pixels)
-   ↓
-9. Forward pass through PINN
-   ↓
-10. Compute losses:
-    - MSE loss (supervised)
-    - Physics losses (WFA, Doppler, Temperature)
-    ↓
-11. Backward pass & optimize
-    ↓
-12. Repeat for next batch/step/epoch
+MURaM cube (T, Vz, Bz on geometric height)
+   ↓  remap onto the τ₅₀₀ continuum optical-depth grid (45 levels, −3.0 → 1.4)
+   ↓  NICOLE forward synthesis over the whole frame in one invocation
+stokes_<step>_nicole_tau500.npy  +  atmos_<step>_tau500.npz
 ```
+
+Then per training run:
+
+```
+1. Load the synthesized Stokes + atmosphere for a step
+   ↓   (log τ grid is checked against the file; a mismatch raises)
+2. Apply the Hinode LSF convolution
+   ↓
+3. Resample onto the FITS-derived Hinode wavelength axis (112 points)
+   ↓
+4. Compute physics approximations (WFA, Doppler, Temperature)
+   ↓
+5. Normalize — Stokes standardized; Bz through a per-τ asinh transform
+   ↓
+6. Optional pixel selection (region mask and/or |B_LOS|-bin balancing)
+   ↓
+7. Cache to HDF5, then mini-batch over spatial pixels
+   ↓
+8. Forward pass → losses (MSE + physics) → backward → optimize
+   ↓
+9. Interleave the next step; repeat per epoch
+```
+
+Steps 1–5 are `load_and_prepare_step` in `scripts/base_training.py`; `TrainingConfig` in the
+same file holds every hyperparameter and path.
 
 ### Loss Function
 
@@ -307,7 +350,25 @@ pip install torch torchvision astropy scipy tqdm matplotlib
 Total Loss = MSE_loss + λ_WFA × WFA_loss + λ_Doppler × Doppler_loss + λ_Temp × Temp_loss
 ```
 
-- Fixed λ values (e.g., 0.01 for each term)
+- Physics losses are computed in **physical units** (Gauss, km/s, Kelvin), so the λ values
+  are not all the same order — see `tools/run_experiments.sh` for the values actually used.
+- The WFA term can be gated during training (`--wfa-gate-mode plateau|threshold|off`) so it
+  only switches on once the supervised loss has settled.
+
+### Fine-Tuning
+
+`scripts/finetune.py` resumes from a trained checkpoint with **mandatory** |B_LOS| balancing,
+to counter how rare strong fields are in MURaM (~1% of pixels above 350 G, while a sunspot
+crop is well above that at its 90th percentile). Pixels are binned by |B_LOS| at a fixed
+optical depth and the bins are equalized by oversampling the rare ones, with the top edge
+capped and the replication factor bounded so a handful of extreme pixels cannot be copied
+thousands of times.
+
+It reads the base run's `experiment_config.json` from beside the checkpoint (the `.pth` from
+base training carries no config), so the step range, log(τ) grid and balancing depth all come
+from the original run. **Normalizers are never refit** — the Bz asinh scale is baked into the
+pretrained weights' output space, so `--steps` may change which steps are used but never the
+statistics.
 
 ---
 
@@ -397,16 +458,51 @@ temp_physics_mode = 'single_height'     # Target log(τ) = 0.0 (photosphere)
 ### Data Configuration
 
 ```python
+# Data source (TrainingConfig.data_source)
+data_source = "nicole_tau500"   # default; or "muram_legacy" for old checkpoints
+
 # MURaM simulation
-min_step = 60                  # First simulation step
-max_step = 200                 # Last simulation step
+min_step, max_step, step_size = 110, 130, 10   # only synthesized steps are usable
 nx, ny = 480, 480              # Spatial dimensions
 nz = 256                       # Vertical layers
 z_max = 250                    # Limit vertical extent
 
-# Optical depth grid
-logtau_values = np.arange(-2.0, 0.1, 0.1)  # 21 levels
+# Optical depth grid (nicole_tau500): 45 levels, must match the atmos_*_tau500.npz files
+logtau_min, logtau_max, logtau_step = -3.0, 1.4, 0.1
 ```
+
+Only steps that have been synthesized can be trained on. Check with:
+
+```bash
+ls data/muram-simulation/stokes_*_nicole_tau500.npy
+```
+
+`load_source_arrays` refuses to run if the config's log(τ) grid does not match the grid
+stored in `atmos_<step>_tau500.npz`, so a mismatch fails loudly rather than silently
+misaligning the targets.
+
+<a id="data-sources"></a>
+### Data Sources
+
+`nicole_tau500` and `muram_legacy` are kept fully separate so they can never be mixed:
+
+| | `nicole_tau500` (default) | `muram_legacy` |
+|---|---|---|
+| Stokes file | `stokes_<step>_nicole_tau500.npy` | `stokes_<step>.npy` |
+| Atmosphere | `atmos_<step>_tau500.npz` | remapped at load time |
+| log(τ) grid | 45 levels, −3.0 → 1.4 | 21 levels, −2.0 → 0.0 |
+| Cache | `.muram_cache_nicole_tau500/` | `.muram_cache/` |
+| Normalization | `normalization_stats/nicole_tau500/` | `normalization_stats/` |
+
+### Spectral Axis
+
+The Hinode/SOT-SP wavelength axis is derived from the MODEST FITS header
+(`WLREF`/`WLMIN`/`WLMAX`) by `utils/hinode_wavelengths.py`, which is the **only** place it is
+defined. Training profiles are resampled onto exactly the axis the observations are loaded
+on. There is deliberately no fallback — a missing header raises — and
+`StokesData.resample_to_hinode` asserts that the grid in use matches the canonical one.
+Hardcoding `CRVAL1`/`CDELT1`/`CRPIX1` anywhere reintroduces a ~0.078 Å (≈3.7 km/s) offset
+between training and observation.
 
 ---
 
@@ -460,11 +556,24 @@ output/experiments/<experiment_name>/
 
 - **Training loss**: MSE + physics components
 - **Validation loss**: Total loss on held-out steps
-- **Test metrics**:
-  - B_LOS RRMSE (tau-averaged)
-  - V_LOS RRMSE (tau-averaged)
-  - Correlation coefficients
-  - RMSE values
+- **Test metrics**: correlation, RMSE and τ-averaged RRMSE for B_LOS, V_LOS and T
+
+The analysis scripts write two CSVs per model into `images/analysis/.../<variation>/`:
+
+| file | contents |
+|---|---|
+| `metrics_summary.csv` | one row per parameter × log(τ): `corr`, `r2`, `rmse`, `rrmse`, `mae`, `nmae`, `bias` |
+| `metrics_by_field_strength.csv` | the same comparison split into bins of **true \|B_LOS\|** |
+
+The second one exists because aggregate metrics are dominated by the weak-field majority and
+by outliers, which can hide both where the model is reliable and where it is extrapolating.
+Reading `bias` alongside `rmse` is also how you separate a systematic offset from a heavy
+tail: when `bias ≈ mae` the error is almost entirely one-directional, and when the mean and
+median disagree in sign a minority of pixels is driving the aggregate.
+
+Range of applicability worth keeping in mind: MURaM steps 110–130 hold plenty of pixels below
+~500 G, few above ~950 G, and none above ~1500 G, while the Hinode sunspot crops reach ~3.7 kG.
+Rows above that range describe extrapolation, not skill.
 
 ---
 
@@ -479,7 +588,8 @@ To add new physics terms or modify the architecture:
 
 2. **Architecture changes**:
    - Modify `models/mscnn_model.py` or `models/pinn_mscnn_model.py`
-   - Ensure output dimension remains (batch_size, 63)
+   - Keep the output dimension at `3 × n_logtau` (135 for the current τ₅₀₀ grid), derived
+     from the config rather than hardcoded
 
 3. **New experiments**:
    - Create script in `scripts/experiments/`
