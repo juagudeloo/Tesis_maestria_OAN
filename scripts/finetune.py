@@ -46,6 +46,14 @@ from scripts.base_training import (
 # These live in ablation_study, not base_training -- importing them from base_training made
 # this script fail at import time. ablation_study guards its entrypoint under __main__, so
 # importing it here is side-effect free.
+import mlflow
+import mlflow.pytorch
+from mlflow.models import ModelSignature
+from mlflow.types import Schema, TensorSpec
+
+from utils.hinode_wavelengths import N_WL_OBSERVED
+from utils.mlflow_utils import default_tracking_uri, finite_metrics, flatten_params
+from scripts.base_training import set_global_seed
 from scripts.experiments.ablation_study import compute_tau_averaged_metrics
 
 
@@ -315,6 +323,41 @@ def run_fine_tune_single_variation(
             "this data source, or point data_source at the one these stats were built for."
         )
 
+    # Same reproducibility guarantee as base training: seed before the model exists so the
+    # optimizer state and batch order are deterministic across fine-tuning runs.
+    set_global_seed(config.seed)
+
+    # Nested run under the fine-tuning parent, mirroring the ablation's layout so base and
+    # fine-tuned runs are comparable in the same UI. Params are logged from the config that
+    # was actually resolved (base run's experiment_config.json plus the fine-tuning
+    # overrides), not from the CLI, so what is recorded is what ran.
+    mlflow.start_run(run_name=variation, nested=True)
+    mlflow.set_tags({
+        "stage": "finetune",
+        "finetuned_from": str(checkpoint_path),
+        "base_experiment": experiment_name,
+    })
+    mlflow.log_params(flatten_params({
+        "data_source": config.data_source,
+        "min_step": config.min_step,
+        "max_step": config.max_step,
+        "step_size": config.step_size,
+        "seed": config.seed,
+        "n_epochs": config.n_epochs,
+        "learning_rate": config.learning_rate,
+        "bz_balance": {
+            "scope": config.bz_balance_scope,
+            "mode": config.bz_balance_mode,
+            "bins": config.bz_balance_bins,
+            "tau_idx": config.bz_balance_tau_idx,
+            "bin_scale": config.bz_balance_bin_scale,
+            "oversample": config.bz_balance_oversample,
+            "cap": config.bz_balance_cap,
+            "max_oversample_factor": config.bz_balance_max_oversample_factor,
+        },
+        "logtau_values": [float(v) for v in config.get_logtau_values().tolist()],
+    }))
+
     # Instantiate model
     n_logtau = config.get_n_logtau()
     model = PhysicsInformedMSCNN(
@@ -496,9 +539,19 @@ def run_fine_tune_single_variation(
             v_corr = test_metrics.get('vlos_correlation', 0)
             t_corr = test_metrics.get('temp_correlation', 0)
             print(f"  Test correlation: B={b_corr:.4f}, V={v_corr:.4f}, T={t_corr:.4f}")
+            mlflow.log_metrics(finite_metrics({
+                "test_blos_corr": test_metrics.get('blos_correlation'),
+                "test_vlos_corr": test_metrics.get('vlos_correlation'),
+                "test_temp_corr": test_metrics.get('temp_correlation'),
+                "test_blos_rrmse": test_metrics.get('blos_rrmse_tau_avg'),
+                "test_vlos_rrmse": test_metrics.get('vlos_rrmse_tau_avg'),
+                "test_temp_rrmse": test_metrics.get('temp_rrmse_tau_avg'),
+            }), step=epoch + 1)
         except Exception as e:
             print(f"  Warning: Test metrics failed: {e}")
-    
+
+        mlflow.log_metrics(finite_metrics({"train_loss": train_loss}), step=epoch + 1)
+
     training_time = (time.time() - start_time) / 60
     logger.close()
     
@@ -548,6 +601,32 @@ def run_fine_tune_single_variation(
     with open(output_dir / "experiment_config.json", "w") as f:
         json.dump(finetuned_config, f, indent=2)
     print(f"✓ Config written to {output_dir / 'experiment_config.json'}")
+
+    # Close out the run. Same as base training: the checkpoint also lives in output/, which
+    # is what the analysis pipeline resolves by path; MLflow gets an additional copy. Pickle
+    # flavor because torch.export cannot trace MultiScaleFeatureMapping.
+    mlflow.log_artifact(str(output_dir / "experiment_config.json"))
+    mlflow.log_metrics(finite_metrics({
+        "final_train_loss": train_loss_history[-1] if train_loss_history else float("nan"),
+        "training_time_minutes": training_time,
+    }))
+    if config.log_dir and Path(config.log_dir).exists():
+        mlflow.log_artifacts(str(config.log_dir), artifact_path="logs")
+    mlflow.pytorch.log_model(
+        model,
+        name="model",
+        input_example=np.zeros((1, config.in_channels, N_WL_OBSERVED), dtype=np.float32),
+        signature=ModelSignature(
+            inputs=Schema([
+                TensorSpec(np.dtype(np.float32), (-1, config.in_channels, N_WL_OBSERVED), "stokes")
+            ]),
+            outputs=Schema([
+                TensorSpec(np.dtype(np.float32), (-1, 3 * n_logtau), "mhd_stratification")
+            ]),
+        ),
+        serialization_format="pickle",
+    )
+    mlflow.end_run()
     
     print(f"\n✓ Fine-tuning complete in {training_time:.1f} minutes")
     print(f"✓ Results saved to {output_dir}")
@@ -668,22 +747,35 @@ def main():
     
     # Fine-tune each requested variation
     results = {}
-    for variation in variations:
-        try:
-            result = run_fine_tune_single_variation(
-                experiment_name=args.experiment_name,
-                variation=variation,
-                output_base_dir=args.output_base_dir,
-                base_exp_dir=args.exp_base_dir,
-                finetune_epochs_override=args.finetune_epochs,
-                step_overrides=step_overrides,
-                balance_overrides=balance_overrides,
-            )
-            results[variation] = result
-        except Exception as e:
-            print(f"\n✗ ERROR fine-tuning '{variation}': {e}")
-            import traceback
-            traceback.print_exc()
+    # One MLflow parent run for the whole fine-tuning workflow, with a nested child per
+    # variation -- same layout as the ablation, so base and fine-tuned runs sit side by side.
+    mlflow.set_tracking_uri(default_tracking_uri())
+    mlflow.set_experiment(f"{args.experiment_name}-finetuned")
+    print(f"MLflow tracking to {default_tracking_uri()}")
+
+    with mlflow.start_run(run_name=f"{args.experiment_name}-finetune"):
+        for variation in variations:
+            try:
+                result = run_fine_tune_single_variation(
+                    experiment_name=args.experiment_name,
+                    variation=variation,
+                    output_base_dir=args.output_base_dir,
+                    base_exp_dir=args.exp_base_dir,
+                    finetune_epochs_override=args.finetune_epochs,
+                    step_overrides=step_overrides,
+                    balance_overrides=balance_overrides,
+                )
+                results[variation] = result
+            except Exception as e:
+                print(f"\n✗ ERROR fine-tuning '{variation}': {e}")
+                import traceback
+                traceback.print_exc()
+                # Close the variation's nested run so it is not left RUNNING in the UI.
+                # MLflow keeps active runs on a stack, so a dangling one would swallow the
+                # next variation's logging. Guarded to the failure path only: on success the
+                # run is already closed, and the active run here would be the PARENT.
+                if mlflow.active_run() is not None:
+                    mlflow.end_run(status="FAILED")
     
     print("\n" + "="*100)
     print("Fine-Tuning Workflow Summary".center(100))

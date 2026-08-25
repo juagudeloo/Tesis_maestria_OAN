@@ -179,7 +179,12 @@ class TrainingConfig:
     bz_balance_tau_idx: int | None = None
     bz_balance_scope: str = "global"  # 'global' or 'per_step'
     bz_balance_seed: int = 42
-    
+
+    # Seed for weight initialization and batch shuffling (distinct from bz_balance_seed,
+    # which only governs pixel selection). Held fixed across ablation variations so the arms
+    # differ by their physics terms and not by where they started -- see set_global_seed.
+    seed: int = 42
+
     # Epoch diagnostics (image + scatter evolution)
     enable_epoch_plots: bool = True
     epoch_plot_step: int | None = None  # If None, use first validation step
@@ -461,6 +466,24 @@ class MetricsLogger:
     
     def __del__(self):
         self.close()
+
+def set_global_seed(seed: int) -> None:
+    """Seed Python, NumPy and torch so a run starts from a reproducible state.
+
+    Call this before building the model. Weight initialization and DataLoader shuffling both
+    draw from torch's global RNG, so without it every ablation variation starts from
+    different weights and sees batches in a different order: the arms then differ by
+    initialization noise on top of whatever the physics terms do, which is exactly the
+    variance an ablation is supposed to exclude. Variations run sequentially in one process,
+    so each consumes the RNG stream the previous one left behind -- reseeding per variation,
+    not once at startup, is what makes them comparable.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def build_cache_config_signature(config: TrainingConfig) -> dict:
     """Shared cache-signature contract across training/ablation/analysis."""

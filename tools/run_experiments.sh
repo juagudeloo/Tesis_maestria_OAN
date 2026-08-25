@@ -106,7 +106,11 @@ MODEST_DOWNSAMPLE_PREDICTION_INPUT=1
 
 # Experiments to run
 # Options: all, all_physics_terms, wfa_only, doppler_only, black_body_only, no_physics
-EXPERIMENTS="no_physics wfa_only"
+# Order matters for how soon you learn something: variations run sequentially, ~14 h each at
+# 1000 epochs. wfa_only goes first because it is the one under question -- its WFA gate opens
+# around epoch 40, so the physics term's effect on the MSE is visible within the first hour
+# instead of after no_physics has finished.
+EXPERIMENTS="wfa_only no_physics"
 
 # Region-mask balancing during training (ablation study)
 # 1 = apply balanced region mask, 0 = disable mask
@@ -130,6 +134,9 @@ BZ_BALANCE_BINS=12
 BZ_BALANCE_LOGTAU=0.0
 # Random seed for deterministic balanced pixel selection
 BZ_BALANCE_SEED=42
+# Seed for weight init + shuffling. Same value across variations keeps the ablation arms
+# comparable; change it to measure run-to-run variance.
+SEED=42
 
 # Training dataset histogram diagnostics (range-of-applicability)
 # 1 = generate train-split histograms for T, Vz, Bz; 0 = disable
@@ -172,6 +179,7 @@ python3 "${MUISCA_ROOT}/scripts/experiments/ablation_study.py" \
     --bz-balance-bins "${BZ_BALANCE_BINS}" \
     --bz-balance-logtau "${BZ_BALANCE_LOGTAU}" \
     --bz-balance-seed "${BZ_BALANCE_SEED}" \
+    --seed "${SEED}" \
     --blos_physics_mode "${BLOS_MODE}" \
     --blos_target_logtau "${BLOS_TARGET_LOGTAU}" \
     --vlos_physics_mode "${VLOS_MODE}" \
