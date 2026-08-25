@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Absolute project root. Everything below addresses the repo through it, so this script
+# can be submitted or invoked from any working directory -- including from tools/ itself,
+# which keeps SLURM from staging the whole repo just to run one job.
+MUISCA_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA"
+cd "${MUISCA_ROOT}" || exit 1
+
 # ==============================================================================
 # ANALYSIS CONFIGURATION
 # ==============================================================================
@@ -309,7 +315,7 @@ fi
 # ==============================================================================
 
 if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "muram" ]]; then
-  python3 ./scripts/analysis/muram_analysis.py \
+  python3 "${MUISCA_ROOT}/scripts/analysis/muram_analysis.py" \
     --cache-dir "${CACHE_DIR}" \
     --step-to-plot "${STEP_TO_PLOT}" \
     --experiment-root "${EXPERIMENT_ROOT}" \
@@ -317,7 +323,7 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "muram" ]]; then
 fi
 
 if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
-  python3 ./scripts/analysis/modest_analysis.py \
+  python3 "${MUISCA_ROOT}/scripts/analysis/modest_analysis.py" \
     ${CROPPED_REGION_FLAG} \
     --crop-bounds "${CROP_BOUNDS[@]}" \
     ${POLARIZATION_MASK_FLAG} \
@@ -337,7 +343,7 @@ if [[ "${RUN_TARGET}" == "both" || "${RUN_TARGET}" == "modest" ]]; then
 fi
 
 if [[ "${RUN_TARGET}" == "distributions" ]]; then
-  python3 ./scripts/analysis/distributions_analysis.py \
+  python3 "${MUISCA_ROOT}/scripts/analysis/distributions_analysis.py" \
     ${CROPPED_REGION_FLAG} \
     --crop-bounds "${CROP_BOUNDS[@]}" \
     ${POLARIZATION_MASK_FLAG} \

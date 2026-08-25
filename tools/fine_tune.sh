@@ -189,7 +189,7 @@ echo ""
 ################################################################################
 
 # Build Python command with optional arguments
-FINETUNE_CMD="python3 scripts/finetune.py \
+FINETUNE_CMD="python3 ${PROJECT_ROOT}/scripts/finetune.py \
     --experiment-name '${EXPERIMENT_NAME}' \
     --variations '${VARIATIONS}' \
     --output-base-dir '${OUTPUT_BASE_DIR}' \

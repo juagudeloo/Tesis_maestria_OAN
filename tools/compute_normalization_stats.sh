@@ -6,7 +6,8 @@
 #SBATCH --job-name=comp_norm         #Nombre del Trabajo
 #SBATCH --cluster=fisica           #nombre de los cluster a donde envia a procesar
 #SBATCH -wmaxwell               #Nombre del nodo a usar (opcional)
-#SBATCH --partition=cpu.cecc            #Particion a usar (no necesita GPU)
+#SBATCH --partition=gpu.cecc            #Particion que contiene maxwell. cpu.cecc NO lo
+                                        #contiene, y boltzmann.cpu rechaza con "Invalid qos".
 ##SBATCH --time=1-01:00:00       #Tiempo que usara los recursos(--time=DD-:HH:MM:SS)
 #SBATCH --nodes=1                       #Numberode nodos a usar
 #SBATCH --ntasks=1               #CPU por tarea >1 si usa multihilado(threads)
@@ -21,7 +22,11 @@ module purge
 module load envs/anaconda3
 conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
-cd /scratchsan/observatorio/juagudeloo/MUISCA
+# Absolute project root. Everything below addresses the repo through it, so this script can
+# be submitted from anywhere -- including `cd tools && sbatch compute_normalization_stats.sh`,
+# which keeps SLURM from staging the whole repo just to run one job.
+MUISCA_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA"
+cd "${MUISCA_ROOT}" || exit 1
 
 # ==============================================================================
 # NORMALIZATION STATS CONFIGURATION
@@ -33,7 +38,9 @@ DATA_SOURCE="nicole_tau500"
 # Explicit step list -- overrides MIN_STEP/MAX_STEP scanning below. Leave
 # empty (STEPS=()) to fall back to scanning MIN_STEP..MAX_STEP instead (e.g.
 # for a muram_legacy full-range run).
-STEPS=(110 120 130 198)
+# Training steps only. 198 is the held-out OOD test step (ablation_study.py), so fitting
+# normalization on it would leak test data into the preprocessing the model learns in.
+STEPS=(110 120 130)
 MIN_STEP=60
 MAX_STEP=200
 SAVE_INTERVAL=20
@@ -74,7 +81,7 @@ IC_CONT_INDICES=(0 1 2 3)
 # RUN
 # ==============================================================================
 
-CMD=(python3 ./scripts/compute_normalization_stats.py
+CMD=(python3 "${MUISCA_ROOT}/scripts/compute_normalization_stats.py"
     --data-source "${DATA_SOURCE}"
     --save_interval "${SAVE_INTERVAL}"
 )

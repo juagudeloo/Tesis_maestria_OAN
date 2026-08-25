@@ -22,7 +22,11 @@ module purge
 module load envs/anaconda3
 conda activate /homes/observatorio/juagudeloo/.conda/envs/pytorch_jupyter
 
-##cd $SCRATCH_DIR ##ehjecutar en  /scratchsan
+# Absolute project root. Everything below addresses the repo through it, so this script can
+# be submitted from anywhere -- including `cd tools && sbatch run_experiments.sh`, which
+# keeps SLURM from staging the whole repo just to run one job.
+MUISCA_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA"
+cd "${MUISCA_ROOT}" || exit 1
 
 # ==============================================================================
 # EXPERIMENT CONFIGURATION
@@ -137,7 +141,7 @@ TRAINING_HIST_MAX_SAMPLES=400000
 # RUN EXPERIMENT
 # ==============================================================================
 
-python3 ./scripts/experiments/ablation_study.py \
+python3 "${MUISCA_ROOT}/scripts/experiments/ablation_study.py" \
     --data-source "${DATA_SOURCE}" \
     --n_epochs "${N_EPOCHS}" \
     --min_step "${MIN_STEP}" \

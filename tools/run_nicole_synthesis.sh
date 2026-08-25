@@ -120,7 +120,8 @@ fi
 
 # ==============================================================================
 
-cd /scratchsan/observatorio/juagudeloo/MUISCA
+MUISCA_ROOT="/scratchsan/observatorio/juagudeloo/MUISCA"
+cd "${MUISCA_ROOT}" || exit 1
 
 SOURCE_ARGS=(--source "${SOURCE}")
 if [[ "${SOURCE}" == "muram" ]]; then
@@ -171,7 +172,7 @@ for MODEL_TYPE in "${MODEL_TYPES[@]}"; do
         --modest-cache-dir "${MODEST_CACHE_DIR}"
       )
     fi
-    python scripts/synthesis/sample_pixels.py "${SAMPLE_ARGS[@]}"
+    python "${MUISCA_ROOT}/scripts/synthesis/sample_pixels.py" "${SAMPLE_ARGS[@]}"
 
     SELECTED_JSON="${SAMPLE_OUT_DIR}/pixel_selection/selected_pixels.json"
     mapfile -t RUN_PIXELS < <(python -c "
@@ -206,13 +207,13 @@ for p in data['pixels']:
       --modest-cache-dir "${MODEST_CACHE_DIR}"
     )
   fi
-  python scripts/synthesis/export_predictions.py "${EXPORT_ARGS[@]}"
+  python "${MUISCA_ROOT}/scripts/synthesis/export_predictions.py" "${EXPORT_ARGS[@]}"
 
   PRED_H5="${REGION_OUT_DIR}/predictions.h5"
 
   echo
   echo "=== Step 2: run NICOLE synthesis ==="
-  python scripts/synthesis/run_nicole_synthesis.py \
+  python "${MUISCA_ROOT}/scripts/synthesis/run_nicole_synthesis.py" \
     --predictions-h5 "${PRED_H5}" \
     --nicole-root "${NICOLE_ROOT}" \
     --nicole-assets "${NICOLE_ASSETS}"
@@ -221,7 +222,7 @@ for p in data['pixels']:
 
   echo
   echo "=== Step 3: compare (single model) ==="
-  python scripts/synthesis/compare_synthesis.py \
+  python "${MUISCA_ROOT}/scripts/synthesis/compare_synthesis.py" \
     --predictions-h5 "${PRED_H5}" \
     --syntheses-h5 "${SYNTH_H5}"
 
@@ -244,11 +245,11 @@ if [ "${#MODEL_TYPES[@]}" -ge 2 ]; then
     "${MODEL_TYPE_ARGS[@]}"
   )
   [[ "${SOURCE}" == "modest" ]] && COMPARE_ARGS+=(--region-label "${REGION_LABEL}")
-  python scripts/synthesis/compare_models.py "${COMPARE_ARGS[@]}"
+  python "${MUISCA_ROOT}/scripts/synthesis/compare_models.py" "${COMPARE_ARGS[@]}"
 
   echo
   echo "################################################################"
   echo "# Step 5: aggregate distribution comparison (aggregate_plots/, violin tier)"
   echo "################################################################"
-  python scripts/synthesis/aggregate_comparison.py "${COMPARE_ARGS[@]}"
+  python "${MUISCA_ROOT}/scripts/synthesis/aggregate_comparison.py" "${COMPARE_ARGS[@]}"
 fi
