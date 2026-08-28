@@ -462,6 +462,36 @@ class ExperimentTracker:
     def __init__(self, output_dir: Path):
         self.output_dir = output_dir
         self.results = {}
+        self._load_existing_results()
+
+    def _load_existing_results(self):
+        """Seed results with variations already stored under this experiment name.
+
+        Each ablation arm takes hours, so they are often run in separate submissions --
+        wfa_only and no_physics first, doppler_only and black_body_only later. Without this,
+        the second submission would overwrite experiment_results.json and the comparison
+        plots with only its own arms: the per-variation checkpoints survive (they live in
+        their own subdirectories) but the summary that compares them does not. Loading first
+        means a later run extends the experiment instead of truncating it.
+
+        Arms re-run in the current process overwrite their stored entry, which is what you
+        want -- the newest run of a variation wins. Settings for each arm remain recoverable
+        from its own experiment_config.json.
+        """
+        results_path = self.output_dir / "experiment_results.json"
+        if not results_path.exists():
+            return
+        try:
+            with open(results_path, "r") as f:
+                stored = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"⚠ Could not read existing {results_path} ({exc}); starting fresh.")
+            return
+        stored.pop("__metadata__", None)
+        if stored:
+            self.results.update(stored)
+            print(f"Loaded {len(stored)} existing variation(s) from {results_path.name}: "
+                  f"{', '.join(stored)}")
     def add_experiment(self, name: str, metrics: dict):
         """Add results from one experimental condition."""
         self.results[name] = metrics
@@ -1343,12 +1373,12 @@ def run_single_experiment(
     print(f"Temperature physics mode: {config.temp_physics_mode}")
     if config.temp_physics_mode == 'single_height':
         print(f"Temperature target log(tau): {config.temp_target_logtau}")
-    print(f"WFA gate mode: {config.wfa_gate_mode}")
+    print(f"Physics gate mode: {config.wfa_gate_mode}")
     if config.wfa_gate_mode == 'threshold':
-        print(f"WFA gate threshold: {config.wfa_gate_threshold}")
+        print(f"Physics gate threshold: {config.wfa_gate_threshold}")
     elif config.wfa_gate_mode == 'plateau':
         print(
-            f"WFA gate plateau: patience={config.wfa_gate_patience}, "
+            f"Physics gate plateau: patience={config.wfa_gate_patience}, "
             f"min_delta={config.wfa_gate_min_delta}, warmup={config.wfa_gate_warmup_epochs}"
         )
     print(f"Learning rate: {config.learning_rate}")
@@ -1601,9 +1631,9 @@ def run_single_experiment(
     for epoch in range(config.n_epochs):
         with timer():
             print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
-            train_wfa_enabled = bool(wfa_gate_state.get('enabled', True))
-            train_wfa_enabled_history.append(train_wfa_enabled)
-            print(f"  Train-time WFA enabled: {train_wfa_enabled}")
+            train_physics_enabled = bool(wfa_gate_state.get('enabled', True))
+            train_wfa_enabled_history.append(train_physics_enabled)
+            print(f"  Train-time physics enabled: {train_physics_enabled}")
             
             # Use the shared train_epoch function with cache
             epoch_metrics = train_epoch(
@@ -1617,7 +1647,7 @@ def run_single_experiment(
                 logger=logger,
                 n_steps_per_epoch=n_steps_per_epoch,
                 cache=cache,
-                enable_wfa=train_wfa_enabled,
+                enable_physics=train_physics_enabled,
                 global_bz_selection_indices=global_bz_selection_indices,
                 global_bz_balance_metadata=global_bz_balance_metadata,
                 balanced_cache=balanced_cache if balanced_runtime_mode == "disk" else None,
@@ -1651,7 +1681,7 @@ def run_single_experiment(
             if wfa_gate_triggered:
                 wfa_gate_trigger_epoch = int(wfa_gate_state.get('trigger_epoch') or (epoch + 1))
                 wfa_gate_trigger_reason = wfa_gate_reason
-                print(f"  WFA gate triggered at epoch {wfa_gate_trigger_epoch}: {wfa_gate_reason}")
+                print(f"  Physics gate triggered at epoch {wfa_gate_trigger_epoch}: {wfa_gate_reason}")
             
             # Validation
             avg_val_loss = validate(
@@ -2232,7 +2262,7 @@ def main():
                        help='Minimum epoch train MSE improvement to reset WFA plateau counter')
     parser.add_argument('--wfa-gate-warmup-epochs', '--wfa_gate_warmup_epochs', dest='wfa_gate_warmup_epochs',
                        type=int, default=0,
-                       help='Minimum number of epochs before WFA gate can activate')
+                       help='Minimum number of epochs before the physics gate can activate (gates WFA, Doppler and temperature together)')
 
     args = parser.parse_args()
 
@@ -2317,12 +2347,12 @@ def main():
     print(f"Stokes mult factor: {args.stokes_mult_factor}")
     print(f"Stokes I_c mode:    {args.stokes_ic_mode}")
     print(f"MODEST pred input:  {'downsampled' if args.modest_downsample_prediction_input else 'upsampled'}")
-    print(f"WFA gate mode:      {args.wfa_gate_mode}")
+    print(f"Physics gate mode:      {args.wfa_gate_mode}")
     if args.wfa_gate_mode == 'threshold':
-        print(f"WFA gate threshold: {args.wfa_gate_threshold}")
+        print(f"Physics gate threshold: {args.wfa_gate_threshold}")
     elif args.wfa_gate_mode == 'plateau':
         print(
-            f"WFA gate plateau:   patience={args.wfa_gate_patience}, "
+            f"Physics gate plateau:  patience={args.wfa_gate_patience}, "
             f"min_delta={args.wfa_gate_min_delta}, warmup={args.wfa_gate_warmup_epochs}"
         )
     print(f"Apply region mask:  {args.apply_region_mask}")
