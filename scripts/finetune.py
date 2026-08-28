@@ -501,7 +501,7 @@ def run_fine_tune_single_variation(
             logger=logger,
             n_steps_per_epoch=-1,
             cache=cache,
-            enable_wfa=True,
+            enable_physics=True,
             global_bz_selection_indices=global_bz_selection_indices,
             global_bz_balance_metadata=global_bz_balance_metadata,
             balanced_cache=balanced_cache if balanced_mode == "disk" else None,

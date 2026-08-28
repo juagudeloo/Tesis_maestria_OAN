@@ -617,7 +617,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         self,
         predictions: torch.Tensor,
         spatial_indices: torch.Tensor,
-        enable_wfa: bool = True,
+        enable_physics: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute physics-based regularization losses using RRMSE in physical units.
@@ -642,7 +642,13 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Individual loss components for logging
         """
         # Return zero if all physics terms are disabled
-        if (not enable_wfa or self.lambda_wfa == 0) and self.lambda_doppler == 0 and self.lambda_temp == 0:
+        # The gate governs ALL physics terms, not just the WFA. It previously applied only
+        # to the WFA, which left the ablation arms incomparable: wfa_only trained on plain
+        # MSE until the gate opened around epoch 40, while doppler_only and black_body_only
+        # had their term active from epoch 1. Same treatment for every arm now.
+        if not enable_physics or (
+            self.lambda_wfa == 0 and self.lambda_doppler == 0 and self.lambda_temp == 0
+        ):
             device = self._get_device()
             return torch.tensor(0.0, device=device), {}
         
@@ -665,9 +671,10 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             loss_components['temp_target_logtau'] = self.temp_target_logtau
         
         # WFA B_LOS loss (if enabled)
-        loss_components['wfa_enabled'] = float(enable_wfa and self.lambda_wfa > 0)
+        loss_components['physics_enabled'] = float(enable_physics)
+        loss_components['wfa_enabled'] = float(enable_physics and self.lambda_wfa > 0)
 
-        if self.lambda_wfa > 0 and enable_wfa:
+        if self.lambda_wfa > 0:
             wfa_loss = self._compute_wfa_loss(denorm_pred, spatial_indices)
             loss_components['wfa'] = wfa_loss.item()
             total_loss = total_loss + self.lambda_wfa * wfa_loss
@@ -691,7 +698,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         predictions: torch.Tensor,
         targets: torch.Tensor,
         spatial_indices: Optional[torch.Tensor] = None,
-        enable_wfa: bool = True,
+        enable_physics: bool = True,
     ) -> Dict[str, Any]:
         """
         Compute total loss with optional physics regularization.
@@ -704,7 +711,7 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
             Ground truth targets (batch_size, 63)
         spatial_indices : torch.Tensor, optional
             Spatial coordinates (batch_size, 2) for physics losses
-        enable_wfa : bool
+        enable_physics : bool
             Enable WFA physics term
             
         Returns
@@ -717,21 +724,24 @@ class PhysicsInformedMSCNN(MSCNNInversionModel):
         
         # Physics regularization - check if ANY lambda is non-zero and spatial_indices provided
         use_physics = spatial_indices is not None and any([
-            enable_wfa and self.lambda_wfa > 0,
-            self.lambda_doppler > 0,
-            self.lambda_temp > 0
+            enable_physics and self.lambda_wfa > 0,
+            enable_physics and self.lambda_doppler > 0,
+            enable_physics and self.lambda_temp > 0
         ])
         
         if use_physics:
             physics_loss_total, physics_components = self.compute_physics_loss(
                 predictions,
                 spatial_indices,
-                enable_wfa=enable_wfa,
+                enable_physics=enable_physics,
             )
         else:
             device = self._get_device()
             physics_loss_total = torch.tensor(0.0, device=device)
-            physics_components = {'wfa_enabled': float(enable_wfa and self.lambda_wfa > 0)}
+            physics_components = {
+                'physics_enabled': float(enable_physics),
+                'wfa_enabled': float(enable_physics and self.lambda_wfa > 0),
+            }
 
         total_loss = mse_loss + physics_loss_total
 

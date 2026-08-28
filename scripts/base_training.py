@@ -694,10 +694,21 @@ def preload_balanced_steps_from_cache(
     return loaded
 
 
+def _has_active_physics(config: TrainingConfig) -> bool:
+    """Whether any physics term is weighted, and so whether the gate has anything to hold back."""
+    return (config.lambda_wfa > 0) or (config.lambda_doppler > 0) or (config.lambda_temp > 0)
+
+
 def initialize_wfa_gate_state(config: TrainingConfig) -> dict[str, Any]:
-    """Create runtime state for train-time WFA activation gate."""
+    """Create runtime state for the train-time physics activation gate.
+
+    Opens immediately when no physics term is weighted at all -- there is nothing to gate --
+    but NOT merely because lambda_wfa is zero. That earlier condition made the gate a no-op
+    for doppler_only and black_body_only, so those arms had their term active from epoch 1
+    while wfa_only waited for the MSE plateau: the very asymmetry the gate exists to avoid.
+    """
     gate_mode = str(config.wfa_gate_mode).lower()
-    enabled = gate_mode == 'off' or config.lambda_wfa <= 0
+    enabled = gate_mode == 'off' or not _has_active_physics(config)
     return {
         'mode': gate_mode,
         'enabled': enabled,
@@ -715,9 +726,14 @@ def update_wfa_gate_state(
     epoch: int,
     epoch_mse_loss: float,
 ) -> tuple[dict[str, Any], bool, str | None]:
-    """Update train-time WFA gate using epoch train MSE and return transition info."""
+    """Update the train-time physics gate from epoch train MSE; returns transition info.
+
+    Config keys keep the wfa_gate_* names for backwards compatibility -- finetune.py restores
+    them from a base run's experiment_config.json -- but the gate governs all three physics
+    terms, not just the WFA.
+    """
     gate_mode = str(gate_state.get('mode', config.wfa_gate_mode)).lower()
-    if gate_mode == 'off' or config.lambda_wfa <= 0:
+    if gate_mode == 'off' or not _has_active_physics(config):
         gate_state['enabled'] = True
         gate_state['last_metric'] = float(epoch_mse_loss)
         return gate_state, False, None
@@ -1400,7 +1416,7 @@ def train_one_step(
     epoch: int,
     step_num: int,
     logger: MetricsLogger | None,
-    enable_wfa: bool = True,
+    enable_physics: bool = True,
 ) -> dict[str, float]:
     """
     Train on one simulation step (one epoch through that step's data).
@@ -1469,7 +1485,7 @@ def train_one_step(
             predictions=predictions,
             targets=mhd_batch,
             spatial_indices=spatial_idx_batch,
-            enable_wfa=enable_wfa,
+            enable_physics=enable_physics,
         )
         
         total_loss = loss_dict['loss']
@@ -1497,9 +1513,9 @@ def train_one_step(
     for key in step_metrics.keys():
         step_metrics[key] /= n_batches
 
-    # Mark physics fields as NaN when WFA gate is closed so the CSV reflects
+    # Mark physics fields as NaN when the physics gate is closed so the CSV reflects
     # that no physics constraint was active (rather than a misleading 0.0).
-    if not enable_wfa:
+    if not enable_physics:
         for key in ('physics_loss', 'wfa_loss', 'doppler_loss', 'temperature_loss'):
             step_metrics[key] = float('nan')
 
@@ -1589,7 +1605,7 @@ def validate(
                         predictions=predictions,
                         targets=mhd_batch,
                         spatial_indices=spatial_idx_batch,
-                        enable_wfa=True,
+                        enable_physics=True,
                     )
                     
                     total_loss = loss_dict['loss']
@@ -1669,7 +1685,7 @@ def load_checkpoint(
     print(f"  Train loss: {train_loss:.6f}, Val loss: {val_loss:.6f}")
     if isinstance(wfa_gate_state, dict):
         print(
-            "  WFA gate state: "
+            "  Physics gate state: "
             f"enabled={wfa_gate_state.get('enabled')}, "
             f"mode={wfa_gate_state.get('mode')}, "
             f"trigger_epoch={wfa_gate_state.get('trigger_epoch')}"
@@ -1688,7 +1704,7 @@ def train_epoch(
     logger: MetricsLogger | None = None,
     n_steps_per_epoch: int = -1,
     cache: MuramDataCache | None = None,
-    enable_wfa: bool = True,
+    enable_physics: bool = True,
     global_bz_selection_indices: dict[int, np.ndarray] | None = None,
     global_bz_balance_metadata: dict[str, Any] | None = None,
     balanced_cache: BalancedTrainDataCache | None = None,
@@ -1807,7 +1823,7 @@ def train_epoch(
                 epoch=epoch,
                 step_num=step,
                 logger=logger,
-                enable_wfa=enable_wfa,
+                enable_physics=enable_physics,
             )
             
             # Accumulate step metrics (including temperature)
@@ -2736,16 +2752,16 @@ def train_pinn_model(config: TrainingConfig):
             f"Bz balance scope/mode/bins: {config.bz_balance_scope}/{config.bz_balance_mode}/{config.bz_balance_bins}"
         )
         print(f"Bz balance tau idx: {config.bz_balance_tau_idx} (None -> deepest)")
-    print(f"WFA gate mode: {config.wfa_gate_mode}")
+    print(f"Physics gate mode: {config.wfa_gate_mode}")
     if config.wfa_gate_mode == 'threshold':
-        print(f"WFA gate threshold (train MSE): {config.wfa_gate_threshold}")
+        print(f"Physics gate threshold (train MSE): {config.wfa_gate_threshold}")
     elif config.wfa_gate_mode == 'plateau':
         print(
-            f"WFA gate plateau patience/min_delta: "
+            f"Physics gate plateau patience/min_delta: "
             f"{config.wfa_gate_patience}/{config.wfa_gate_min_delta}"
         )
     if config.wfa_gate_mode != 'off':
-        print(f"WFA gate warmup epochs: {config.wfa_gate_warmup_epochs}")
+        print(f"Physics gate warmup epochs: {config.wfa_gate_warmup_epochs}")
     print(f"B_LOS physics mode: {config.blos_physics_mode}")
     if config.blos_physics_mode == "single_height":
         print(f"B_LOS target log(tau): {config.blos_target_logtau}")
@@ -2941,8 +2957,8 @@ def train_pinn_model(config: TrainingConfig):
     for epoch in range(start_epoch, config.n_epochs):
         print(f"\nEpoch {epoch + 1}/{config.n_epochs}")
         print("-" * 70)
-        train_wfa_enabled = bool(wfa_gate_state.get('enabled', True))
-        print(f"  Train-time WFA enabled: {train_wfa_enabled}")
+        train_physics_enabled = bool(wfa_gate_state.get('enabled', True))
+        print(f"  Train-time physics enabled: {train_physics_enabled}")
         
         # Train for one epoch using the extracted function
         epoch_metrics = train_epoch(
@@ -2956,7 +2972,7 @@ def train_pinn_model(config: TrainingConfig):
             logger=logger,
             n_steps_per_epoch=-1,  # Use all training steps
             cache=cache,
-            enable_wfa=train_wfa_enabled,
+            enable_physics=train_physics_enabled,
             global_bz_selection_indices=global_bz_selection_indices,
             global_bz_balance_metadata=global_bz_balance_metadata,
             balanced_cache=balanced_cache if balanced_runtime_mode == "disk" else None,
@@ -3023,7 +3039,7 @@ def train_pinn_model(config: TrainingConfig):
         print(f"        ├─ Doppler Loss:     {epoch_metrics['doppler_loss']:.6f}")
         print(f"        └─ Temperature Loss: {epoch_metrics['temperature_loss']:.6f}")
         print(
-            f"  WFA gate state (next epoch): enabled={bool(wfa_gate_state.get('enabled', True))}, "
+            f"  Physics gate state (next epoch): enabled={bool(wfa_gate_state.get('enabled', True))}, "
             f"mode={wfa_gate_state.get('mode')}"
         )
         if wfa_gate_state.get('mode') == 'plateau':
@@ -3032,7 +3048,7 @@ def train_pinn_model(config: TrainingConfig):
                 f"best_train_mse={wfa_gate_state.get('best_metric')}"
             )
         if wfa_gate_triggered:
-            print(f"  ★ WFA gate activated for subsequent epochs: {wfa_gate_reason}")
+            print(f"  ★ Physics gate activated for subsequent epochs: {wfa_gate_reason}")
         print(f"  Pixels used this epoch (balanced): {epoch_metrics.get('n_pixels_used', 0)}")
         
         # Save checkpoint
@@ -3140,7 +3156,7 @@ def main():
                        help='Minimum epoch train MSE improvement to reset WFA plateau counter')
     parser.add_argument('--wfa-gate-warmup-epochs', '--wfa_gate_warmup_epochs', dest='wfa_gate_warmup_epochs',
                        type=int, default=None,
-                       help='Minimum number of epochs before WFA gate can activate')
+                       help='Minimum number of epochs before the physics gate can activate (gates WFA, Doppler and temperature together)')
     
     # Add cache-related arguments
     parser.add_argument('--no-cache', action='store_true',
