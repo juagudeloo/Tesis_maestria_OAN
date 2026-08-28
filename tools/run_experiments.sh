@@ -110,7 +110,7 @@ MODEST_DOWNSAMPLE_PREDICTION_INPUT=1
 # 1000 epochs. wfa_only goes first because it is the one under question -- its WFA gate opens
 # around epoch 40, so the physics term's effect on the MSE is visible within the first hour
 # instead of after no_physics has finished.
-EXPERIMENTS="wfa_only no_physics"
+EXPERIMENTS="doppler_only"
 
 # Region-mask balancing during training (ablation study)
 # 1 = apply balanced region mask, 0 = disable mask

@@ -149,7 +149,16 @@ class ApproxInversions:
         
         The velocity is computed by fitting a Gaussian to the Stokes I profile
         to find the line center wavelength, then applying the Doppler formula:
-        v_LOS = (λ₀ - λ_fit) / λ₀ · c
+        v_LOS = (λ_fit - λ₀) / λ₀ · c
+
+        Sign convention: positive v_LOS means a redshifted line core. This matches the
+        sign of MURaM's Vz, which is what the network is trained against, and the two must
+        agree for the Doppler physics term to reinforce the MSE rather than fight it.
+        The opposite convention was in place until it was caught empirically: the
+        approximation correlated -0.965 with MURaM's Vz at log(tau) = -1.0, and the
+        doppler_only ablation arm drove the predicted velocity to correlation -0.951 at
+        exactly that height (its vlos_target_logtau) while leaving every other height
+        untouched.
         
         Parameters
         ----------
@@ -190,8 +199,8 @@ class ApproxInversions:
                     x0_fit = popt[1]  # Fitted line center wavelength
                     
                     # Compute velocity from Doppler shift
-                    # v_LOS = c * (λ₀ - λ_fit) / λ₀
-                    delta_wl = central_wl_value - x0_fit
+                    # v_LOS = c * (λ_fit - λ₀) / λ₀   (positive = redshift, as in MURaM Vz)
+                    delta_wl = x0_fit - central_wl_value
                     v_los = (c * delta_wl / central_wl_value).to(u.km / u.s)
                     vlos_map[ix, iy] = v_los.value
                     
