@@ -151,7 +151,33 @@ if __name__ == "__main__":
         '--modest-pred-mhd-invert-sign', '--modest_pred_mhd_invert_sign',
         dest='modest_pred_mhd_invert_sign',
         action='store_true',
-        help='invert predicted MODEST V_LOS and B_LOS signs before region/joint plotting',
+        help='invert BOTH predicted MODEST V_LOS and B_LOS signs. Kept for existing commands; '
+             'the per-parameter flags below override it and are usually what you want, since '
+             'the velocity and field sign conventions are independent.',
+    )
+    parser.add_argument(
+        '--modest-pred-vlos-invert-sign', '--modest_pred_vlos_invert_sign',
+        dest='modest_pred_vlos_invert_sign',
+        action='store_const', const=True, default=None,
+        help='invert only the predicted V_LOS sign (overrides --modest-pred-mhd-invert-sign)',
+    )
+    parser.add_argument(
+        '--modest-pred-vlos-keep-sign', '--modest_pred_vlos_keep_sign',
+        dest='modest_pred_vlos_invert_sign',
+        action='store_const', const=False,
+        help='keep the predicted V_LOS sign even when --modest-pred-mhd-invert-sign is given',
+    )
+    parser.add_argument(
+        '--modest-pred-blos-invert-sign', '--modest_pred_blos_invert_sign',
+        dest='modest_pred_blos_invert_sign',
+        action='store_const', const=True, default=None,
+        help='invert only the predicted B_LOS sign (overrides --modest-pred-mhd-invert-sign)',
+    )
+    parser.add_argument(
+        '--modest-pred-blos-keep-sign', '--modest_pred_blos_keep_sign',
+        dest='modest_pred_blos_invert_sign',
+        action='store_const', const=False,
+        help='keep the predicted B_LOS sign even when --modest-pred-mhd-invert-sign is given',
     )
     parser.add_argument(
         '--model-types', '--model_types',

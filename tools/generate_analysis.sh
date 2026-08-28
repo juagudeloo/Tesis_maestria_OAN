@@ -14,7 +14,7 @@ cd "${MUISCA_ROOT}" || exit 1
 # Shared model selection (space-separated list)
 # Base options: all, no_physics, wfa_only, doppler_only, black_body_only, all_physics_terms
 # Lambda variants must match experiment keys, e.g. wfa_only-lambda-0_01
-MODEL_TYPES="no_physics wfa_only"
+MODEL_TYPES="no_physics wfa_only black_body_only doppler_only"
 EXPERIMENT_ROOT="experiment_110_to_130-step_size_10-normal"
 
 # Runtime control
@@ -31,14 +31,14 @@ CROPPED_REGION="0"                      # 1 => --cropped-region
 # CROP_BOUNDS=(100 300 250 450)             # X_MIN X_MAX Y_MIN Y_MAX
 # CROP_LABEL="sunspot"                      # label for cropped region (used in plot titles and output paths)
 #plage
-CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
-CROP_LABEL="plage"                      # label for cropped region (used in plot titles and output paths)
+# CROP_BOUNDS=(0 100 400 600)             # X_MIN X_MAX Y_MIN Y_MAX
+# CROP_LABEL="plage"                      # label for cropped region (used in plot titles and output paths)
 #negative region
 # CROP_BOUNDS=(0 80 0 200)             # X_MIN X_MAX Y_MIN Y_MAX
 # CROP_LABEL="negative_region"      
 #quiet sun
-# CROP_BOUNDS=(0 100 600 700)             # X_MIN X_MAX Y_MIN Y_MAX
-# CROP_LABEL="quiet_sun"                      # label for cropped region (used in plot titles and output paths)
+CROP_BOUNDS=(0 100 600 700)             # X_MIN X_MAX Y_MIN Y_MAX
+CROP_LABEL="quiet_sun"                      # label for cropped region (used in plot titles and output paths)
 POLARIZATION_MASK="0"                   # 1 => --polarization-mask
 POLARIZATION_THRESHOLD="1e-2"
 MODEST_CACHE_DIR="/scratchsan/observatorio/juagudeloo/MUISCA/.modest_cache"
@@ -48,7 +48,14 @@ MODEST_STOKES_SHIFT_POSITIONS="0.0"
 MODEST_STOKES_I_SCALE="1.0"
 MODEST_STOKES_V_SCALE="1.0"
 MODEST_STOKES_INVERT_DIRECTION="0"      # 1 => --modest-stokes-invert-direction
-MODEST_PRED_MHD_INVERT_SIGN="0"         # 1 => --modest-pred-mhd-invert-sign (invert predicted Vz/Bz)
+MODEST_PRED_MHD_INVERT_SIGN="0"         # 1 => invert BOTH predicted Vz and Bz (legacy combined switch)
+# Per-parameter overrides. The velocity and field sign conventions are independent -- the
+# Doppler direction and the circular-polarization handedness need not disagree with the
+# reference in the same way -- so flipping both together forces a choice that is wrong for
+# one of them whenever only one needs it. Use "" to follow MODEST_PRED_MHD_INVERT_SIGN,
+# "1" to invert this parameter, "0" to keep its sign regardless.
+MODEST_PRED_VLOS_INVERT_SIGN=""          # "" | 0 | 1
+MODEST_PRED_BLOS_INVERT_SIGN=""          # "" | 0 | 1
 
 # Temperature calibration args (MODEST only)
 TEMP_CALIBRATION_MODE="off"             # off | apply_fit (bias-only: per-tau b, fixed a=1)
@@ -75,7 +82,9 @@ Options:
   --modest-stokes-i-scale VALUE  MODEST: multiplicative factor for Stokes I
   --modest-stokes-v-scale VALUE  MODEST: multiplicative factor for Stokes V
   --modest-stokes-invert-direction 0|1  MODEST: invert spectral direction before optional shift/scale
-  --modest-pred-mhd-invert-sign 0|1  MODEST: invert predicted V_LOS and B_LOS signs before plotting
+  --modest-pred-mhd-invert-sign 0|1  MODEST: invert BOTH predicted V_LOS and B_LOS signs
+  --modest-pred-vlos-invert-sign 0|1 MODEST: invert only V_LOS (overrides the combined flag)
+  --modest-pred-blos-invert-sign 0|1 MODEST: invert only B_LOS (overrides the combined flag)
   --temp-calibration-mode off|apply_fit  MODEST: calibration mode; apply_fit is bias-only (a=1)
   --temp-calibration-dir PATH   MODEST: shared dir to store/load calibration JSON
   --temp-calibration-min-samples N   MODEST: min samples to fit per-tau bias (default: 500)
@@ -155,6 +164,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --modest-pred-mhd-invert-sign)
       MODEST_PRED_MHD_INVERT_SIGN="${2:-}"
+      shift 2
+      ;;
+    --modest-pred-vlos-invert-sign)
+      MODEST_PRED_VLOS_INVERT_SIGN="${2:-}"
+      shift 2
+      ;;
+    --modest-pred-blos-invert-sign)
+      MODEST_PRED_BLOS_INVERT_SIGN="${2:-}"
       shift 2
       ;;
     --temp-calibration-mode)
@@ -291,9 +308,26 @@ if [[ "${MODEST_STOKES_INVERT_DIRECTION}" == "1" ]]; then
   MODEST_STOKES_INVERT_DIRECTION_FLAG="--modest-stokes-invert-direction"
 fi
 
+for v in "${MODEST_PRED_VLOS_INVERT_SIGN}" "${MODEST_PRED_BLOS_INVERT_SIGN}"; do
+  if [[ -n "${v}" && "${v}" != "0" && "${v}" != "1" ]]; then
+    echo "Per-parameter sign flags accept only \"\", 0 or 1 (got: ${v})" >&2
+    exit 1
+  fi
+done
+
 MODEST_PRED_MHD_INVERT_SIGN_FLAG=""
 if [[ "${MODEST_PRED_MHD_INVERT_SIGN}" == "1" ]]; then
   MODEST_PRED_MHD_INVERT_SIGN_FLAG="--modest-pred-mhd-invert-sign"
+fi
+if [[ "${MODEST_PRED_VLOS_INVERT_SIGN}" == "1" ]]; then
+  MODEST_PRED_MHD_INVERT_SIGN_FLAG="${MODEST_PRED_MHD_INVERT_SIGN_FLAG} --modest-pred-vlos-invert-sign"
+elif [[ "${MODEST_PRED_VLOS_INVERT_SIGN}" == "0" ]]; then
+  MODEST_PRED_MHD_INVERT_SIGN_FLAG="${MODEST_PRED_MHD_INVERT_SIGN_FLAG} --modest-pred-vlos-keep-sign"
+fi
+if [[ "${MODEST_PRED_BLOS_INVERT_SIGN}" == "1" ]]; then
+  MODEST_PRED_MHD_INVERT_SIGN_FLAG="${MODEST_PRED_MHD_INVERT_SIGN_FLAG} --modest-pred-blos-invert-sign"
+elif [[ "${MODEST_PRED_BLOS_INVERT_SIGN}" == "0" ]]; then
+  MODEST_PRED_MHD_INVERT_SIGN_FLAG="${MODEST_PRED_MHD_INVERT_SIGN_FLAG} --modest-pred-blos-keep-sign"
 fi
 
 TEMP_CALIBRATION_FLAGS=""

@@ -1249,10 +1249,25 @@ class ModestDiagnosticPlots:
                 pred_ny=self.pred_ny,
                 batch_size=self.args.inference_batch_size,
             )
-            if bool(getattr(self.args, "modest_pred_mhd_invert_sign", False)):
+            # Sign conventions for V_LOS and B_LOS are independent: velocity sign follows the
+            # Doppler direction convention, field sign follows the circular-polarization
+            # convention, and the two do not have to disagree with the reference in the same
+            # way. The original flag flipped both together, which forces a choice that is
+            # wrong for one of them whenever only one needs flipping. Per-parameter flags now
+            # take precedence; the combined flag still applies to whichever is not set
+            # individually, so existing commands keep working.
+            invert_both = bool(getattr(self.args, "modest_pred_mhd_invert_sign", False))
+            invert_vz = getattr(self.args, "modest_pred_vlos_invert_sign", None)
+            invert_bz = getattr(self.args, "modest_pred_blos_invert_sign", None)
+            invert_vz = invert_both if invert_vz is None else bool(invert_vz)
+            invert_bz = invert_both if invert_bz is None else bool(invert_bz)
+            if invert_vz:
                 pred_mhd["Vz"] = -pred_mhd["Vz"]
+            if invert_bz:
                 pred_mhd["Bz"] = -pred_mhd["Bz"]
-                print(f"[{model_type}] Applied predicted MHD sign inversion for Vz and Bz.")
+            if invert_vz or invert_bz:
+                flipped = ", ".join(n for n, f in (("V_LOS", invert_vz), ("B_LOS", invert_bz)) if f)
+                print(f"[{model_type}] Applied predicted MHD sign inversion for {flipped}.")
             out_root = self.modest_output_dir / model_type
             self._plot_stokes_mean_std(model_type=model_type, out_root=out_root)
             cal_path = self._temperature_calibration_path(model_type=model_type, out_root=out_root)
